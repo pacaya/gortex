@@ -95,6 +95,16 @@ func (s *Server) registerCodingTools() {
 	)
 
 	s.mcpServer.AddTool(
+		mcp.NewTool("edit_symbol",
+			mcp.WithDescription("Edit a symbol's source code directly by ID — no Read needed. Gortex resolves the file and line range, finds the old_source fragment, replaces it with new_source, and writes the file. Eliminates the Read→Edit roundtrip for ~80% of edits."),
+			mcp.WithString("id", mcp.Required(), mcp.Description("Symbol ID (e.g. server.go::NewServer)")),
+			mcp.WithString("old_source", mcp.Required(), mcp.Description("Exact source fragment to replace (must be unique within the symbol)")),
+			mcp.WithString("new_source", mcp.Required(), mcp.Description("Replacement source fragment")),
+		),
+		s.handleEditSymbol,
+	)
+
+	s.mcpServer.AddTool(
 		mcp.NewTool("rename_symbol",
 			mcp.WithDescription("Generates coordinated multi-file edit instructions for renaming a symbol. Returns {file, line, old_text, new_text, confidence} for every reference. Use dry_run to preview, then apply edits with the Edit tool."),
 			mcp.WithString("id", mcp.Required(), mcp.Description("Symbol ID to rename (e.g. auth/token.go::validateToken)")),
@@ -1315,6 +1325,111 @@ func (s *Server) handleRenameSymbol(_ context.Context, req mcp.CallToolRequest) 
 		"edits":          edits,
 		"total_edits":    len(edits),
 		"files_affected": len(fileSet),
+	})
+}
+
+func (s *Server) handleEditSymbol(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	id, err := req.RequireString("id")
+	if err != nil {
+		return mcp.NewToolResultError("id is required"), nil
+	}
+	oldSource, err := req.RequireString("old_source")
+	if err != nil {
+		return mcp.NewToolResultError("old_source is required"), nil
+	}
+	newSource, err := req.RequireString("new_source")
+	if err != nil {
+		return mcp.NewToolResultError("new_source is required"), nil
+	}
+
+	if oldSource == newSource {
+		return mcp.NewToolResultError("old_source and new_source are identical"), nil
+	}
+
+	node := s.engine.GetSymbol(id)
+	if node == nil {
+		return mcp.NewToolResultError("symbol not found: " + id), nil
+	}
+
+	if node.StartLine == 0 || node.EndLine == 0 {
+		return mcp.NewToolResultError("symbol has no line range: " + id), nil
+	}
+
+	// Resolve file path.
+	absPath := node.FilePath
+	if s.indexer != nil {
+		if root := s.indexer.RootPath(); root != "" {
+			absPath = filepath.Join(root, node.FilePath)
+		}
+	}
+
+	// Read the entire file.
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("could not read file: %v", err)), nil
+	}
+
+	fileStr := string(content)
+
+	// Extract the symbol's source lines to verify old_source is within them.
+	lines := strings.Split(fileStr, "\n")
+	if node.StartLine > len(lines) || node.EndLine > len(lines) {
+		return mcp.NewToolResultError("symbol line range exceeds file length"), nil
+	}
+
+	symbolSource := strings.Join(lines[node.StartLine-1:node.EndLine], "\n")
+
+	if !strings.Contains(symbolSource, oldSource) {
+		return mcp.NewToolResultError(fmt.Sprintf(
+			"old_source not found within symbol %s (lines %d-%d). Use get_symbol_source to see the current code.",
+			id, node.StartLine, node.EndLine)), nil
+	}
+
+	// Verify old_source is unique within the symbol.
+	if strings.Count(symbolSource, oldSource) > 1 {
+		return mcp.NewToolResultError(
+			"old_source appears multiple times within the symbol. Provide a larger fragment to make it unique."), nil
+	}
+
+	// Apply the edit to the full file content.
+	// Find old_source within the symbol's line range only (not the whole file).
+	symbolStart := 0
+	for i := 0; i < node.StartLine-1 && i < len(lines); i++ {
+		symbolStart += len(lines[i]) + 1 // +1 for newline
+	}
+
+	symbolEnd := symbolStart + len(symbolSource)
+	if symbolEnd > len(fileStr) {
+		symbolEnd = len(fileStr)
+	}
+
+	// Find old_source within the symbol region.
+	offset := strings.Index(fileStr[symbolStart:symbolEnd], oldSource)
+	if offset < 0 {
+		return mcp.NewToolResultError("old_source not found in symbol region"), nil
+	}
+
+	// Build the new file content.
+	editStart := symbolStart + offset
+	editEnd := editStart + len(oldSource)
+	newContent := fileStr[:editStart] + newSource + fileStr[editEnd:]
+
+	// Write the file.
+	if err := os.WriteFile(absPath, []byte(newContent), 0o644); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("could not write file: %v", err)), nil
+	}
+
+	// Count lines changed.
+	oldLines := strings.Count(oldSource, "\n") + 1
+	newLines := strings.Count(newSource, "\n") + 1
+
+	return mcp.NewToolResultJSON(map[string]any{
+		"file":          node.FilePath,
+		"symbol":        id,
+		"lines_before":  oldLines,
+		"lines_after":   newLines,
+		"start_line":    node.StartLine,
+		"status":        "applied",
 	})
 }
 
