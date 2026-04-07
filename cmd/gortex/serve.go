@@ -111,6 +111,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Create and start MCP server.
 	eng := query.NewEngine(g)
+	eng.SetSearch(idx.Search())
 	gortexmcp.Version = version
 	srv := gortexmcp.NewServer(eng, g, idx, watcher, logger)
 

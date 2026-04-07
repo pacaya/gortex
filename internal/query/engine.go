@@ -5,16 +5,23 @@ import (
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
+	"github.com/zzet/gortex/internal/search"
 )
 
 // Engine provides higher-level query operations over the graph.
 type Engine struct {
-	g *graph.Graph
+	g      *graph.Graph
+	search search.Backend
 }
 
 // NewEngine creates a query engine wrapping the given graph.
 func NewEngine(g *graph.Graph) *Engine {
 	return &Engine{g: g}
+}
+
+// SetSearch sets the search backend for full-text search.
+func (e *Engine) SetSearch(s search.Backend) {
+	e.search = s
 }
 
 // GetSymbol returns a node by ID.
@@ -132,20 +139,88 @@ func (e *Engine) GetCluster(nodeID string, opts QueryOptions) *SubGraph {
 	return e.bfs(nodeID, opts, true, nil) // nil = all edge kinds, bidirectional
 }
 
-// SearchSymbols performs fuzzy/substring search across all nodes.
-// Results are ranked by relevance: exact match > prefix > substring, shorter names first.
+// SearchSymbols performs full-text search across all nodes.
+// When a search backend is configured, uses BM25/Bleve ranking with
+// camelCase-aware tokenization. Falls back to substring matching otherwise.
 func (e *Engine) SearchSymbols(query string, limit int) []*graph.Node {
 	if limit <= 0 {
 		limit = 20
 	}
+
+	// Use full-text search backend if available.
+	if e.search != nil && e.search.Count() > 0 {
+		return e.searchWithBackend(query, limit)
+	}
+
+	// Fallback: substring search.
+	return e.searchSubstring(query, limit)
+}
+
+func (e *Engine) searchWithBackend(query string, limit int) []*graph.Node {
+	// Get BM25/Bleve results.
+	results := e.search.Search(query, limit*2) // fetch extra for dedup/filtering
+
+	seen := make(map[string]bool)
+	var out []*graph.Node
+
+	// BM25 results first (ranked by relevance).
+	for _, r := range results {
+		node := e.g.GetNode(r.ID)
+		if node == nil || node.Kind == graph.KindFile || node.Kind == graph.KindImport {
+			continue
+		}
+		if seen[node.ID] {
+			continue
+		}
+		seen[node.ID] = true
+		out = append(out, node)
+		if len(out) >= limit {
+			return out
+		}
+	}
+
+	// If BM25 didn't fill the limit, supplement with substring matches.
+	// This catches exact name matches that BM25 might rank lower.
+	lower := strings.ToLower(query)
+	exact := e.g.FindNodesByName(query)
+	for _, n := range exact {
+		if n.Kind == graph.KindFile || n.Kind == graph.KindImport || seen[n.ID] {
+			continue
+		}
+		seen[n.ID] = true
+		out = append(out, n)
+		if len(out) >= limit {
+			return out
+		}
+	}
+
+	// Substring fallback for remaining slots.
+	allNodes := e.g.AllNodes()
+	for _, n := range allNodes {
+		if seen[n.ID] || n.Kind == graph.KindFile || n.Kind == graph.KindImport {
+			continue
+		}
+		nameLower := strings.ToLower(n.Name)
+		if strings.Contains(nameLower, lower) {
+			seen[n.ID] = true
+			out = append(out, n)
+			if len(out) >= limit {
+				return out
+			}
+		}
+	}
+
+	return out
+}
+
+func (e *Engine) searchSubstring(query string, limit int) []*graph.Node {
 	lower := strings.ToLower(query)
 
-	// First try exact name match
 	exact := e.g.FindNodesByName(query)
 
 	type scored struct {
 		node  *graph.Node
-		score int // lower = better
+		score int
 	}
 	var results []scored
 	seen := make(map[string]bool)
@@ -155,10 +230,9 @@ func (e *Engine) SearchSymbols(query string, limit int) []*graph.Node {
 			continue
 		}
 		seen[n.ID] = true
-		results = append(results, scored{n, 0}) // exact match = best
+		results = append(results, scored{n, 0})
 	}
 
-	// Substring search across all nodes
 	allNodes := e.g.AllNodes()
 	for _, n := range allNodes {
 		if seen[n.ID] || n.Kind == graph.KindFile || n.Kind == graph.KindImport {
@@ -168,18 +242,17 @@ func (e *Engine) SearchSymbols(query string, limit int) []*graph.Node {
 		idLower := strings.ToLower(n.ID)
 
 		if strings.HasPrefix(nameLower, lower) {
-			results = append(results, scored{n, 1}) // prefix match
+			results = append(results, scored{n, 1})
 		} else if strings.Contains(nameLower, lower) {
-			results = append(results, scored{n, 2}) // substring of name
+			results = append(results, scored{n, 2})
 		} else if strings.Contains(idLower, lower) {
-			results = append(results, scored{n, 3}) // substring of ID
+			results = append(results, scored{n, 3})
 		} else {
 			continue
 		}
 		seen[n.ID] = true
 	}
 
-	// Sort: by score, then by name length (shorter = more relevant)
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].score != results[j].score {
 			return results[i].score < results[j].score

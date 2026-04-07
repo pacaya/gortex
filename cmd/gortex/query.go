@@ -56,7 +56,9 @@ func buildEngine() (*query.Engine, error) {
 	if _, err := idx.Index(queryIndex); err != nil {
 		return nil, err
 	}
-	return query.NewEngine(g), nil
+	eng := query.NewEngine(g)
+	eng.SetSearch(idx.Search())
+	return eng, nil
 }
 
 func opts() query.QueryOptions {

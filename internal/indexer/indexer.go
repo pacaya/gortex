@@ -13,6 +13,7 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/resolver"
+	"github.com/zzet/gortex/internal/search"
 )
 
 // IndexResult holds the outcome of an indexing operation.
@@ -35,6 +36,7 @@ type Indexer struct {
 	graph    *graph.Graph
 	registry *parser.Registry
 	resolver *resolver.Resolver
+	search   search.Backend
 	config   config.IndexConfig
 	rootPath string
 	logger   *zap.Logger
@@ -46,6 +48,7 @@ func New(g *graph.Graph, reg *parser.Registry, cfg config.IndexConfig, logger *z
 		graph:    g,
 		registry: reg,
 		resolver: resolver.New(g),
+		search:   search.NewAuto(),
 		config:   cfg,
 		logger:   logger,
 	}
@@ -53,6 +56,9 @@ func New(g *graph.Graph, reg *parser.Registry, cfg config.IndexConfig, logger *z
 
 // Graph returns the underlying graph.
 func (idx *Indexer) Graph() *graph.Graph { return idx.graph }
+
+// Search returns the search backend.
+func (idx *Indexer) Search() search.Backend { return idx.search }
 
 // RootPath returns the root path used for relative path computation.
 func (idx *Indexer) RootPath() string { return idx.rootPath }
@@ -172,6 +178,27 @@ func (idx *Indexer) Index(root string) (*IndexResult, error) {
 	// Infer structural interface satisfaction.
 	idx.resolver.InferImplements()
 
+	// Build search index.
+	idx.buildSearchIndex()
+
+	// Auto-upgrade to Bleve if above threshold.
+	if idx.search.Count() >= search.AutoThreshold {
+		if blv, err := search.NewBleve(); err == nil {
+			old := idx.search
+			for _, n := range idx.graph.AllNodes() {
+				if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
+					continue
+				}
+				sig, _ := n.Meta["signature"].(string)
+				blv.Add(n.ID, n.Name, n.FilePath, sig)
+			}
+			idx.search = blv
+			old.Close()
+			idx.logger.Info("search: upgraded to Bleve backend",
+				zap.Int("symbols", idx.search.Count()))
+		}
+	}
+
 	return &IndexResult{
 		NodeCount:  idx.graph.NodeCount(),
 		EdgeCount:  idx.graph.EdgeCount(),
@@ -193,7 +220,12 @@ func (idx *Indexer) IndexFile(filePath string) error {
 		relPath = filePath
 	}
 
-	// Evict existing data for this file.
+	// Evict existing data for this file (graph + search).
+	for _, n := range idx.graph.GetFileNodes(relPath) {
+		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
+			idx.search.Remove(n.ID)
+		}
+	}
 	idx.graph.EvictFile(relPath)
 
 	src, err := os.ReadFile(absPath)
@@ -222,6 +254,14 @@ func (idx *Indexer) IndexFile(filePath string) error {
 		idx.graph.AddEdge(e)
 	}
 
+	// Add new symbols to search index.
+	for _, n := range result.Nodes {
+		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
+			sig, _ := n.Meta["signature"].(string)
+			idx.search.Add(n.ID, n.Name, n.FilePath, sig)
+		}
+	}
+
 	idx.resolver.ResolveFile(relPath)
 	return nil
 }
@@ -232,7 +272,24 @@ func (idx *Indexer) EvictFile(filePath string) (int, int) {
 	if err != nil {
 		relPath = filePath
 	}
+	// Remove from search index.
+	for _, n := range idx.graph.GetFileNodes(relPath) {
+		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
+			idx.search.Remove(n.ID)
+		}
+	}
 	return idx.graph.EvictFile(relPath)
+}
+
+// buildSearchIndex populates the search backend from the current graph.
+func (idx *Indexer) buildSearchIndex() {
+	for _, n := range idx.graph.AllNodes() {
+		if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
+			continue
+		}
+		sig, _ := n.Meta["signature"].(string)
+		idx.search.Add(n.ID, n.Name, n.FilePath, sig)
+	}
 }
 
 func (idx *Indexer) shouldExclude(path, root string) bool {
