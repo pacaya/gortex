@@ -199,13 +199,20 @@ func installHook(settingsPath string) error {
 		}
 	}
 
+	// Resolve the gortex binary path for the hook command.
+	// Try: 1) the binary that's running now, 2) "gortex" in PATH.
+	hookCommand := "gortex hook"
+	if exe, err := os.Executable(); err == nil {
+		hookCommand = exe + " hook"
+	}
+
 	// Build the hook entry.
 	hookEntry := map[string]any{
 		"matcher": "Read|Grep",
 		"hooks": []any{
 			map[string]any{
 				"type":          "command",
-				"command":       "gortex hook",
+				"command":       hookCommand,
 				"timeout":       3000,
 				"statusMessage": "Enriching with Gortex graph context...",
 			},
