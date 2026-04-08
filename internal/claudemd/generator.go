@@ -76,7 +76,9 @@ func Generate(engine *query.Engine, _ int) string {
 	b.WriteString("| Grep for all references | `find_usages` |\n")
 	b.WriteString("| Reading multiple files to trace a call | `get_call_chain` / `get_callers` |\n")
 	b.WriteString("| Guessing an import path | `find_import_path` |\n")
-	b.WriteString("| Assessing change scope | `explain_change_impact` |\n\n")
+	b.WriteString("| Assessing change scope | `explain_change_impact` |\n")
+	b.WriteString("| Scoping queries to a repo or project | Pass `repo`, `project`, or `ref` param to query tools |\n")
+	b.WriteString("| Managing repos at runtime | `track_repository` / `untrack_repository` |\n\n")
 
 	b.WriteString("**Workflow:** Before editing any file, call `get_editing_context(\"<file>\")` first.\n")
 	b.WriteString("Before any refactor affecting a shared type or function, call `explain_change_impact`.\n\n")
@@ -84,7 +86,8 @@ func Generate(engine *query.Engine, _ int) string {
 	b.WriteString("## Session start (Gortex)\n")
 	b.WriteString("1. Call `graph_stats` to confirm Gortex is running and get repo orientation.\n")
 	b.WriteString("2. If `total_nodes` is 0, call `index_repository` with path \".\".\n")
-	b.WriteString("3. For every file you are about to edit, call `get_editing_context` first.\n")
+	b.WriteString("3. In multi-repo mode, call `get_active_project` to check scope.\n")
+	b.WriteString("4. For every file you are about to edit, call `get_editing_context` first.\n")
 
 	return b.String()
 }

@@ -91,6 +91,11 @@ func runInit(_ *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[gortex init] warning: Kiro setup failed: %v\n", err)
 	}
 
+	// 7. Create/update GlobalConfig for multi-repo mode.
+	if err := ensureGlobalConfig(root); err != nil {
+		fmt.Fprintf(os.Stderr, "[gortex init] warning: could not update global config: %v\n", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "[gortex init] done — created:\n")
 	fmt.Fprintf(os.Stderr, "  .mcp.json                       (MCP server config — shared)\n")
 	fmt.Fprintf(os.Stderr, "  .claude/commands/gortex-*.md     (Claude Code slash commands)\n")
@@ -382,16 +387,29 @@ Gortex is running as an MCP server. You MUST use graph queries instead of file r
 | Reading a diff without graph context  | ` + "`diff_context`" + ` — enriches git diff with callers, callees, community, risk |
 | Guessing what context you need next   | ` + "`prefetch_context`" + ` — predicts needed symbols from task + recent activity |
 
+### Multi-Repo Management
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Manually adding a repo to config      | ` + "`track_repository`" + ` — indexes immediately, persists to config |
+| Manually removing a repo from config  | ` + "`untrack_repository`" + ` — evicts nodes/edges, persists to config |
+| Wondering which project is active     | ` + "`get_active_project`" + ` — returns project name and repo list |
+| Switching project context             | ` + "`set_active_project`" + ` — re-scopes all subsequent queries |
+| Scoping a query to one repo           | Pass ` + "`repo`" + ` param to ` + "`search_symbols`" + `, ` + "`find_usages`" + `, etc. |
+| Scoping a query to a project          | Pass ` + "`project`" + ` param to any query tool |
+| Filtering by reference tag            | Pass ` + "`ref`" + ` param to any query tool |
+
 ## Session start (Gortex)
 
 1. Call ` + "`graph_stats`" + ` to confirm Gortex is running and get repo orientation.
 2. If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with path ` + "`\".\"`" + `.
-3. For a new task, call ` + "`smart_context`" + ` with the task description.
-4. For every file you are about to edit, call ` + "`get_editing_context`" + ` first.
-5. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations.
-6. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
-7. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run.
-8. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
+3. In multi-repo mode, call ` + "`get_active_project`" + ` to check scope. Use ` + "`set_active_project`" + ` to switch if needed.
+4. For a new task, call ` + "`smart_context`" + ` with the task description.
+5. For every file you are about to edit, call ` + "`get_editing_context`" + ` first.
+6. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations — checks callers across all repos.
+7. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
+8. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run (includes cross-repo test files).
+9. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
 
 ## Gortex slash commands
 
@@ -626,6 +644,29 @@ const commandRefactor = `# Refactoring with Gortex
 - detect_changes to verify affected scope
 `
 
+// ─── Multi-Repo GlobalConfig ────────────────────────────────────────────────
+
+// ensureGlobalConfig creates or updates the GlobalConfig at ~/.config/gortex/config.yaml
+// with the current repository entry.
+func ensureGlobalConfig(root string) error {
+	gc, err := config.LoadGlobal()
+	if err != nil {
+		return err
+	}
+
+	// Add the current repo to the global config.
+	if err := gc.AddRepo(config.RepoEntry{Path: root}); err != nil {
+		return err
+	}
+
+	if err := gc.Save(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "[gortex init] updated global config at %s\n", gc.ConfigPath())
+	return nil
+}
+
 // ─── Kiro IDE Integration ───────────────────────────────────────────────────
 
 // isKiroInstalled checks whether Kiro IDE is present on this system or project.
@@ -811,15 +852,28 @@ Gortex is running as an MCP server. It indexes this repository into an in-memory
 | Reading a diff without graph context  | ` + "`diff_context`" + ` — enriches git diff with callers, callees, community, risk |
 | Guessing what context you need next   | ` + "`prefetch_context`" + ` — predicts needed symbols from task + recent activity |
 
+### Multi-Repo Management
+
+| Instead of...                         | Use...                                   |
+|---------------------------------------|------------------------------------------|
+| Manually adding a repo to config      | ` + "`track_repository`" + ` — indexes immediately, persists to config |
+| Manually removing a repo from config  | ` + "`untrack_repository`" + ` — evicts nodes/edges, persists to config |
+| Wondering which project is active     | ` + "`get_active_project`" + ` — returns project name and repo list |
+| Switching project context             | ` + "`set_active_project`" + ` — re-scopes all subsequent queries |
+| Scoping a query to one repo           | Pass ` + "`repo`" + ` param to ` + "`search_symbols`" + `, ` + "`find_usages`" + `, etc. |
+| Scoping a query to a project          | Pass ` + "`project`" + ` param to any query tool |
+| Filtering by reference tag            | Pass ` + "`ref`" + ` param to any query tool |
+
 ## Session workflow
 
 1. Call ` + "`graph_stats`" + ` to confirm Gortex is running. If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with path ` + "`\".\"`" + `.
-2. For a new task, call ` + "`smart_context`" + ` with the task description.
-3. Before editing any file, call ` + "`get_editing_context`" + ` first.
-4. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations.
-5. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
-6. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run.
-7. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
+2. In multi-repo mode, call ` + "`get_active_project`" + ` to check scope. Use ` + "`set_active_project`" + ` to switch if needed.
+3. For a new task, call ` + "`smart_context`" + ` with the task description.
+4. Before editing any file, call ` + "`get_editing_context`" + ` first.
+5. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations — checks callers across all repos.
+6. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
+7. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run (includes cross-repo test files).
+8. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
 `
 
 const kiroSteeringExplore = `---

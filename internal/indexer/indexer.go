@@ -41,6 +41,10 @@ type Indexer struct {
 	rootPath string
 	logger   *zap.Logger
 
+	// repoPrefix is set in multi-repo mode to prefix all file paths and node IDs.
+	// When empty, the indexer operates in single-repo mode (backward compatible).
+	repoPrefix string
+
 	// Mtime tracking and parse error retention for index health diagnostics.
 	parseErrors   []IndexError
 	fileMtimes    map[string]int64
@@ -70,6 +74,42 @@ func (idx *Indexer) Search() search.Backend { return idx.search }
 
 // RootPath returns the root path used for relative path computation.
 func (idx *Indexer) RootPath() string { return idx.rootPath }
+
+// SetRepoPrefix sets the repository prefix for multi-repo mode.
+// When non-empty, all node IDs and file paths are prefixed with "<repoPrefix>/".
+func (idx *Indexer) SetRepoPrefix(prefix string) { idx.repoPrefix = prefix }
+
+// RepoPrefix returns the current repository prefix.
+func (idx *Indexer) RepoPrefix() string { return idx.repoPrefix }
+
+// prefixPath prepends the repoPrefix to a relative path when in multi-repo mode.
+// Returns the path unchanged when repoPrefix is empty.
+func (idx *Indexer) prefixPath(relPath string) string {
+	if idx.repoPrefix == "" {
+		return relPath
+	}
+	return idx.repoPrefix + "/" + relPath
+}
+
+// applyRepoPrefix transforms nodes and edges produced by an extractor to include
+// the repo prefix in IDs and file paths. Sets Node.RepoPrefix on all nodes.
+// This is a no-op when repoPrefix is empty (single-repo mode).
+func (idx *Indexer) applyRepoPrefix(nodes []*graph.Node, edges []*graph.Edge) {
+	if idx.repoPrefix == "" {
+		return
+	}
+	prefix := idx.repoPrefix + "/"
+	for _, n := range nodes {
+		n.ID = prefix + n.ID
+		n.FilePath = prefix + n.FilePath
+		n.RepoPrefix = idx.repoPrefix
+	}
+	for _, e := range edges {
+		e.From = prefix + e.From
+		e.To = prefix + e.To
+		e.FilePath = prefix + e.FilePath
+	}
+}
 
 // Index walks root and populates the graph using a concurrent worker pool.
 func (idx *Indexer) Index(root string) (*IndexResult, error) {
@@ -172,6 +212,7 @@ func (idx *Indexer) Index(root string) (*IndexResult, error) {
 			continue
 		}
 		fileCount++
+		idx.applyRepoPrefix(fr.nodes, fr.edges)
 		for _, n := range fr.nodes {
 			idx.graph.AddNode(n)
 		}
@@ -244,13 +285,16 @@ func (idx *Indexer) IndexFile(filePath string) error {
 		relPath = filePath
 	}
 
+	// In multi-repo mode, the graph stores prefixed file paths.
+	graphPath := idx.prefixPath(relPath)
+
 	// Evict existing data for this file (graph + search).
-	for _, n := range idx.graph.GetFileNodes(relPath) {
+	for _, n := range idx.graph.GetFileNodes(graphPath) {
 		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
 			idx.search.Remove(n.ID)
 		}
 	}
-	idx.graph.EvictFile(relPath)
+	idx.graph.EvictFile(graphPath)
 
 	src, err := os.ReadFile(absPath)
 	if err != nil {
@@ -271,6 +315,8 @@ func (idx *Indexer) IndexFile(filePath string) error {
 		return err
 	}
 
+	idx.applyRepoPrefix(result.Nodes, result.Edges)
+
 	for _, n := range result.Nodes {
 		idx.graph.AddNode(n)
 	}
@@ -286,9 +332,9 @@ func (idx *Indexer) IndexFile(filePath string) error {
 		}
 	}
 
-	idx.resolver.ResolveFile(relPath)
+	idx.resolver.ResolveFile(graphPath)
 
-	// Update mtime for this file.
+	// Update mtime for this file (uses raw relPath for disk-based tracking).
 	if info, err := os.Stat(absPath); err == nil {
 		idx.mtimeMu.Lock()
 		idx.fileMtimes[filepath.ToSlash(relPath)] = info.ModTime().UnixNano()
@@ -304,13 +350,15 @@ func (idx *Indexer) EvictFile(filePath string) (int, int) {
 	if err != nil {
 		relPath = filePath
 	}
+	// In multi-repo mode, the graph stores prefixed file paths.
+	graphPath := idx.prefixPath(relPath)
 	// Remove from search index.
-	for _, n := range idx.graph.GetFileNodes(relPath) {
+	for _, n := range idx.graph.GetFileNodes(graphPath) {
 		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
 			idx.search.Remove(n.ID)
 		}
 	}
-	return idx.graph.EvictFile(relPath)
+	return idx.graph.EvictFile(graphPath)
 }
 
 // buildSearchIndex populates the search backend from the current graph.

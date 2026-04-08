@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/query"
 )
@@ -16,6 +17,108 @@ func isCompact(req mcp.CallToolRequest) bool {
 		return v
 	}
 	return false
+}
+
+// resolveRepoFilter resolves the optional repo/project/ref params into a set
+// of allowed repo prefixes. Returns nil when no filtering is needed (all repos).
+// When an active project is set and no explicit filter is provided, the active
+// project scope is applied as the default.
+func (s *Server) resolveRepoFilter(req mcp.CallToolRequest) (map[string]bool, error) {
+	repo := req.GetString("repo", "")
+	project := req.GetString("project", "")
+	ref := req.GetString("ref", "")
+
+	// Apply active project as default scope when no explicit filter is provided.
+	if repo == "" && project == "" && ref == "" && s.activeProject != "" {
+		project = s.activeProject
+	}
+
+	if repo == "" && project == "" && ref == "" {
+		return nil, nil // no filter — search all repos
+	}
+
+	// Direct repo filter — just that one prefix.
+	if repo != "" {
+		return map[string]bool{repo: true}, nil
+	}
+
+	// Resolve project/ref via ConfigManager.
+	if s.configManager == nil {
+		return nil, fmt.Errorf("configuration manager is not available")
+	}
+
+	gc := s.configManager.Global()
+
+	var entries []config.RepoEntry
+	if project != "" {
+		repos, err := gc.ResolveRepos(project)
+		if err != nil {
+			return nil, err
+		}
+		entries = repos
+	} else {
+		// ref without project — collect all repos from all projects.
+		for _, proj := range gc.Projects {
+			entries = append(entries, proj.Repos...)
+		}
+		// Also include top-level repos.
+		entries = append(entries, gc.Repos...)
+	}
+
+	// Apply ref filter if set.
+	allowed := make(map[string]bool)
+	for _, e := range entries {
+		if ref != "" && e.Ref != ref {
+			continue
+		}
+		allowed[config.ResolvePrefix(e)] = true
+	}
+
+	return allowed, nil
+}
+
+// filterNodes returns only nodes whose RepoPrefix is in the allowed set.
+// If allowed is nil, returns the original slice unchanged.
+func filterNodes(nodes []*graph.Node, allowed map[string]bool) []*graph.Node {
+	if allowed == nil {
+		return nodes
+	}
+	var out []*graph.Node
+	for _, n := range nodes {
+		if allowed[n.RepoPrefix] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// filterSubGraph returns a new SubGraph with only nodes/edges whose endpoints
+// are in the allowed repo set. If allowed is nil, returns sg unchanged.
+func filterSubGraph(sg *query.SubGraph, allowed map[string]bool) *query.SubGraph {
+	if allowed == nil {
+		return sg
+	}
+	nodeIDs := make(map[string]bool)
+	var nodes []*graph.Node
+	for _, n := range sg.Nodes {
+		if allowed[n.RepoPrefix] {
+			nodes = append(nodes, n)
+			nodeIDs[n.ID] = true
+		}
+	}
+	var edges []*graph.Edge
+	for _, e := range sg.Edges {
+		if nodeIDs[e.From] || nodeIDs[e.To] {
+			edges = append(edges, e)
+		}
+	}
+	return &query.SubGraph{
+		Nodes:      nodes,
+		Edges:      edges,
+		TotalNodes: len(nodes),
+		TotalEdges: len(edges),
+		Truncated:  sg.Truncated,
+	}
 }
 
 // compactNodes formats nodes as one-line-per-symbol text.
@@ -60,6 +163,9 @@ func (s *Server) registerCoreTools() {
 			mcp.WithDescription("Use instead of Read to locate a function, type, interface, or variable definition. Returns location and signature without reading the whole file."),
 			mcp.WithString("id", mcp.Required(), mcp.Description("Node ID (e.g. pkg/server.go::HandleRequest)")),
 			mcp.WithString("detail", mcp.Description("brief or full (default: brief)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
 		),
 		s.handleGetSymbol,
 	)
@@ -70,6 +176,9 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("query", mcp.Required(), mcp.Description("Search query — can be symbol name, concept, or multiple keywords")),
 			mcp.WithNumber("limit", mcp.Description("Max results (default: 20)")),
 			mcp.WithBoolean("compact", mcp.Description("Return one-line-per-result text instead of JSON objects (saves 50-70% tokens)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
 		),
 		s.handleSearchSymbols,
 	)
@@ -79,6 +188,9 @@ func (s *Server) registerCoreTools() {
 			mcp.WithDescription("Use instead of Read to understand a file's role: returns all its symbols and imports without reading source lines."),
 			mcp.WithString("file_path", mcp.Required(), mcp.Description("Relative file path")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
 		),
 		s.handleGetFileSummary,
 	)
@@ -112,6 +224,9 @@ func (s *Server) registerCoreTools() {
 			mcp.WithNumber("depth", mcp.Description("Traversal depth (default: 4)")),
 			mcp.WithNumber("limit", mcp.Description("Max nodes (default: 50)")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
 		),
 		s.handleGetCallChain,
 	)
@@ -141,6 +256,9 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("id", mcp.Required(), mcp.Description("Node ID")),
 			mcp.WithNumber("limit", mcp.Description("Max nodes (default: 50)")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
 		),
 		s.handleFindUsages,
 	)
@@ -192,6 +310,16 @@ func (s *Server) handleGetSymbol(_ context.Context, req mcp.CallToolRequest) (*m
 	if node == nil {
 		return mcp.NewToolResultError("symbol not found: " + id), nil
 	}
+
+	// Apply repo/project/ref filter.
+	allowed, filterErr := s.resolveRepoFilter(req)
+	if filterErr != nil {
+		return mcp.NewToolResultError(filterErr.Error()), nil
+	}
+	if allowed != nil && !allowed[node.RepoPrefix] {
+		return mcp.NewToolResultError("symbol not found in specified scope: " + id), nil
+	}
+
 	s.session.recordSymbol(id)
 
 	detail := req.GetString("detail", "brief")
@@ -218,6 +346,13 @@ func (s *Server) handleSearchSymbols(_ context.Context, req mcp.CallToolRequest)
 
 	s.session.recordSearch(q)
 	nodes := s.engine.SearchSymbols(q, limit+10)
+
+	// Apply repo/project/ref filter.
+	allowed, filterErr := s.resolveRepoFilter(req)
+	if filterErr != nil {
+		return mcp.NewToolResultError(filterErr.Error()), nil
+	}
+	nodes = filterNodes(nodes, allowed)
 
 	if isCompact(req) {
 		if len(nodes) > limit {
@@ -254,6 +389,17 @@ func (s *Server) handleGetFileSummary(_ context.Context, req mcp.CallToolRequest
 	if len(sg.Nodes) == 0 {
 		return mcp.NewToolResultError("no symbols found for file: " + fp), nil
 	}
+
+	// Apply repo/project/ref filter.
+	allowed, filterErr := s.resolveRepoFilter(req)
+	if filterErr != nil {
+		return mcp.NewToolResultError(filterErr.Error()), nil
+	}
+	sg = filterSubGraph(sg, allowed)
+	if len(sg.Nodes) == 0 {
+		return mcp.NewToolResultError("no symbols found for file in specified scope: " + fp), nil
+	}
+
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}
@@ -305,6 +451,14 @@ func (s *Server) handleGetCallChain(_ context.Context, req mcp.CallToolRequest) 
 		Detail: "brief",
 	}
 	sg := s.engine.GetCallChain(id, opts)
+
+	// Apply repo/project/ref filter.
+	allowed, filterErr := s.resolveRepoFilter(req)
+	if filterErr != nil {
+		return mcp.NewToolResultError(filterErr.Error()), nil
+	}
+	sg = filterSubGraph(sg, allowed)
+
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}
@@ -350,6 +504,14 @@ func (s *Server) handleFindUsages(_ context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("id is required"), nil
 	}
 	sg := s.engine.FindUsages(id)
+
+	// Apply repo/project/ref filter.
+	allowed, filterErr := s.resolveRepoFilter(req)
+	if filterErr != nil {
+		return mcp.NewToolResultError(filterErr.Error()), nil
+	}
+	sg = filterSubGraph(sg, allowed)
+
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}
@@ -374,5 +536,18 @@ func (s *Server) handleGetCluster(_ context.Context, req mcp.CallToolRequest) (*
 }
 
 func (s *Server) handleGraphStats(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultJSON(s.engine.Stats())
+	stats := s.engine.Stats()
+	result := map[string]any{
+		"total_nodes": stats.TotalNodes,
+		"total_edges": stats.TotalEdges,
+		"by_kind":     stats.ByKind,
+		"by_language": stats.ByLanguage,
+	}
+
+	// Include per-repo stats when in multi-repo mode.
+	if s.multiIndexer != nil && s.multiIndexer.IsMultiRepo() {
+		result["per_repo"] = s.graph.RepoStats()
+	}
+
+	return mcp.NewToolResultJSON(result)
 }

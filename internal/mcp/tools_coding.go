@@ -119,6 +119,8 @@ func (s *Server) registerCodingTools() {
 			mcp.WithString("task", mcp.Required(), mcp.Description("Natural language description of what you want to do (e.g. 'add a new MCP tool called list_files')")),
 			mcp.WithString("entry_point", mcp.Description("Optional symbol ID or file path to start from")),
 			mcp.WithNumber("max_symbols", mcp.Description("Max symbols to include source for (default: 5)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 		),
 		s.handleSmartContext,
 	)
@@ -1032,6 +1034,13 @@ func (s *Server) handleSmartContext(_ context.Context, req mcp.CallToolRequest) 
 		}
 	}
 
+	// 3b. Apply repo/project filter to relevant symbols.
+	allowed, filterErr := s.resolveRepoFilter(req)
+	if filterErr != nil {
+		return mcp.NewToolResultError(filterErr.Error()), nil
+	}
+	relevantSymbols = filterNodes(relevantSymbols, allowed)
+
 	// 4. Limit to top N most relevant symbols.
 	if len(relevantSymbols) > maxSymbols {
 		relevantSymbols = relevantSymbols[:maxSymbols]
@@ -1066,6 +1075,41 @@ func (s *Server) handleSmartContext(_ context.Context, req mcp.CallToolRequest) 
 		symbolContexts = append(symbolContexts, entry)
 	}
 	result["relevant_symbols"] = symbolContexts
+
+	// 5b. Include cross-repo dependencies when in multi-repo mode.
+	if s.multiIndexer != nil && s.multiIndexer.IsMultiRepo() {
+		var crossRepoDeps []map[string]any
+		crossSeen := make(map[string]bool)
+		for _, sym := range relevantSymbols {
+			// Check outgoing edges for cross-repo references.
+			outEdges := s.engine.GetOutEdges(sym.ID)
+			for _, e := range outEdges {
+				if !e.CrossRepo || crossSeen[e.To] {
+					continue
+				}
+				crossSeen[e.To] = true
+				targetNode := s.engine.GetSymbol(e.To)
+				if targetNode == nil {
+					continue
+				}
+				dep := map[string]any{
+					"id":          targetNode.ID,
+					"kind":        targetNode.Kind,
+					"name":        targetNode.Name,
+					"file_path":   targetNode.FilePath,
+					"repo_prefix": targetNode.RepoPrefix,
+					"edge_kind":   e.Kind,
+				}
+				if sig, ok := targetNode.Meta["signature"]; ok {
+					dep["signature"] = sig
+				}
+				crossRepoDeps = append(crossRepoDeps, dep)
+			}
+		}
+		if len(crossRepoDeps) > 0 {
+			result["cross_repo_dependencies"] = crossRepoDeps
+		}
+	}
 
 	// 6. If we have an entry point, get its pattern (registration, siblings, tests).
 	if entryNode != nil {

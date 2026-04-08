@@ -66,13 +66,26 @@ Gortex is running as an MCP server. You MUST use graph queries instead of file r
 | Reading a diff without graph context  | `diff_context` — enriches git diff with callers, callees, community, risk |
 | Guessing what context you need next   | `prefetch_context` — predicts needed symbols from task + recent activity |
 
+### Multi-Repo Management
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Manually adding a repo to config      | `track_repository` — indexes immediately, persists to config |
+| Manually removing a repo from config  | `untrack_repository` — evicts nodes/edges, persists to config |
+| Wondering which project is active     | `get_active_project` — returns project name and repo list |
+| Switching project context             | `set_active_project` — re-scopes all subsequent queries |
+| Scoping a query to one repo           | Pass `repo` param to `search_symbols`, `find_usages`, etc. |
+| Scoping a query to a project          | Pass `project` param to any query tool |
+| Filtering by reference tag            | Pass `ref` param to any query tool |
+
 ## Session start
 
-1. Call `graph_stats` to confirm Gortex is running and get repo orientation.
+1. Call `graph_stats` to confirm Gortex is running and get repo orientation. In multi-repo mode, check `per_repo` stats.
 2. If `total_nodes` is 0, call `index_repository` with path `"."`.
-3. For a new task, call `smart_context` with the task description.
-4. For every file you are about to edit, call `get_editing_context` first.
-5. Before changing a function signature, call `verify_change` to catch contract violations.
-6. Before any refactor, call `get_edit_plan` for dependency-ordered file list. Use `batch_edit` to apply atomically.
-7. After editing, call `check_guards` to verify team conventions, then `get_test_targets` for tests to run.
-8. Before committing, call `detect_changes` to verify scope. Use `diff_context` for graph-enriched review.
+3. In multi-repo mode, call `get_active_project` to see which project/repos are in scope. Use `set_active_project` to switch if needed.
+4. For a new task, call `smart_context` with the task description.
+5. For every file you are about to edit, call `get_editing_context` first.
+6. Before changing a function signature, call `verify_change` to catch contract violations — checks callers across all repos.
+7. Before any refactor, call `get_edit_plan` for dependency-ordered file list. Use `batch_edit` to apply atomically.
+8. After editing, call `check_guards` to verify team conventions, then `get_test_targets` for tests to run (includes cross-repo test files).
+9. Before committing, call `detect_changes` to verify scope. Use `diff_context` for graph-enriched review.

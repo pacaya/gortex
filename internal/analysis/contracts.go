@@ -22,15 +22,17 @@ type ContractViolation struct {
 	Line        int    `json:"line"`
 	Kind        string `json:"kind"`        // "caller_mismatch", "interface_violation", "removed_param"
 	Description string `json:"description"`
+	RepoPrefix  string `json:"repo_prefix,omitempty"`
 }
 
 // VerifyResult is the output of contract violation verification.
 type VerifyResult struct {
-	Violations     []ContractViolation `json:"violations"`
-	CheckedCallers int                 `json:"checked_callers"`
-	CheckedImpls   int                 `json:"checked_impls"`
-	Clean          bool                `json:"clean"`
-	Errors         []string            `json:"errors,omitempty"`
+	Violations          []ContractViolation `json:"violations"`
+	CheckedCallers      int                 `json:"checked_callers"`
+	CheckedImpls        int                 `json:"checked_impls"`
+	Clean               bool                `json:"clean"`
+	Errors              []string            `json:"errors,omitempty"`
+	CrossRepoViolations bool                `json:"cross_repo_violations,omitempty"`
 }
 
 // parsedSignature holds the extracted parameter and return type info from a signature string.
@@ -78,6 +80,7 @@ func VerifyChanges(g *graph.Graph, engine *query.Engine, changes []SignatureChan
 					Line:        callerNode.StartLine,
 					Kind:        "caller_mismatch",
 					Description: fmt.Sprintf("parameter count changed from %d to %d in %s", len(oldSig.Params), len(newSig.Params), change.SymbolID),
+					RepoPrefix:  callerNode.RepoPrefix,
 				})
 			} else {
 				// Check for type changes in parameters
@@ -90,6 +93,7 @@ func VerifyChanges(g *graph.Graph, engine *query.Engine, changes []SignatureChan
 							Line:        callerNode.StartLine,
 							Kind:        "caller_mismatch",
 							Description: fmt.Sprintf("parameter %d type changed from %s to %s in %s", i+1, oldSig.Params[i], newSig.Params[i], change.SymbolID),
+							RepoPrefix:  callerNode.RepoPrefix,
 						})
 						break // one violation per caller is enough
 					}
@@ -112,6 +116,7 @@ func VerifyChanges(g *graph.Graph, engine *query.Engine, changes []SignatureChan
 						Line:        callerNode.StartLine,
 						Kind:        "removed_param",
 						Description: fmt.Sprintf("parameter %d (%s) removed from %s", i+1, oldSig.Params[i], change.SymbolID),
+						RepoPrefix:  callerNode.RepoPrefix,
 					})
 				}
 			}
@@ -123,6 +128,21 @@ func VerifyChanges(g *graph.Graph, engine *query.Engine, changes []SignatureChan
 
 	// Deduplicate violations by (SymbolID, Kind, Description)
 	result.Violations = deduplicateViolations(result.Violations)
+
+	// Detect cross-repo violations: check if any violation comes from
+	// a different repo than the changed symbol.
+	changedRepos := make(map[string]bool)
+	for _, change := range changes {
+		if n := g.GetNode(change.SymbolID); n != nil && n.RepoPrefix != "" {
+			changedRepos[n.RepoPrefix] = true
+		}
+	}
+	for _, v := range result.Violations {
+		if v.RepoPrefix != "" && !changedRepos[v.RepoPrefix] {
+			result.CrossRepoViolations = true
+			break
+		}
+	}
 
 	result.Clean = len(result.Violations) == 0
 	return result

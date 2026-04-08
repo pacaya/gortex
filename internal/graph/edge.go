@@ -20,4 +20,5 @@ type Edge struct {
 	FilePath   string   `json:"file_path"`
 	Line       int      `json:"line"`
 	Confidence float64  `json:"confidence,omitempty"`
+	CrossRepo  bool     `json:"cross_repo,omitempty"`
 }

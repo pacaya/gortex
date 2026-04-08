@@ -270,6 +270,52 @@ func (e *Engine) searchSubstring(query string, limit int) []*graph.Node {
 	return out
 }
 
+// SearchSymbolsInRepo performs full-text search filtered to a specific repository.
+func (e *Engine) SearchSymbolsInRepo(query string, repoPrefix string, limit int) []*graph.Node {
+	if limit <= 0 {
+		limit = 20
+	}
+	// Fetch extra results since some will be filtered out.
+	candidates := e.SearchSymbols(query, limit*2)
+	var out []*graph.Node
+	for _, n := range candidates {
+		if n.RepoPrefix == repoPrefix {
+			out = append(out, n)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// GetFileSymbolsInRepo returns all symbols defined in a file, scoped to a specific repository.
+func (e *Engine) GetFileSymbolsInRepo(filePath string, repoPrefix string) *SubGraph {
+	sg := e.GetFileSymbols(filePath)
+	var nodes []*graph.Node
+	for _, n := range sg.Nodes {
+		if n.RepoPrefix == repoPrefix {
+			nodes = append(nodes, n)
+		}
+	}
+	var edges []*graph.Edge
+	nodeSet := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		nodeSet[n.ID] = true
+	}
+	for _, edge := range sg.Edges {
+		if nodeSet[edge.From] || nodeSet[edge.To] {
+			edges = append(edges, edge)
+		}
+	}
+	return &SubGraph{
+		Nodes:      nodes,
+		Edges:      dedup(edges),
+		TotalNodes: len(nodes),
+		TotalEdges: len(edges),
+	}
+}
+
 // AllNodes returns all nodes in the graph.
 func (e *Engine) AllNodes() []*graph.Node {
 	return e.g.AllNodes()

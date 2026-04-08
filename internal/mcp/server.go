@@ -65,18 +65,21 @@ func (sh *symbolHistory) All() map[string][]SymbolModification {
 
 // Server wraps the MCP server with Gortex-specific tools.
 type Server struct {
-	mcpServer   *server.MCPServer
-	engine      *query.Engine
-	graph       *graph.Graph
-	indexer     *indexer.Indexer
-	watcher     *indexer.Watcher
-	logger      *zap.Logger
-	communities *analysis.CommunityResult
-	processes   *analysis.ProcessResult
-	analysisMu  sync.RWMutex
-	session     *sessionState
-	symHistory  *symbolHistory
-	guardRules  []config.GuardRule
+	mcpServer    *server.MCPServer
+	engine       *query.Engine
+	graph        *graph.Graph
+	indexer      *indexer.Indexer
+	watcher      *indexer.Watcher
+	multiIndexer *indexer.MultiIndexer
+	configManager *config.ConfigManager
+	activeProject string
+	logger       *zap.Logger
+	communities  *analysis.CommunityResult
+	processes    *analysis.ProcessResult
+	analysisMu   sync.RWMutex
+	session      *sessionState
+	symHistory   *symbolHistory
+	guardRules   []config.GuardRule
 }
 
 // sessionState tracks recent agent activity for context recovery after compaction.
@@ -145,8 +148,16 @@ func prependUnique(slice []string, item string, maxLen int) []string {
 	return slice
 }
 
+// MultiRepoOptions holds optional multi-repo components for the Server.
+// When nil or zero-valued, the server operates in single-repo mode.
+type MultiRepoOptions struct {
+	MultiIndexer  *indexer.MultiIndexer
+	ConfigManager *config.ConfigManager
+	ActiveProject string
+}
+
 // NewServer creates an MCP server with all Gortex tools registered.
-func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watcher *indexer.Watcher, logger *zap.Logger, guardRules []config.GuardRule) *Server {
+func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watcher *indexer.Watcher, logger *zap.Logger, guardRules []config.GuardRule, opts ...MultiRepoOptions) *Server {
 	s := &Server{
 		mcpServer: server.NewMCPServer("gortex", Version,
 			server.WithToolCapabilities(false),
@@ -163,12 +174,27 @@ func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watch
 		},
 		guardRules: guardRules,
 	}
+
+	// Apply multi-repo options if provided.
+	if len(opts) > 0 {
+		o := opts[0]
+		s.multiIndexer = o.MultiIndexer
+		s.configManager = o.ConfigManager
+		s.activeProject = o.ActiveProject
+	}
+
 	s.registerCoreTools()
 	s.registerCodingTools()
 	s.registerAnalysisTools()
 	s.registerEnhancementTools()
 	s.registerResources()
 	s.registerPrompts()
+
+	// Register multi-repo tools when multi-repo components are available.
+	if s.multiIndexer != nil || s.configManager != nil {
+		s.registerMultiRepoTools()
+	}
+
 	return s
 }
 

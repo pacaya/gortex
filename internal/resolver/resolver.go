@@ -72,27 +72,52 @@ func (r *Resolver) resolveEdge(e *graph.Edge, stats *ResolveStats) {
 }
 
 func (r *Resolver) resolveImport(e *graph.Edge, importPath string, stats *ResolveStats) {
+	callerRepo := r.callerRepoPrefix(e)
+
 	// Look for a package node with matching qualified name.
 	node := r.graph.GetNodeByQualName(importPath)
 	if node != nil {
 		e.To = node.ID
+		if callerRepo != "" && node.RepoPrefix != "" && node.RepoPrefix != callerRepo {
+			e.CrossRepo = true
+		}
 		stats.Resolved++
 		return
 	}
 
 	// Look for file nodes whose directory matches the import path suffix.
-	// This handles in-repo packages.
+	// This handles in-repo packages. Prefer same-repo, then cross-repo.
 	candidates := r.graph.AllNodes()
+	var sameRepo *graph.Node
+	var crossRepoNode *graph.Node
 	for _, n := range candidates {
 		if n.Kind != graph.KindFile {
 			continue
 		}
 		dir := filepath.Dir(n.FilePath)
 		if strings.HasSuffix(dir, lastPathComponent(importPath)) || dir == importPath {
-			e.To = n.ID
-			stats.Resolved++
-			return
+			if callerRepo == "" || n.RepoPrefix == callerRepo {
+				sameRepo = n
+				break
+			}
+			if crossRepoNode == nil {
+				crossRepoNode = n
+			}
 		}
+	}
+
+	if sameRepo != nil {
+		e.To = sameRepo.ID
+		stats.Resolved++
+		return
+	}
+	if crossRepoNode != nil {
+		e.To = crossRepoNode.ID
+		if callerRepo != "" && crossRepoNode.RepoPrefix != "" && crossRepoNode.RepoPrefix != callerRepo {
+			e.CrossRepo = true
+		}
+		stats.Resolved++
+		return
 	}
 
 	// External/unresolvable import — create a stub target ID.
@@ -120,10 +145,14 @@ func (r *Resolver) resolveFunctionCall(e *graph.Edge, funcName string, stats *Re
 		}
 	}
 
-	// Fall back to first function match.
+	// Fall back to first function match (may be cross-repo).
+	callerRepo := r.callerRepoPrefix(e)
 	for _, c := range candidates {
 		if c.Kind == graph.KindFunction || c.Kind == graph.KindMethod {
 			e.To = c.ID
+			if callerRepo != "" && c.RepoPrefix != "" && c.RepoPrefix != callerRepo {
+				e.CrossRepo = true
+			}
 			stats.Resolved++
 			return
 		}
@@ -269,4 +298,13 @@ func lastPathComponent(path string) string {
 		return path
 	}
 	return parts[len(parts)-1]
+}
+
+// callerRepoPrefix returns the RepoPrefix of the node that owns the edge's From field.
+func (r *Resolver) callerRepoPrefix(e *graph.Edge) string {
+	fromNode := r.graph.GetNode(e.From)
+	if fromNode != nil {
+		return fromNode.RepoPrefix
+	}
+	return ""
 }

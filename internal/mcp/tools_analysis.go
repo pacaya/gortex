@@ -227,6 +227,12 @@ func (s *Server) handleEnhancedChangeImpact(_ context.Context, req mcp.CallToolR
 		"affected_communities": impact.AffectedCommunities,
 		"test_files":           impact.TestFiles,
 		"total_affected":       impact.TotalAffected,
+		"cross_repo_impact":    impact.CrossRepoImpact,
+	}
+
+	// Include per-repo grouping when cross-repo impact is detected.
+	if impact.CrossRepoImpact {
+		result["by_repo"] = impact.ByRepo
 	}
 
 	// Cross-community warning

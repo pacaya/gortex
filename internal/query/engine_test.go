@@ -183,6 +183,93 @@ func TestBriefModeStripsMeta(t *testing.T) {
 	}
 }
 
+// buildMultiRepoTestGraph creates a graph with nodes from two repos for testing repo-scoped queries.
+func buildMultiRepoTestGraph() *graph.Graph {
+	g := graph.New()
+
+	nodes := []*graph.Node{
+		{ID: "repoA/main.go::main", Kind: graph.KindFunction, Name: "main", FilePath: "repoA/main.go", Language: "go", RepoPrefix: "repoA", StartLine: 1, EndLine: 10},
+		{ID: "repoA/pkg/util.go::Helper", Kind: graph.KindFunction, Name: "Helper", FilePath: "repoA/pkg/util.go", Language: "go", RepoPrefix: "repoA", StartLine: 1, EndLine: 5},
+		{ID: "repoB/lib.go::Helper", Kind: graph.KindFunction, Name: "Helper", FilePath: "repoB/lib.go", Language: "go", RepoPrefix: "repoB", StartLine: 1, EndLine: 8},
+		{ID: "repoB/lib.go::Process", Kind: graph.KindFunction, Name: "Process", FilePath: "repoB/lib.go", Language: "go", RepoPrefix: "repoB", StartLine: 10, EndLine: 20},
+	}
+	for _, n := range nodes {
+		g.AddNode(n)
+	}
+
+	edges := []*graph.Edge{
+		{From: "repoA/main.go::main", To: "repoA/pkg/util.go::Helper", Kind: graph.EdgeCalls, FilePath: "repoA/main.go", Line: 5},
+		{From: "repoA/main.go::main", To: "repoB/lib.go::Process", Kind: graph.EdgeCalls, FilePath: "repoA/main.go", Line: 7, CrossRepo: true},
+		{From: "repoB/lib.go::Process", To: "repoB/lib.go::Helper", Kind: graph.EdgeCalls, FilePath: "repoB/lib.go", Line: 12},
+	}
+	for _, e := range edges {
+		g.AddEdge(e)
+	}
+
+	return g
+}
+
+func TestSearchSymbolsInRepo(t *testing.T) {
+	g := buildMultiRepoTestGraph()
+	e := NewEngine(g)
+
+	// Search for "Helper" scoped to repoA — should only return repoA's Helper.
+	results := e.SearchSymbolsInRepo("Helper", "repoA", 10)
+	require.Len(t, results, 1)
+	assert.Equal(t, "repoA/pkg/util.go::Helper", results[0].ID)
+
+	// Search for "Helper" scoped to repoB — should only return repoB's Helper.
+	results = e.SearchSymbolsInRepo("Helper", "repoB", 10)
+	require.Len(t, results, 1)
+	assert.Equal(t, "repoB/lib.go::Helper", results[0].ID)
+
+	// Search for "Process" scoped to repoA — should return nothing.
+	results = e.SearchSymbolsInRepo("Process", "repoA", 10)
+	assert.Empty(t, results)
+
+	// Search for a non-existent repo — should return nothing.
+	results = e.SearchSymbolsInRepo("Helper", "repoC", 10)
+	assert.Empty(t, results)
+}
+
+func TestSearchSymbolsInRepo_Limit(t *testing.T) {
+	g := buildMultiRepoTestGraph()
+	e := NewEngine(g)
+
+	// With limit=1, should return at most 1 result.
+	results := e.SearchSymbolsInRepo("Helper", "repoA", 1)
+	assert.Len(t, results, 1)
+}
+
+func TestGetFileSymbolsInRepo(t *testing.T) {
+	g := buildMultiRepoTestGraph()
+	e := NewEngine(g)
+
+	// Get symbols for repoB/lib.go scoped to repoB.
+	sg := e.GetFileSymbolsInRepo("repoB/lib.go", "repoB")
+	assert.Len(t, sg.Nodes, 2) // Helper and Process
+	ids := nodeIDs(sg.Nodes)
+	assert.Contains(t, ids, "repoB/lib.go::Helper")
+	assert.Contains(t, ids, "repoB/lib.go::Process")
+
+	// Get symbols for repoB/lib.go scoped to repoA — should return nothing.
+	sg = e.GetFileSymbolsInRepo("repoB/lib.go", "repoA")
+	assert.Empty(t, sg.Nodes)
+
+	// Get symbols for a non-existent file — should return empty.
+	sg = e.GetFileSymbolsInRepo("nonexistent.go", "repoA")
+	assert.Empty(t, sg.Nodes)
+}
+
+func TestGetFileSymbolsInRepo_Edges(t *testing.T) {
+	g := buildMultiRepoTestGraph()
+	e := NewEngine(g)
+
+	// Edges should be included when at least one endpoint is in the filtered set.
+	sg := e.GetFileSymbolsInRepo("repoB/lib.go", "repoB")
+	assert.Greater(t, len(sg.Edges), 0)
+}
+
 func nodeIDs(nodes []*graph.Node) []string {
 	ids := make([]string, len(nodes))
 	for i, n := range nodes {

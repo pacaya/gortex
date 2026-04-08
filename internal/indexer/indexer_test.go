@@ -3,6 +3,7 @@ package indexer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -274,4 +275,151 @@ func Foo() {}
 	assert.Greater(t, n, 0)
 	assert.Greater(t, e, 0)
 	assert.Empty(t, g.FindNodesByName("Foo"))
+}
+
+func TestIndex_WithRepoPrefix(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.go"), `package main
+
+func Hello() {}
+`)
+
+	g := graph.New()
+	idx := newTestIndexer(g)
+	idx.SetRepoPrefix("myrepo")
+
+	result, err := idx.Index(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.FileCount)
+	assert.Greater(t, result.NodeCount, 0)
+
+	// Verify node IDs are prefixed.
+	nodes := g.FindNodesByName("Hello")
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "myrepo/main.go::Hello", nodes[0].ID)
+	assert.Equal(t, "myrepo/main.go", nodes[0].FilePath)
+	assert.Equal(t, "myrepo", nodes[0].RepoPrefix)
+
+	// Verify file node is also prefixed.
+	fileNodes := g.GetFileNodes("myrepo/main.go")
+	assert.NotEmpty(t, fileNodes)
+
+	// Verify repo index is populated.
+	repoNodes := g.GetRepoNodes("myrepo")
+	assert.NotEmpty(t, repoNodes)
+	for _, n := range repoNodes {
+		assert.Equal(t, "myrepo", n.RepoPrefix)
+	}
+}
+
+func TestIndex_WithoutRepoPrefix_BackwardCompatible(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.go"), `package main
+
+func Hello() {}
+`)
+
+	g := graph.New()
+	idx := newTestIndexer(g)
+	// No SetRepoPrefix — single-repo mode.
+
+	result, err := idx.Index(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.FileCount)
+
+	nodes := g.FindNodesByName("Hello")
+	require.Len(t, nodes, 1)
+	assert.Equal(t, "main.go::Hello", nodes[0].ID)
+	assert.Equal(t, "main.go", nodes[0].FilePath)
+	assert.Equal(t, "", nodes[0].RepoPrefix)
+}
+
+func TestIndexFile_WithRepoPrefix(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "main.go")
+	writeFile(t, filePath, `package main
+
+func Original() {}
+`)
+
+	g := graph.New()
+	idx := newTestIndexer(g)
+	idx.SetRepoPrefix("myrepo")
+
+	_, err := idx.Index(dir)
+	require.NoError(t, err)
+
+	origNodes := g.FindNodesByName("Original")
+	require.Len(t, origNodes, 1)
+	assert.Equal(t, "myrepo/main.go::Original", origNodes[0].ID)
+	assert.Equal(t, "myrepo", origNodes[0].RepoPrefix)
+
+	// Modify and re-index single file.
+	writeFile(t, filePath, `package main
+
+func Replaced() {}
+`)
+	require.NoError(t, idx.IndexFile(filePath))
+
+	assert.Empty(t, g.FindNodesByName("Original"))
+	replaced := g.FindNodesByName("Replaced")
+	require.Len(t, replaced, 1)
+	assert.Equal(t, "myrepo/main.go::Replaced", replaced[0].ID)
+	assert.Equal(t, "myrepo", replaced[0].RepoPrefix)
+}
+
+func TestEvictFile_WithRepoPrefix(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.go"), `package main
+
+func Foo() {}
+`)
+
+	g := graph.New()
+	idx := newTestIndexer(g)
+	idx.SetRepoPrefix("myrepo")
+
+	_, err := idx.Index(dir)
+	require.NoError(t, err)
+	require.NotEmpty(t, g.FindNodesByName("Foo"))
+
+	n, e := idx.EvictFile(filepath.Join(dir, "main.go"))
+	assert.Greater(t, n, 0)
+	assert.Greater(t, e, 0)
+	assert.Empty(t, g.FindNodesByName("Foo"))
+}
+
+func TestRepoPrefix_EdgesArePrefixed(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "main.go"), `package main
+
+func Hello() {}
+`)
+
+	g := graph.New()
+	idx := newTestIndexer(g)
+	idx.SetRepoPrefix("myrepo")
+
+	_, err := idx.Index(dir)
+	require.NoError(t, err)
+
+	// All edges should have prefixed From/To and FilePath.
+	edges := g.AllEdges()
+	for _, e := range edges {
+		assert.True(t, strings.HasPrefix(e.From, "myrepo/"),
+			"edge From should be prefixed: %s", e.From)
+		assert.True(t, strings.HasPrefix(e.To, "myrepo/"),
+			"edge To should be prefixed: %s", e.To)
+		assert.True(t, strings.HasPrefix(e.FilePath, "myrepo/"),
+			"edge FilePath should be prefixed: %s", e.FilePath)
+	}
+}
+
+func TestRepoPrefix_SetterGetter(t *testing.T) {
+	g := graph.New()
+	idx := newTestIndexer(g)
+
+	assert.Equal(t, "", idx.RepoPrefix())
+	idx.SetRepoPrefix("myrepo")
+	assert.Equal(t, "myrepo", idx.RepoPrefix())
 }

@@ -19,12 +19,18 @@ type GuardsConfig struct {
 	Rules []GuardRule `mapstructure:"rules"`
 }
 
+// WorkspaceConfig holds workspace-level settings for multi-repo support.
+type WorkspaceConfig struct {
+	AutoDetect bool `mapstructure:"auto_detect" yaml:"auto_detect"`
+}
+
 type Config struct {
-	Index  IndexConfig  `mapstructure:"index"`
-	Watch  WatchConfig  `mapstructure:"watch"`
-	Query  QueryConfig  `mapstructure:"query"`
-	MCP    MCPConfig    `mapstructure:"mcp"`
-	Guards GuardsConfig `mapstructure:"guards"`
+	Index     IndexConfig     `mapstructure:"index"`
+	Watch     WatchConfig     `mapstructure:"watch"`
+	Query     QueryConfig     `mapstructure:"query"`
+	MCP       MCPConfig       `mapstructure:"mcp"`
+	Guards    GuardsConfig    `mapstructure:"guards"`
+	Workspace WorkspaceConfig `mapstructure:"workspace" yaml:"workspace,omitempty"`
 }
 
 type IndexConfig struct {
@@ -75,6 +81,9 @@ func Default() *Config {
 		MCP: MCPConfig{
 			Transport: "stdio",
 			Port:      8765,
+		},
+		Workspace: WorkspaceConfig{
+			AutoDetect: false,
 		},
 	}
 }

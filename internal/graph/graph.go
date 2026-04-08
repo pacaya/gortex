@@ -18,6 +18,7 @@ type Graph struct {
 	byFile   map[string][]*Node
 	byName   map[string][]*Node
 	byQual   map[string]*Node
+	byRepo   map[string][]*Node // repoPrefix → nodes
 	mu       sync.RWMutex
 }
 
@@ -30,6 +31,7 @@ func New() *Graph {
 		byFile:   make(map[string][]*Node),
 		byName:   make(map[string][]*Node),
 		byQual:   make(map[string]*Node),
+		byRepo:   make(map[string][]*Node),
 	}
 }
 
@@ -42,6 +44,9 @@ func (g *Graph) AddNode(n *Node) {
 	g.byName[n.Name] = append(g.byName[n.Name], n)
 	if n.QualName != "" {
 		g.byQual[n.QualName] = n
+	}
+	if n.RepoPrefix != "" {
+		g.byRepo[n.RepoPrefix] = append(g.byRepo[n.RepoPrefix], n)
 	}
 }
 
@@ -134,6 +139,13 @@ func (g *Graph) EvictFile(filePath string) (nodesRemoved, edgesRemoved int) {
 		g.byName[n.Name] = removeNode(g.byName[n.Name], n.ID)
 		if len(g.byName[n.Name]) == 0 {
 			delete(g.byName, n.Name)
+		}
+		// Remove from byRepo index.
+		if n.RepoPrefix != "" {
+			g.byRepo[n.RepoPrefix] = removeNode(g.byRepo[n.RepoPrefix], n.ID)
+			if len(g.byRepo[n.RepoPrefix]) == 0 {
+				delete(g.byRepo, n.RepoPrefix)
+			}
 		}
 	}
 	delete(g.byFile, filePath)
@@ -252,6 +264,157 @@ func (g *Graph) Stats() GraphStats {
 		ByKind:     byKind,
 		ByLanguage: byLang,
 	}
+}
+
+// GetRepoNodes returns all nodes belonging to the given repository prefix.
+func (g *Graph) GetRepoNodes(repoPrefix string) []*Node {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	src := g.byRepo[repoPrefix]
+	out := make([]*Node, len(src))
+	copy(out, src)
+	return out
+}
+
+// EvictRepo removes all nodes with matching RepoPrefix and all edges
+// referencing those nodes. Returns counts of removed nodes and edges.
+func (g *Graph) EvictRepo(repoPrefix string) (nodesRemoved, edgesRemoved int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	nodes := g.byRepo[repoPrefix]
+	if len(nodes) == 0 {
+		return 0, 0
+	}
+
+	// Collect IDs and file paths of nodes being evicted.
+	evictedIDs := make(map[string]bool, len(nodes))
+	evictedFiles := make(map[string]bool)
+	for _, n := range nodes {
+		evictedIDs[n.ID] = true
+		evictedFiles[n.FilePath] = true
+	}
+
+	// Remove nodes from all indexes.
+	for _, n := range nodes {
+		delete(g.nodes, n.ID)
+		if n.QualName != "" {
+			delete(g.byQual, n.QualName)
+		}
+		g.byName[n.Name] = removeNode(g.byName[n.Name], n.ID)
+		if len(g.byName[n.Name]) == 0 {
+			delete(g.byName, n.Name)
+		}
+		g.byFile[n.FilePath] = removeNode(g.byFile[n.FilePath], n.ID)
+		if len(g.byFile[n.FilePath]) == 0 {
+			delete(g.byFile, n.FilePath)
+		}
+	}
+	delete(g.byRepo, repoPrefix)
+	nodesRemoved = len(nodes)
+
+	// Remove edges that reference evicted nodes.
+	edgesRemoved = g.evictEdgesForNodes(evictedIDs)
+
+	return nodesRemoved, edgesRemoved
+}
+
+// evictEdgesForNodes removes edges where either endpoint is in evictedIDs.
+// Must be called under write lock.
+func (g *Graph) evictEdgesForNodes(evictedIDs map[string]bool) int {
+	removed := 0
+
+	for nodeID, edges := range g.outEdges {
+		filtered := edges[:0]
+		for _, e := range edges {
+			if evictedIDs[e.From] || evictedIDs[e.To] {
+				removed++
+			} else {
+				filtered = append(filtered, e)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(g.outEdges, nodeID)
+		} else {
+			g.outEdges[nodeID] = filtered
+		}
+	}
+
+	for nodeID, edges := range g.inEdges {
+		filtered := edges[:0]
+		for _, e := range edges {
+			if evictedIDs[e.From] || evictedIDs[e.To] {
+				// Already counted in outEdges pass; just filter.
+			} else {
+				filtered = append(filtered, e)
+			}
+		}
+		if len(filtered) == 0 {
+			delete(g.inEdges, nodeID)
+		} else {
+			g.inEdges[nodeID] = filtered
+		}
+	}
+
+	return removed
+}
+
+// RepoStats returns per-repository node and edge counts.
+func (g *Graph) RepoStats() map[string]GraphStats {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	stats := make(map[string]GraphStats, len(g.byRepo))
+
+	// Count nodes per repo.
+	repoNodes := make(map[string]map[string]int)  // repo → byKind
+	repoLangs := make(map[string]map[string]int)   // repo → byLanguage
+	repoNodeCount := make(map[string]int)
+	for prefix, nodes := range g.byRepo {
+		repoNodeCount[prefix] = len(nodes)
+		byKind := make(map[string]int)
+		byLang := make(map[string]int)
+		for _, n := range nodes {
+			byKind[string(n.Kind)]++
+			if n.Language != "" {
+				byLang[n.Language]++
+			}
+		}
+		repoNodes[prefix] = byKind
+		repoLangs[prefix] = byLang
+	}
+
+	// Count edges per repo (by the From node's repo).
+	repoEdgeCount := make(map[string]int)
+	for _, edges := range g.outEdges {
+		for _, e := range edges {
+			if fromNode, ok := g.nodes[e.From]; ok && fromNode.RepoPrefix != "" {
+				repoEdgeCount[fromNode.RepoPrefix]++
+			}
+		}
+	}
+
+	for prefix := range g.byRepo {
+		stats[prefix] = GraphStats{
+			TotalNodes: repoNodeCount[prefix],
+			TotalEdges: repoEdgeCount[prefix],
+			ByKind:     repoNodes[prefix],
+			ByLanguage: repoLangs[prefix],
+		}
+	}
+
+	return stats
+}
+
+// RepoPrefixes returns a list of unique repository prefixes in the graph.
+func (g *Graph) RepoPrefixes() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	prefixes := make([]string, 0, len(g.byRepo))
+	for prefix := range g.byRepo {
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
 }
 
 func removeNode(nodes []*Node, id string) []*Node {

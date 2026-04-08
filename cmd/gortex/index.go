@@ -22,9 +22,9 @@ var (
 )
 
 var indexCmd = &cobra.Command{
-	Use:   "index [path]",
-	Short: "Index a repository and print stats",
-	Args:  cobra.MaximumNArgs(1),
+	Use:   "index [path...]",
+	Short: "Index one or more repositories and print stats",
+	Args:  cobra.MinimumNArgs(0),
 	RunE:  runIndex,
 }
 
@@ -41,9 +41,10 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	logger := newLogger()
 	defer func() { _ = logger.Sync() }()
 
-	path := "."
-	if len(args) > 0 {
-		path = args[0]
+	// Default to current directory if no paths given.
+	paths := args
+	if len(paths) == 0 {
+		paths = []string{"."}
 	}
 
 	cfg, err := config.Load(cfgFile)
@@ -58,34 +59,41 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		cfg.Index.Exclude = append(cfg.Index.Exclude, indexExclude...)
 	}
 
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
+	// Index each path as a separate repository.
+	for _, path := range paths {
+		g := graph.New()
+		reg := parser.NewRegistry()
+		languages.RegisterAll(reg)
 
-	idx := indexer.New(g, reg, cfg.Index, logger)
-	result, err := idx.Index(path)
-	if err != nil {
-		return err
-	}
+		idx := indexer.New(g, reg, cfg.Index, logger)
+		result, err := idx.Index(path)
+		if err != nil {
+			return fmt.Errorf("indexing %s: %w", path, err)
+		}
 
-	switch indexOutput {
-	case "json":
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
-	default:
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Indexed %d files in %dms\n", result.FileCount, result.DurationMs)
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Nodes: %d\n", result.NodeCount)
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Edges: %d\n", result.EdgeCount)
-		if len(result.Errors) > 0 {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Errors: %d\n", len(result.Errors))
-			for _, e := range result.Errors {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "    %s: %s\n", e.FilePath, e.Error)
+		switch indexOutput {
+		case "json":
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(result); err != nil {
+				return err
+			}
+		default:
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Indexed %s: %d files in %dms\n", path, result.FileCount, result.DurationMs)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Nodes: %d\n", result.NodeCount)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Edges: %d\n", result.EdgeCount)
+			if len(result.Errors) > 0 {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Errors: %d\n", len(result.Errors))
+				for _, e := range result.Errors {
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "    %s: %s\n", e.FilePath, e.Error)
+				}
 			}
 		}
-		if indexWatch {
-			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[gortex] watch mode not yet implemented")
-		}
 	}
+
+	if indexWatch {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "[gortex] watch mode not yet implemented")
+	}
+
 	return nil
 }

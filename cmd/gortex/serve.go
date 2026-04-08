@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,8 @@ var (
 	serveWatch     bool
 	serveWeb       bool
 	serveDebounce  int
+	serveTrack     []string
+	serveProject   string
 )
 
 var serveCmd = &cobra.Command{
@@ -42,6 +45,8 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveWatch, "watch", false, "keep graph in sync with filesystem changes")
 	serveCmd.Flags().BoolVar(&serveWeb, "web", false, "start web visualization UI")
 	serveCmd.Flags().IntVar(&serveDebounce, "debounce", 150, "debounce delay in ms")
+	serveCmd.Flags().StringSliceVar(&serveTrack, "track", nil, "additional repository paths to track")
+	serveCmd.Flags().StringVar(&serveProject, "project", "", "active project name")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -60,13 +65,59 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	idx := indexer.New(g, reg, cfg.Index, logger)
 
+	// Initialize ConfigManager for multi-repo support.
+	cm, err := config.NewConfigManager("")
+	if err != nil {
+		// Non-fatal: fall back to single-repo mode.
+		fmt.Fprintf(os.Stderr, "[gortex] warning: could not load global config: %v\n", err)
+	}
+
+	// Add --track repos to GlobalConfig.
+	if cm != nil && len(serveTrack) > 0 {
+		for _, trackPath := range serveTrack {
+			absPath, err := filepath.Abs(trackPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[gortex] warning: could not resolve --track path %s: %v\n", trackPath, err)
+				continue
+			}
+			// Skip duplicates.
+			if err := cm.Global().AddRepo(config.RepoEntry{Path: absPath}); err != nil {
+				fmt.Fprintf(os.Stderr, "[gortex] warning: could not add --track repo %s: %v\n", absPath, err)
+			}
+		}
+	}
+
+	// Determine active project.
+	activeProject := serveProject
+	if activeProject == "" && cm != nil {
+		activeProject = cm.Global().ActiveProject
+	}
+	if cm != nil {
+		cm.Global().ActiveProject = activeProject
+	}
+
+	// Initialize MultiIndexer when we have a ConfigManager.
+	var mi *indexer.MultiIndexer
+	if cm != nil {
+		mi = indexer.NewMultiIndexer(g, reg, idx.Search(), cm, logger)
+	}
+
+	// Build multi-repo options for the MCP server.
+	var multiOpts []gortexmcp.MultiRepoOptions
+	if mi != nil || cm != nil {
+		multiOpts = append(multiOpts, gortexmcp.MultiRepoOptions{
+			MultiIndexer:  mi,
+			ConfigManager: cm,
+			ActiveProject: activeProject,
+		})
+	}
+
 	// Create MCP server immediately so the stdio handshake can complete
 	// before indexing (which may take time on large repos).
 	eng := query.NewEngine(g)
 	eng.SetSearch(idx.Search())
 	gortexmcp.Version = version
-	// Watcher is set later via srv.SetWatcher after background init.
-	srv := gortexmcp.NewServer(eng, g, idx, nil, logger, cfg.Guards.Rules)
+	srv := gortexmcp.NewServer(eng, g, idx, nil, logger, cfg.Guards.Rules, multiOpts...)
 
 	fmt.Fprintf(os.Stderr, "[gortex] MCP server ready (transport: %s)\n", serveTransport)
 

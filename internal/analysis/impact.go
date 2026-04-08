@@ -19,11 +19,12 @@ const (
 
 // ImpactEntry is a symbol affected at a specific depth.
 type ImpactEntry struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	FilePath string `json:"file_path"`
-	Line     int    `json:"start_line"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	FilePath   string `json:"file_path"`
+	Line       int    `json:"start_line"`
+	RepoPrefix string `json:"repo_prefix,omitempty"`
 }
 
 // ImpactResult is the output of risk-tiered impact analysis.
@@ -35,6 +36,8 @@ type ImpactResult struct {
 	AffectedCommunities []string              `json:"affected_communities,omitempty"`
 	TestFiles           []string              `json:"test_files,omitempty"`
 	TotalAffected       int                   `json:"total_affected"`
+	CrossRepoImpact     bool                  `json:"cross_repo_impact,omitempty"`
+	ByRepo              map[string][]ImpactEntry `json:"by_repo,omitempty"`
 }
 
 // AnalyzeImpact performs depth-tiered blast radius analysis on a set of symbols.
@@ -71,11 +74,12 @@ func AnalyzeImpact(g *graph.Graph, symbolIDs []string, communities *CommunityRes
 				}
 
 				result.ByDepth[depth] = append(result.ByDepth[depth], ImpactEntry{
-					ID:       n.ID,
-					Name:     n.Name,
-					Kind:     string(n.Kind),
-					FilePath: n.FilePath,
-					Line:     n.StartLine,
+					ID:         n.ID,
+					Name:       n.Name,
+					Kind:       string(n.Kind),
+					FilePath:   n.FilePath,
+					Line:       n.StartLine,
+					RepoPrefix: n.RepoPrefix,
 				})
 
 				if isTestFile(n.FilePath) {
@@ -146,6 +150,27 @@ func AnalyzeImpact(g *graph.Graph, symbolIDs []string, communities *CommunityRes
 		"%d direct dependents, %d transitively affected, %d test files, risk: %s",
 		d1, result.TotalAffected, len(result.TestFiles), result.Risk,
 	)
+
+	// Group affected symbols by RepoPrefix and detect cross-repo impact.
+	repoSet := make(map[string]bool)
+	byRepo := make(map[string][]ImpactEntry)
+	for _, id := range symbolIDs {
+		if n := g.GetNode(id); n != nil && n.RepoPrefix != "" {
+			repoSet[n.RepoPrefix] = true
+		}
+	}
+	for depth := 1; depth <= 3; depth++ {
+		for _, entry := range result.ByDepth[depth] {
+			if entry.RepoPrefix != "" {
+				repoSet[entry.RepoPrefix] = true
+				byRepo[entry.RepoPrefix] = append(byRepo[entry.RepoPrefix], entry)
+			}
+		}
+	}
+	if len(repoSet) > 1 {
+		result.CrossRepoImpact = true
+		result.ByRepo = byRepo
+	}
 
 	return result
 }
