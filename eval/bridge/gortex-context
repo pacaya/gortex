@@ -12,7 +12,7 @@ max_symbols="${3:-5}"
 
 if [ -z "$task" ]; then
     echo "Usage: gortex-context <task_description> [entry_point] [max_symbols]"
-    echo "Get 360° context for a task: relevant symbols, source, callers, callees, edit plan."
+    echo "Get compact context for a task: relevant files, symbols, relationships."
     echo ""
     echo "Examples:"
     echo '  gortex-context "fix authentication timeout bug"'
@@ -35,6 +35,8 @@ if [ "$server_ok" = true ] && [ -n "$response" ]; then
     if command -v jq &>/dev/null; then
         echo "=== Smart Context: $task ==="
         echo ""
+        # Extract the text content from the MCP response, then parse the inner
+        # JSON and produce a compact summary — dropping source code to save tokens.
         echo "$response" | jq -r '
             if .content then
                 .content[] | select(.type == "text") | .text
@@ -43,7 +45,63 @@ if [ "$server_ok" = true ] && [ -n "$response" ]; then
             else
                 tostring
             end
-        ' 2>/dev/null || echo "$response"
+        ' 2>/dev/null | jq -r '
+            # Parse the smart_context JSON blob and produce compact output.
+            if type != "object" then . else
+
+            # Files to edit
+            (if .files_to_edit then
+                "Files to edit:\n" + (.files_to_edit | map("  " + .) | join("\n"))
+            else empty end),
+
+            # Relevant symbols (compact: signature only, no source)
+            (if .relevant_symbols then
+                "\nRelevant symbols:\n" + (
+                    .relevant_symbols | map(
+                        "  " + .kind + " " + .name + " " + .file_path + ":" + (.start_line // 0 | tostring)
+                        + (if .signature then " — " + .signature else "" end)
+                    ) | join("\n")
+                )
+            else empty end),
+
+            # Callers
+            (if .callers then
+                "\nCallers:\n" + (.callers | map("  " + .) | join("\n"))
+            else empty end),
+
+            # Callees
+            (if .callees then
+                "\nCallees:\n" + (.callees | map("  " + .) | join("\n"))
+            else empty end),
+
+            # Related test files
+            (if .related_test_files and (.related_test_files | length) > 0 then
+                "\nTest files:\n" + (.related_test_files | map("  " + .) | join("\n"))
+            else empty end),
+
+            # Cross-repo deps (compact)
+            (if .cross_repo_dependencies then
+                "\nCross-repo deps:\n" + (
+                    .cross_repo_dependencies | map(
+                        "  " + .edge_kind + " " + .name + " (" + .repo_prefix + ")"
+                    ) | join("\n")
+                )
+            else empty end),
+
+            # Keywords used
+            (if .keywords then
+                "\nKeywords: " + (.keywords | join(", "))
+            else empty end)
+
+            end
+        ' 2>/dev/null || {
+            # If inner jq parse fails (non-JSON text), just print the raw text
+            echo "$response" | jq -r '
+                if .content then
+                    .content[] | select(.type == "text") | .text
+                else tostring end
+            ' 2>/dev/null || echo "$response"
+        }
     else
         echo "=== Smart Context: $task ==="
         echo ""
