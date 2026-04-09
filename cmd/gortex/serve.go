@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zzet/gortex/internal/bridge"
 	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/indexer"
@@ -22,14 +23,16 @@ import (
 )
 
 var (
-	serveIndex     string
-	serveTransport string
-	servePort      int
-	serveWatch     bool
-	serveWeb       bool
-	serveDebounce  int
-	serveTrack     []string
-	serveProject   string
+	serveIndex      string
+	serveTransport  string
+	servePort       int
+	serveWatch      bool
+	serveWeb        bool
+	serveBridge     bool
+	serveCORSOrigin string
+	serveDebounce   int
+	serveTrack      []string
+	serveProject    string
 )
 
 var serveCmd = &cobra.Command{
@@ -45,6 +48,8 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveWatch, "watch", false, "keep graph in sync with filesystem changes")
 	serveCmd.Flags().BoolVar(&serveWeb, "web", false, "start web visualization UI")
 	serveCmd.Flags().IntVar(&serveDebounce, "debounce", 150, "debounce delay in ms")
+	serveCmd.Flags().BoolVar(&serveBridge, "bridge", false, "start HTTP bridge API alongside MCP stdio")
+	serveCmd.Flags().StringVar(&serveCORSOrigin, "cors-origin", "*", "allowed CORS origin for bridge API")
 	serveCmd.Flags().StringSliceVar(&serveTrack, "track", nil, "additional repository paths to track")
 	serveCmd.Flags().StringVar(&serveProject, "project", "", "active project name")
 	rootCmd.AddCommand(serveCmd)
@@ -120,6 +125,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 	srv := gortexmcp.NewServer(eng, g, idx, nil, logger, cfg.Guards.Rules, multiOpts...)
 
 	fmt.Fprintf(os.Stderr, "[gortex] MCP server ready (transport: %s)\n", serveTransport)
+
+	// Start bridge HTTP API if requested.
+	if serveBridge {
+		bridgeHandler := bridge.NewHandler(srv.MCPServer(), g, version, logger)
+		corsOpts := bridge.CORSOptions{AllowOrigins: []string{serveCORSOrigin}}
+		handler := bridge.WithCORS(bridgeHandler, corsOpts)
+		go func() {
+			bridgeAddr := fmt.Sprintf(":%d", servePort)
+			fmt.Fprintf(os.Stderr, "[gortex] bridge API at http://localhost:%d\n", servePort)
+			if err := http.ListenAndServe(bridgeAddr, handler); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "[gortex] bridge server error: %v\n", err)
+			}
+		}()
+	}
 
 	// Start MCP stdio in a goroutine so we can do background init.
 	errCh := make(chan error, 1)

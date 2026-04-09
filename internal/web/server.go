@@ -55,6 +55,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// Handler returns the HTTP handler for the web UI, allowing it to be
+// composed with other handlers (e.g. bridge) on a shared ServeMux.
+func (s *Server) Handler() http.Handler { return s.handler() }
+
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 

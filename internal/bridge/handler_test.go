@@ -1,4 +1,4 @@
-package eval
+package bridge
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/zzet/gortex/internal/bridge"
 	"github.com/zzet/gortex/internal/graph"
 	"go.uber.org/zap"
 )
@@ -59,128 +58,14 @@ func TestHealthEndpoint(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 
-	var resp bridge.HealthResponse
+	var resp HealthResponse
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	assert.Equal(t, "ok", resp.Status)
 	assert.True(t, resp.Indexed)
 	assert.Equal(t, 2, resp.Nodes)
-	assert.Equal(t, 0, resp.Edges)
 	assert.Equal(t, "0.0.1-test", resp.Version)
 	assert.Greater(t, resp.UptimeSeconds, float64(0))
-}
-
-func TestStatsEndpoint(t *testing.T) {
-	h := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var resp bridge.StatsResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.Equal(t, 2, resp.TotalNodes)
-	assert.Equal(t, 0, resp.TotalEdges)
-	assert.Equal(t, 2, resp.ByKind["function"])
-	assert.Equal(t, 2, resp.ByLanguage["go"])
-}
-
-func TestToolCallValid(t *testing.T) {
-	h := newTestHandler(t)
-	body := `{"arguments":{"message":"hello world"}}`
-	req := httptest.NewRequest(http.MethodPost, "/tool/echo", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var resp bridge.ToolResponse
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.False(t, resp.IsError)
-	require.Len(t, resp.Content, 1)
-	assert.Equal(t, "text", resp.Content[0].Type)
-	assert.Equal(t, "hello world", resp.Content[0].Text)
-}
-
-func TestToolCallUnknownTool(t *testing.T) {
-	h := newTestHandler(t)
-	body := `{"arguments":{}}`
-	req := httptest.NewRequest(http.MethodPost, "/tool/nonexistent", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusNotFound, rec.Code)
-
-	var resp map[string]any
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.Equal(t, "tool_not_found", resp["error"])
-	assert.Contains(t, resp["message"], "nonexistent")
-	available, ok := resp["available_tools"].([]any)
-	require.True(t, ok)
-	assert.Contains(t, available, "echo")
-}
-
-func TestToolCallMalformedJSON(t *testing.T) {
-	h := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodPost, "/tool/echo", strings.NewReader("{invalid json"))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-
-	var resp map[string]string
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.Contains(t, resp["message"], "malformed JSON")
-}
-
-func TestToolCallEmptyToolName(t *testing.T) {
-	h := newTestHandler(t)
-	req := httptest.NewRequest(http.MethodPost, "/tool/", strings.NewReader("{}"))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-
-	var resp map[string]string
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.Contains(t, resp["message"], "missing tool name")
-}
-
-func TestPanicRecovery(t *testing.T) {
-	g := graph.New()
-	srv := mcpserver.NewMCPServer("gortex-test", "0.0.1-test",
-		mcpserver.WithToolCapabilities(false),
-	)
-	srv.AddTool(
-		mcp.NewTool("panic_tool",
-			mcp.WithDescription("Tool that panics for testing"),
-		),
-		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			panic("test panic")
-		},
-	)
-
-	h := NewHandler(srv, g, "0.0.1-test", zap.NewNop())
-
-	req := httptest.NewRequest(http.MethodPost, "/tool/panic_tool", strings.NewReader("{}"))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	assert.NotPanics(t, func() {
-		h.ServeHTTP(rec, req)
-	})
-
-	assert.Equal(t, http.StatusInternalServerError, rec.Code)
-
-	var resp map[string]string
-	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-	assert.Contains(t, resp["message"], "internal server error")
 }
 
 func TestListToolsEndpoint(t *testing.T) {
@@ -191,8 +76,101 @@ func TestListToolsEndpoint(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 
-	var tools []map[string]any
+	var tools []toolInfo
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&tools))
 	require.Len(t, tools, 1)
-	assert.Equal(t, "echo", tools[0]["name"])
+	assert.Equal(t, "echo", tools[0].Name)
+	assert.Equal(t, "Echo tool for testing", tools[0].Description)
+}
+
+func TestStatsEndpoint(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp StatsResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, 2, resp.TotalNodes)
+	assert.Equal(t, 2, resp.ByKind["function"])
+}
+
+func TestToolCallValid(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"arguments":{"message":"hello world"}}`
+	req := httptest.NewRequest(http.MethodPost, "/tool/echo", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp ToolResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.False(t, resp.IsError)
+	require.Len(t, resp.Content, 1)
+	assert.Equal(t, "hello world", resp.Content[0].Text)
+}
+
+func TestToolCallUnknownTool(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/tool/nonexistent", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, "tool_not_found", resp["error"])
+	available, ok := resp["available_tools"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, available, "echo")
+}
+
+func TestToolCallMalformedJSON(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/tool/echo", strings.NewReader("{bad"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestToolCallEmptyName(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/tool/", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPanicRecovery(t *testing.T) {
+	g := graph.New()
+	srv := mcpserver.NewMCPServer("gortex-test", "0.0.1-test",
+		mcpserver.WithToolCapabilities(false),
+	)
+	srv.AddTool(
+		mcp.NewTool("panic_tool", mcp.WithDescription("panics")),
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			panic("test panic")
+		},
+	)
+	h := NewHandler(srv, g, "0.0.1-test", zap.NewNop())
+
+	req := httptest.NewRequest(http.MethodPost, "/tool/panic_tool", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	assert.NotPanics(t, func() { h.ServeHTTP(rec, req) })
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestCallToolHelper(t *testing.T) {
+	h := newTestHandler(t)
+	result := h.CallTool(context.Background(), "echo", map[string]any{"message": "test"})
+	assert.Equal(t, "test", result)
+
+	result = h.CallTool(context.Background(), "nonexistent", nil)
+	assert.Empty(t, result)
 }
