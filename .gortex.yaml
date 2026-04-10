@@ -18,6 +18,8 @@ index:
     - ".git"
     - ".claude/worktrees/**"
     - "results/**"
+    - "web/node_modules/**"
+    - "web/.next/**"
   workers: 8
 
 watch:
@@ -30,7 +32,8 @@ watch:
     - "**/*.swp"
     - "**/.git/**"
     - "**/node_modules/**"
-    - ".venv"
+    - "**/.next/**"
+    - "**/.venv/**"
     - "venv"
     - "env"
     - ".pyenv"

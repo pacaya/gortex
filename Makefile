@@ -46,6 +46,21 @@ install:
 	go install -ldflags '$(LDFLAGS)' ./cmd/gortex/
 
 # ---------------------------------------------------------------------------
+# Web UI (Next.js)
+# ---------------------------------------------------------------------------
+
+.PHONY: install-ui dev-ui build-ui
+
+install-ui:
+	cd web && npm install
+
+dev-ui:
+	cd web && npm run dev
+
+build-ui:
+	cd web && npm run build
+
+# ---------------------------------------------------------------------------
 # Embedding backend dependencies
 # ---------------------------------------------------------------------------
 
