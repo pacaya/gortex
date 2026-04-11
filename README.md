@@ -14,11 +14,15 @@ Built for AI coding agents (Claude Code, Kiro, Cursor, Windsurf, Copilot, Contin
 - **Knowledge graph** — every file, symbol, import, call chain, and type relationship in one queryable structure
 - **Multi-repo workspaces** — index multiple repositories into a single graph with cross-repo symbol resolution, project grouping, reference tags, and per-repo scoping
 - **33 languages** — Go, TypeScript, JavaScript, Python, Rust, Java, C#, Kotlin, Swift, Scala, PHP, Ruby, Elixir, C, C++, Dart, OCaml, Lua, Zig, Haskell, Clojure, Erlang, R, Bash/Zsh, SQL, Protobuf, Markdown, HTML, CSS, YAML, TOML, HCL/Terraform, Dockerfile
-- **48 MCP tools** — symbol lookup, call chains, blast radius, community detection, process discovery, contract detection, cycle detection, dead code analysis, scaffolding, inline editing, symbol renaming, multi-repo management, and 18 agent-optimized tools
+- **51 MCP tools** — symbol lookup, call chains, blast radius, community detection, process discovery, contract detection, cycle detection, dead code analysis, scaffolding, inline editing, symbol renaming, multi-repo management, agent feedback loop, context export, and 18 agent-optimized tools
 - **Semantic search** — hybrid BM25 + vector search with RRF fusion. Built-in GloVe word vectors for offline use, or connect to Ollama/OpenAI for transformer-quality embeddings. Build tags for ONNX, GoMLX, and Hugot offline transformer backends
 - **Type-aware resolution** — infers receiver types from variable declarations, composite literals, and Go constructor conventions to disambiguate same-named methods across types
 - **On-disk persistence** — snapshots the graph on shutdown, restores on startup with incremental re-indexing of only changed files (~200ms vs 3-5s full re-index)
 - **Bridge Mode** — HTTP/JSON API exposing all MCP tools for IDE plugins, CI tools, and web UIs with CORS support and tool discovery endpoint
+- **Semantic enrichment** — pluggable SCIP, go/types, and LSP providers upgrade edge confidence from ~70-85% (tree-sitter) to 95-100% (compiler-verified). Additive — graceful degradation when external tools unavailable
+- **Agent feedback loop** — `record_feedback` + `query_feedback` tools let agents report which symbols were useful/missing. Cross-session persistence improves future `smart_context` quality via feedback-aware reranking
+- **Context export** — `export_context` tool + `gortex context` CLI render graph context as portable markdown/JSON briefings for sharing outside MCP (Slack, PRs, docs, non-MCP AI tools)
+- **ETag conditional fetch** — content-hash based `if_none_match` on source-reading tools avoids re-transmitting unchanged symbols during iterative editing
 - **Token savings tracking** — per-call `tokens_saved` field on source-reading tools + session-level metrics in `graph_stats` (calls counted, tokens returned, tokens saved, efficiency ratio)
 - **7 MCP resources** — lightweight graph context without tool calls
 - **3 MCP prompts** — `pre_commit`, `orientation`, `safe_to_change` for guided workflows
@@ -203,6 +207,7 @@ gortex serve [flags]         Start the MCP server (--bridge to add HTTP API)
 gortex bridge [flags]        Start standalone HTTP bridge API
 gortex eval-server [flags]   Start eval HTTP server for benchmarking
 gortex skills [path]         Generate per-community SKILL.md files
+gortex context [flags]       Generate portable context briefing for a task
 gortex index [path...]       Index one or more repositories and print stats
 gortex status [flags]        Show index status (per-repo and per-project in multi-repo mode)
 gortex track <path>          Add a repository to the tracked workspace
@@ -228,7 +233,7 @@ gortex query stats                      Show graph statistics
 
 All query commands support `--format text|json|dot` (DOT output for Graphviz visualization).
 
-## MCP Tools (48)
+## MCP Tools (51)
 
 ### Core Navigation
 | Tool | Description |
@@ -269,6 +274,9 @@ All query commands support `--format text|json|dot` (DOT output for Graphviz vis
 | `get_edit_plan` | Dependency-ordered edit sequence for multi-file refactors |
 | `get_test_targets` | Maps changed symbols to test files and run commands |
 | `suggest_pattern` | Extracts code pattern from an example — source, registration, tests |
+| `export_context` | Portable markdown/JSON context briefing for sharing outside MCP |
+| `record_feedback` | Report which symbols were useful/missing — improves future context quality |
+| `query_feedback` | Aggregated feedback stats: most useful, most missed, accuracy metrics |
 
 ### Analysis
 | Tool | Description |

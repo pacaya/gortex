@@ -67,6 +67,15 @@ Gortex is running as an MCP server. You MUST use graph queries instead of file r
 | Sequencing multi-file edits yourself  | `batch_edit` — applies edits in dependency order, re-indexes between steps |
 | Reading a diff without graph context  | `diff_context` — enriches git diff with callers, callees, community, risk |
 | Guessing what context you need next   | `prefetch_context` — predicts needed symbols from task + recent activity |
+| Sharing context outside MCP           | `export_context` — portable markdown/JSON briefing for Slack, PRs, docs |
+
+### Agent Learning
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Accepting all context suggestions     | `record_feedback` — report useful/not_needed/missing symbols after a task |
+| Wondering which symbols matter most   | `query_feedback` — aggregated stats: most useful, most missed, accuracy |
+| Re-fetching unchanged symbol source   | Pass `if_none_match` with previous `etag` to get `not_modified` (saves tokens) |
 
 ### API Contracts
 
@@ -98,3 +107,4 @@ Gortex is running as an MCP server. You MUST use graph queries instead of file r
 7. Before any refactor, call `get_edit_plan` for dependency-ordered file list. Use `batch_edit` to apply atomically.
 8. After editing, call `check_guards` to verify team conventions, then `get_test_targets` for tests to run (includes cross-repo test files).
 9. Before committing, call `detect_changes` to verify scope. Use `diff_context` for graph-enriched review.
+10. After completing a task, call `record_feedback` to report which symbols from `smart_context` were useful, not needed, or missing. This improves future context quality.
