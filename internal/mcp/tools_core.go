@@ -596,5 +596,13 @@ func (s *Server) handleGraphStats(_ context.Context, _ mcp.CallToolRequest) (*mc
 	// Include session-level token savings.
 	result["token_savings"] = s.tokenStats.snapshot()
 
+	// Include semantic enrichment stats.
+	if s.semanticMgr != nil && s.semanticMgr.Enabled() {
+		result["semantic"] = map[string]any{
+			"enabled":   true,
+			"providers": s.semanticMgr.Stats(),
+		}
+	}
+
 	return mcp.NewToolResultJSON(result)
 }

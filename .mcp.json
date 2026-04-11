@@ -7,7 +7,8 @@
         "--index", ".",
         "--watch",
         "--web",
-        "--embeddings"
+        "--embeddings",
+        "--semantic"
       ],
       "env": {
         "GORTEX_INDEX_WORKERS": "${GORTEX_WORKERS:-8}"

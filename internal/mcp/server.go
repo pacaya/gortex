@@ -14,6 +14,7 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/indexer"
 	"github.com/zzet/gortex/internal/query"
+	"github.com/zzet/gortex/internal/semantic"
 	"github.com/zzet/gortex/internal/web/hub"
 )
 
@@ -84,6 +85,7 @@ type Server struct {
 	tokenStats   *tokenStats
 	guardRules       []config.GuardRule
 	contractRegistry *contracts.Registry
+	semanticMgr      *semantic.Manager
 }
 
 // sessionState tracks recent agent activity for context recovery after compaction.
@@ -301,6 +303,16 @@ func (s *Server) MCPServer() *server.MCPServer {
 // SetContractRegistry sets the contract registry for the MCP server.
 func (s *Server) SetContractRegistry(r *contracts.Registry) {
 	s.contractRegistry = r
+}
+
+// SetSemanticManager sets the semantic enrichment manager for the MCP server.
+func (s *Server) SetSemanticManager(m *semantic.Manager) {
+	s.semanticMgr = m
+}
+
+// SemanticManager returns the semantic enrichment manager.
+func (s *Server) SemanticManager() *semantic.Manager {
+	return s.semanticMgr
 }
 
 // SetWatcher sets the watcher after background initialization and registers

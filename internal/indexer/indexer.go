@@ -19,6 +19,7 @@ import (
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/resolver"
 	"github.com/zzet/gortex/internal/search"
+	"github.com/zzet/gortex/internal/semantic"
 )
 
 // IndexResult holds the outcome of an indexing operation.
@@ -59,6 +60,9 @@ type Indexer struct {
 
 	// embedder is the optional embedding provider for semantic search.
 	embedder embedding.Provider
+
+	// semanticMgr is the optional semantic enrichment manager.
+	semanticMgr *semantic.Manager
 
 	// Mtime tracking and parse error retention for index health diagnostics.
 	parseErrors   []IndexError
@@ -107,6 +111,13 @@ func (idx *Indexer) RepoPrefix() string { return idx.repoPrefix }
 // SetEmbedder sets the embedding provider for semantic search.
 // When set, buildSearchIndex will create a HybridBackend with vector search.
 func (idx *Indexer) SetEmbedder(p embedding.Provider) { idx.embedder = p }
+
+// SetSemanticManager sets the semantic enrichment manager.
+// When set, the indexer runs semantic enrichment after resolution.
+func (idx *Indexer) SetSemanticManager(m *semantic.Manager) { idx.semanticMgr = m }
+
+// SemanticManager returns the semantic enrichment manager.
+func (idx *Indexer) SemanticManager() *semantic.Manager { return idx.semanticMgr }
 
 // ExportVectorIndex returns the serialized vector index bytes, dims, and count.
 // Returns nil, 0, 0 if no vector index is active.
@@ -316,6 +327,26 @@ func (idx *Indexer) Index(root string) (*IndexResult, error) {
 
 	// Infer structural interface satisfaction.
 	idx.resolver.InferImplements()
+
+	// Semantic enrichment (SCIP, go/types, LSP).
+	if idx.semanticMgr != nil && idx.semanticMgr.Enabled() && idx.semanticMgr.HasProviders() {
+		roots := map[string]string{"default": absRoot}
+		results, err := idx.semanticMgr.EnrichAll(idx.graph, roots)
+		if err != nil {
+			idx.logger.Warn("semantic enrichment failed", zap.Error(err))
+		} else if len(results) > 0 {
+			for _, r := range results {
+				idx.logger.Info("semantic enrichment result",
+					zap.String("provider", r.Provider),
+					zap.String("language", r.Language),
+					zap.Int("confirmed", r.EdgesConfirmed),
+					zap.Int("added", r.EdgesAdded),
+					zap.Int("refuted", r.EdgesRefuted),
+					zap.Float64("coverage", r.CoveragePercent),
+				)
+			}
+		}
+	}
 
 	// Build search index.
 	idx.buildSearchIndex()

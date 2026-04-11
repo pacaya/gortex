@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +22,10 @@ import (
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/parser/languages"
 	"github.com/zzet/gortex/internal/query"
+	"github.com/zzet/gortex/internal/semantic"
+	"github.com/zzet/gortex/internal/semantic/goanalysis"
+	"github.com/zzet/gortex/internal/semantic/lsp"
+	"github.com/zzet/gortex/internal/semantic/scip"
 	"github.com/zzet/gortex/internal/web"
 	"github.com/zzet/gortex/internal/web/hub"
 )
@@ -41,6 +46,9 @@ var (
 	serveEmbeddings    bool
 	serveEmbeddingsURL string
 	serveEmbeddingsModel string
+	serveSemantic      bool
+	serveNoSemantic    bool
+	serveSemanticMode  string
 )
 
 var serveCmd = &cobra.Command{
@@ -65,6 +73,9 @@ func init() {
 	serveCmd.Flags().BoolVar(&serveEmbeddings, "embeddings", false, "enable semantic search (built-in word vectors or transformer if compiled in)")
 	serveCmd.Flags().StringVar(&serveEmbeddingsURL, "embeddings-url", "", "embedding API URL (e.g. http://localhost:11434 for Ollama)")
 	serveCmd.Flags().StringVar(&serveEmbeddingsModel, "embeddings-model", "", "embedding model name (default: auto-detect)")
+	serveCmd.Flags().BoolVar(&serveSemantic, "semantic", false, "enable semantic enrichment (SCIP, go/types, LSP)")
+	serveCmd.Flags().BoolVar(&serveNoSemantic, "no-semantic", false, "disable semantic enrichment")
+	serveCmd.Flags().StringVar(&serveSemanticMode, "semantic-mode", "typecheck", "Go analysis mode: typecheck or callgraph")
 	rootCmd.AddCommand(serveCmd)
 }
 
@@ -96,6 +107,59 @@ func runServe(cmd *cobra.Command, args []string) error {
 			idx.SetEmbedder(embedder)
 			fmt.Fprintf(os.Stderr, "[gortex] semantic search enabled (local)\n")
 		}
+	}
+
+	// Set up semantic enrichment.
+	if !serveNoSemantic && (serveSemantic || cfg.Semantic.Enabled) {
+		semCfg := cfg.Semantic
+		semCfg.Enabled = true
+
+		// Convert config provider entries to semantic.Config format.
+		semInternalCfg := semantic.Config{
+			Enabled:           semCfg.Enabled,
+			TimeoutSeconds:    semCfg.TimeoutSeconds,
+			EnrichOnWatch:     semCfg.EnrichOnWatch,
+			WatchDebounceMs:   semCfg.WatchDebounceMs,
+			RefuteUnconfirmed: semCfg.RefuteUnconfirmed,
+		}
+		for _, pc := range semCfg.Providers {
+			semInternalCfg.Providers = append(semInternalCfg.Providers, semantic.ProviderConfig{
+				Name:        pc.Name,
+				Command:     pc.Command,
+				Args:        pc.Args,
+				Languages:   pc.Languages,
+				Priority:    pc.Priority,
+				Enabled:     pc.Enabled,
+				Mode:        pc.Mode,
+				Daemon:      pc.Daemon,
+				MaxParallel: pc.MaxParallel,
+			})
+		}
+
+		semMgr := semantic.NewManager(semInternalCfg, logger)
+
+		// Register go/types provider (always available for Go).
+		mode := goanalysis.ModeTypeCheck
+		if serveSemanticMode == "callgraph" {
+			mode = goanalysis.ModeCallGraph
+		}
+		semMgr.RegisterProvider(goanalysis.NewProvider(mode, false, logger))
+
+		// Register SCIP providers from config.
+		for _, pc := range semCfg.Providers {
+			if !pc.Enabled {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(pc.Name, "scip-") && pc.Command != "":
+				semMgr.RegisterProvider(scip.NewProvider(pc.Command, pc.Args, pc.Languages, semCfg.TimeoutSeconds, logger))
+			case strings.HasPrefix(pc.Name, "gopls") || pc.Daemon:
+				semMgr.RegisterProvider(lsp.NewProvider(pc.Command, pc.Args, pc.Languages, pc.Daemon, pc.MaxParallel, logger))
+			}
+		}
+
+		idx.SetSemanticManager(semMgr)
+		fmt.Fprintf(os.Stderr, "[gortex] semantic enrichment enabled (mode: %s)\n", serveSemanticMode)
 	}
 
 	// Initialize ConfigManager for multi-repo support.
@@ -151,6 +215,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	eng.SetSearchProvider(idx.Search)
 	gortexmcp.Version = version
 	srv := gortexmcp.NewServer(eng, g, idx, nil, logger, cfg.Guards.Rules, multiOpts...)
+
+	// Wire semantic manager to MCP server for stats reporting.
+	if semMgr := idx.SemanticManager(); semMgr != nil {
+		srv.SetSemanticManager(semMgr)
+	}
 
 	fmt.Fprintf(os.Stderr, "[gortex] MCP server ready (transport: %s)\n", serveTransport)
 

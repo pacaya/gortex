@@ -230,6 +230,40 @@ func (g *Graph) evictEdges(evictedIDs map[string]bool, _ string) int {
 	return removed
 }
 
+// RemoveEdge removes a specific edge by from, to, and kind.
+// Returns true if the edge was found and removed.
+func (g *Graph) RemoveEdge(from, to string, kind EdgeKind) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// Find the edge in outEdges.
+	outList := g.outEdges[from]
+	var target *Edge
+	for _, e := range outList {
+		if e.To == to && e.Kind == kind {
+			target = e
+			break
+		}
+	}
+	if target == nil {
+		return false
+	}
+
+	// Remove from outEdges.
+	g.outEdges[from] = filterEdge(g.outEdges[from], target)
+	if len(g.outEdges[from]) == 0 {
+		delete(g.outEdges, from)
+	}
+
+	// Remove from inEdges.
+	g.inEdges[to] = filterEdge(g.inEdges[to], target)
+	if len(g.inEdges[to]) == 0 {
+		delete(g.inEdges, to)
+	}
+
+	return true
+}
+
 // filterEdge removes a specific edge pointer from a slice.
 func filterEdge(edges []*Edge, target *Edge) []*Edge {
 	for i, e := range edges {
