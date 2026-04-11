@@ -5,7 +5,7 @@
 
 Code intelligence engine that indexes repositories into an in-memory knowledge graph and exposes it via CLI, MCP Server, and web UI.
 
-Built for AI coding agents (Claude Code, Cursor, Codex) — one `smart_context` call replaces 5-10 file reads, cutting token usage by ~94%.
+Built for AI coding agents (Claude Code, Kiro, Cursor, Windsurf, Copilot, Continue.dev, Cline, Antigravity) — one `smart_context` call replaces 5-10 file reads, cutting token usage by ~94%.
 
 ![Gortex Web UI — force-directed knowledge graph visualization](assets/graph.png)
 
@@ -14,12 +14,13 @@ Built for AI coding agents (Claude Code, Cursor, Codex) — one `smart_context` 
 - **Knowledge graph** — every file, symbol, import, call chain, and type relationship in one queryable structure
 - **Multi-repo workspaces** — index multiple repositories into a single graph with cross-repo symbol resolution, project grouping, reference tags, and per-repo scoping
 - **33 languages** — Go, TypeScript, JavaScript, Python, Rust, Java, C#, Kotlin, Swift, Scala, PHP, Ruby, Elixir, C, C++, Dart, OCaml, Lua, Zig, Haskell, Clojure, Erlang, R, Bash/Zsh, SQL, Protobuf, Markdown, HTML, CSS, YAML, TOML, HCL/Terraform, Dockerfile
-- **48 MCP tools** — symbol lookup, call chains, blast radius, community detection, process discovery, contract detection, cycle detection, dead code analysis, scaffolding, multi-repo management, and 6 agent-optimized tools
+- **48 MCP tools** — symbol lookup, call chains, blast radius, community detection, process discovery, contract detection, cycle detection, dead code analysis, scaffolding, inline editing, symbol renaming, multi-repo management, and 6 agent-optimized tools
 - **Semantic search** — hybrid BM25 + vector search with RRF fusion. Built-in GloVe word vectors for offline use, or connect to Ollama/OpenAI for transformer-quality embeddings. Build tags for ONNX, GoMLX, and Hugot offline transformer backends
 - **Type-aware resolution** — infers receiver types from variable declarations, composite literals, and Go constructor conventions to disambiguate same-named methods across types
 - **On-disk persistence** — snapshots the graph on shutdown, restores on startup with incremental re-indexing of only changed files (~200ms vs 3-5s full re-index)
 - **Bridge Mode** — HTTP/JSON API exposing all MCP tools for IDE plugins, CI tools, and web UIs with CORS support and tool discovery endpoint
-- **6 MCP resources** — lightweight graph context without tool calls
+- **7 MCP resources** — lightweight graph context without tool calls
+- **3 MCP prompts** — `pre_commit`, `orientation`, `safe_to_change` for guided workflows
 - **Two-tier config** — global config (`~/.config/gortex/config.yaml`) for projects and repo lists, per-repo `.gortex.yaml` for guards, excludes, and local overrides
 - **Guard rules** — project-specific constraints (co-change, boundary) enforced via `check_guards`
 - **Watch mode** — surgical graph updates on file change across all tracked repos, live sync with agents
@@ -37,7 +38,7 @@ Built for AI coding agents (Claude Code, Cursor, Codex) — one `smart_context` 
 # Build (requires CGO for tree-sitter C bindings)
 go build -o gortex ./cmd/gortex/
 
-# Set up Gortex for a project (creates configs for Claude Code + Kiro IDE)
+# Set up Gortex for a project (creates configs for Claude Code, Kiro, Cursor, Copilot, Windsurf, Continue.dev, Cline, Antigravity — auto-detects installed tools)
 gortex init /path/to/repo
 
 # Or with codebase analysis for a richer CLAUDE.md
@@ -139,7 +140,7 @@ After running `gortex init`, Claude Code automatically starts Gortex via `.mcp.j
 
 `gortex init` also sets up Kiro IDE integration automatically:
 
-- **MCP server:** `.kiro/settings/mcp.json` — all 44 tools auto-approved for zero-friction use
+- **MCP server:** `.kiro/settings/mcp.json` — 40 read-only tools auto-approved for zero-friction use (write tools like `edit_symbol` and `rename_symbol` require approval)
 - **Steering files:** `.kiro/steering/gortex-workflow.md` (always active) teaches Kiro to prefer graph queries over file reads. Additional manual steering files for explore, debug, impact, and refactor workflows are available via `#` in chat.
 - **Agent hooks:**
   - `gortex-smart-context` — on each prompt, assembles task-relevant context from the graph in one call
@@ -153,6 +154,36 @@ After running `gortex init`, Claude Code automatically starts Gortex via `.mcp.j
 - **Knowledge Item (KI):** Creates a dedicated KI globally in `~/.gemini/antigravity/knowledge/gortex-workflow/`.
 - **Workflow Instructions:** Instructs the Antigravity assistant to prioritize executing AST-aware Gortex CLI queries (`./gortex query symbol`, `./gortex query dependents`) via its built-in terminal tool, overriding generic `grep` and file read routines.
 - **Token Efficiency:** Significantly reduces context token usage by constraining the AI's reads precisely to verified dependency paths and function definitions.
+
+## Usage with Cursor
+
+`gortex init` detects Cursor (via `.cursor/` directory, `~/.cursor/`, or `cursor` in PATH) and creates:
+
+- **MCP config:** `.cursor/mcp.json` — project-level config, committable to the repo so the whole team gets Gortex automatically.
+
+## Usage with VS Code / GitHub Copilot
+
+`gortex init` detects VS Code (via `.vscode/` directory, `code` in PATH, or VS Code app data directories) and creates:
+
+- **MCP config:** `.vscode/mcp.json` — project-level config for Copilot Chat agent mode. All 48 Gortex tools are available in Copilot's agent mode.
+
+## Usage with Windsurf
+
+`gortex init` detects Windsurf (via `windsurf` in PATH or `~/.codeium/windsurf/` directory) and creates:
+
+- **MCP config:** `~/.codeium/windsurf/mcp_config.json` — global config (Windsurf only reads from this location). Merges into existing config without overwriting other servers.
+
+## Usage with Continue.dev
+
+`gortex init` detects Continue.dev (via `.continue/` directory in project or `~/.continue/`) and creates:
+
+- **MCP config:** `.continue/mcpServers/gortex.json` — project-level config. Continue reads JSON MCP configs from the `.continue/mcpServers/` directory and supports the same format as Claude/Cursor.
+
+## Usage with Cline
+
+`gortex init` detects Cline (via VS Code or Cursor globalStorage directories) and creates:
+
+- **MCP config:** `cline_mcp_settings.json` in the Cline extension's globalStorage directory. Includes an `alwaysAllow` list for read-only Gortex tools.
 
 ## CLI Commands
 
@@ -187,7 +218,7 @@ gortex query stats                      Show graph statistics
 
 All query commands support `--format text|json|dot` (DOT output for Graphviz visualization).
 
-## MCP Tools (44)
+## MCP Tools (48)
 
 ### Core Navigation
 | Tool | Description |
@@ -218,6 +249,8 @@ All query commands support `--format text|json|dot` (DOT output for Graphviz vis
 | `find_import_path` | Correct import path for a symbol |
 | `explain_change_impact` | Risk-tiered blast radius with affected processes |
 | `get_recent_changes` | Files/symbols changed since timestamp |
+| `edit_symbol` | Edit a symbol's source directly by ID — no Read needed |
+| `rename_symbol` | Coordinated multi-file rename with all references |
 
 ### Agent-Optimized (token efficiency)
 | Tool | Description |
@@ -236,6 +269,8 @@ All query commands support `--format text|json|dot` (DOT output for Graphviz vis
 | `get_process` | Step-by-step trace of an execution flow |
 | `detect_changes` | Git diff mapped to affected symbols |
 | `index_repository` | Index or re-index a repository path |
+| `get_contracts` | List detected API contracts (HTTP, gRPC, GraphQL, topics, WebSocket, env, OpenAPI) |
+| `check_contracts` | Detect contract mismatches: orphan providers and orphan consumers |
 
 ### Proactive Safety
 | Tool | Description |
@@ -269,10 +304,11 @@ All query commands support `--format text|json|dot` (DOT output for Graphviz vis
 | `set_active_project` | Switch active project scope for all subsequent queries |
 | `get_active_project` | Return current project name and its member repositories |
 
-## MCP Resources (6)
+## MCP Resources (7)
 
 | Resource | Description |
 |----------|-------------|
+| `gortex://session` | Current session state and activity |
 | `gortex://stats` | Graph statistics (node/edge counts) |
 | `gortex://schema` | Graph schema reference |
 | `gortex://communities` | Community list with cohesion scores |
@@ -280,9 +316,17 @@ All query commands support `--format text|json|dot` (DOT output for Graphviz vis
 | `gortex://processes` | Execution flow list |
 | `gortex://process/{id}` | Single process trace |
 
+## MCP Prompts (3)
+
+| Prompt | Description |
+|--------|-------------|
+| `pre_commit` | Review uncommitted changes — shows changed symbols, blast radius, risk level, affected tests |
+| `orientation` | Orient in an unfamiliar codebase — graph stats, communities, execution flows, key symbols |
+| `safe_to_change` | Analyze whether it's safe to change specific symbols — blast radius, edit plan, affected tests |
+
 ## Web UI
 
-Gortex includes a standalone Next.js web application (`web/` directory) with 8 pages:
+Gortex includes a standalone Next.js web application (`web/` directory) with 10 pages:
 
 ```bash
 # Start the backend
@@ -303,6 +347,7 @@ cd web && npm run dev
 | **Processes** | Execution flow table with step lists |
 | **Analysis** | Dead code, hotspots, cycles, index health — 4 tabs |
 | **Contracts** | API contracts (HTTP, gRPC, GraphQL, topics, WebSocket, env vars) with provider/consumer matching |
+| **Services** | Service-level graph visualization with per-repo stats |
 | **AI Chat** | LLM-powered chat with code context (placeholder) |
 
 The legacy embedded web UI (Sigma.js on `:8765`) is still available via `gortex serve --web`.
@@ -432,6 +477,8 @@ gortex binary
   MCP Server ──────────────────────> Query Engine (repo/project/ref scoping)
   Bridge API ──────────────────────> (HTTP/JSON over MCP tools)
   Web Server ──────────────────────> (Nodes + Edges + byRepo index)
+  MCP Prompts ─────────────────────> (pre_commit, orientation, safe_to_change)
+  MCP Resources ───────────────────> (session, stats, schema, communities, processes)
                    MultiWatcher <── filesystem events (fsnotify, per-repo)
                    CrossRepoResolver ──> cross-repo edge creation (type-aware)
                    Persistence ──> gob+gzip snapshot (pluggable backend)
