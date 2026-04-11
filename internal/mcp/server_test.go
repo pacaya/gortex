@@ -149,6 +149,106 @@ func TestTokenSavings_GetSymbolSource(t *testing.T) {
 	assert.GreaterOrEqual(t, savings["efficiency_ratio"].(float64), float64(1))
 }
 
+func TestConfidenceLabels_FindUsages(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// "helper" is called by "main" — find_usages should return edges with confidence_label.
+	result := callTool(t, srv, "find_usages", map[string]any{"id": "main.go::helper"})
+	require.False(t, result.IsError)
+	text := result.Content[0].(mcplib.TextContent).Text
+	var resp query.SubGraph
+	require.NoError(t, json.Unmarshal([]byte(text), &resp))
+
+	require.Greater(t, len(resp.Edges), 0, "expected at least one edge")
+	for _, e := range resp.Edges {
+		assert.NotEmpty(t, e.ConfidenceLabel, "edge %s->%s should have confidence_label", e.From, e.To)
+		assert.Contains(t, []string{"EXTRACTED", "INFERRED", "AMBIGUOUS"}, e.ConfidenceLabel)
+	}
+}
+
+func TestConfidenceLabels_GetCallers(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	// "helper" is called by "main" — get_callers should return edges with confidence_label.
+	result := callTool(t, srv, "get_callers", map[string]any{"function_id": "main.go::helper"})
+	require.False(t, result.IsError)
+	text := result.Content[0].(mcplib.TextContent).Text
+	var resp query.SubGraph
+	require.NoError(t, json.Unmarshal([]byte(text), &resp))
+
+	require.Greater(t, len(resp.Edges), 0, "expected at least one edge")
+	for _, e := range resp.Edges {
+		assert.NotEmpty(t, e.ConfidenceLabel, "edge %s->%s should have confidence_label", e.From, e.To)
+	}
+}
+
+func TestConfidenceLabels_CompactIncludesEdgeSummary(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	result := callTool(t, srv, "find_usages", map[string]any{
+		"id":      "main.go::helper",
+		"compact": true,
+	})
+	require.False(t, result.IsError)
+	text := result.Content[0].(mcplib.TextContent).Text
+	assert.Contains(t, text, "edges:")
+}
+
+func TestConfidenceLabels_ExplainChangeImpact(t *testing.T) {
+	srv, _ := setupTestServer(t)
+
+	result := callTool(t, srv, "explain_change_impact", map[string]any{
+		"symbol_ids": "main.go::helper",
+	})
+	require.False(t, result.IsError)
+	text := result.Content[0].(mcplib.TextContent).Text
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &resp))
+
+	byDepth, ok := resp["by_depth"].(map[string]any)
+	if ok {
+		for _, entries := range byDepth {
+			entryList, ok := entries.([]any)
+			if !ok {
+				continue
+			}
+			for _, entry := range entryList {
+				entryMap := entry.(map[string]any)
+				assert.Contains(t, entryMap, "confidence_label")
+			}
+		}
+	}
+}
+
+func TestConfidenceLabelFor(t *testing.T) {
+	tests := []struct {
+		kind       graph.EdgeKind
+		confidence float64
+		want       string
+	}{
+		{graph.EdgeDefines, 0, "EXTRACTED"},
+		{graph.EdgeImports, 0, "EXTRACTED"},
+		{graph.EdgeImplements, 0, "EXTRACTED"},
+		{graph.EdgeExtends, 0, "EXTRACTED"},
+		{graph.EdgeMemberOf, 0, "EXTRACTED"},
+		{graph.EdgeProvides, 0, "EXTRACTED"},
+		{graph.EdgeConsumes, 0, "EXTRACTED"},
+		{graph.EdgeCalls, 0.95, "EXTRACTED"},
+		{graph.EdgeCalls, 0.9, "EXTRACTED"},
+		{graph.EdgeCalls, 0.85, "INFERRED"},
+		{graph.EdgeCalls, 0.8, "INFERRED"},
+		{graph.EdgeCalls, 0.5, "INFERRED"},
+		{graph.EdgeCalls, 0.3, "AMBIGUOUS"},
+		{graph.EdgeCalls, 0, "INFERRED"},
+		{graph.EdgeReferences, 0, "INFERRED"},
+		{graph.EdgeInstantiates, 0, "INFERRED"},
+	}
+	for _, tt := range tests {
+		got := graph.ConfidenceLabelFor(tt.kind, tt.confidence)
+		assert.Equal(t, tt.want, got, "ConfidenceLabelFor(%s, %.2f)", tt.kind, tt.confidence)
+	}
+}
+
 func TestSearchSymbols(t *testing.T) {
 	srv, _ := setupTestServer(t)
 	result := callTool(t, srv, "search_symbols", map[string]any{"query": "helper"})

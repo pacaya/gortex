@@ -147,6 +147,13 @@ func qualifiedName(n *graph.Node) string {
 	return n.Name
 }
 
+// enrichSubGraphEdges populates ConfidenceLabel on every edge in a SubGraph.
+func enrichSubGraphEdges(sg *query.SubGraph) {
+	for _, e := range sg.Edges {
+		e.ConfidenceLabel = graph.ConfidenceLabelFor(e.Kind, e.Confidence)
+	}
+}
+
 // compactSubGraph formats a SubGraph as compact text.
 func compactSubGraph(sg *query.SubGraph) string {
 	var b strings.Builder
@@ -158,6 +165,24 @@ func compactSubGraph(sg *query.SubGraph) string {
 	}
 	if sg.Truncated {
 		fmt.Fprintf(&b, "... truncated (%d total)\n", sg.TotalNodes)
+	}
+	// Append edge confidence distribution.
+	if len(sg.Edges) > 0 {
+		counts := map[string]int{}
+		for _, e := range sg.Edges {
+			label := e.ConfidenceLabel
+			if label == "" {
+				label = graph.ConfidenceLabelFor(e.Kind, e.Confidence)
+			}
+			counts[label]++
+		}
+		fmt.Fprintf(&b, "edges: %d total", len(sg.Edges))
+		for _, label := range []string{"EXTRACTED", "INFERRED", "AMBIGUOUS"} {
+			if c := counts[label]; c > 0 {
+				fmt.Fprintf(&b, ", %d %s", c, label)
+			}
+		}
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -430,6 +455,7 @@ func (s *Server) handleGetDependencies(_ context.Context, req mcp.CallToolReques
 		Detail: "brief",
 	}
 	sg := s.engine.GetDependencies(id, opts)
+	enrichSubGraphEdges(sg)
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}
@@ -447,6 +473,7 @@ func (s *Server) handleGetDependents(_ context.Context, req mcp.CallToolRequest)
 		Detail: "brief",
 	}
 	sg := s.engine.GetDependents(id, opts)
+	enrichSubGraphEdges(sg)
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}
@@ -471,6 +498,7 @@ func (s *Server) handleGetCallChain(_ context.Context, req mcp.CallToolRequest) 
 		return mcp.NewToolResultError(filterErr.Error()), nil
 	}
 	sg = filterSubGraph(sg, allowed)
+	enrichSubGraphEdges(sg)
 
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
@@ -489,6 +517,7 @@ func (s *Server) handleGetCallers(_ context.Context, req mcp.CallToolRequest) (*
 		Detail: "brief",
 	}
 	sg := s.engine.GetCallers(id, opts)
+	enrichSubGraphEdges(sg)
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}
@@ -524,6 +553,7 @@ func (s *Server) handleFindUsages(_ context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(filterErr.Error()), nil
 	}
 	sg = filterSubGraph(sg, allowed)
+	enrichSubGraphEdges(sg)
 
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
@@ -542,6 +572,7 @@ func (s *Server) handleGetCluster(_ context.Context, req mcp.CallToolRequest) (*
 		Detail: "brief",
 	}
 	sg := s.engine.GetCluster(id, opts)
+	enrichSubGraphEdges(sg)
 	if isCompact(req) {
 		return mcp.NewToolResultText(compactSubGraph(sg)), nil
 	}

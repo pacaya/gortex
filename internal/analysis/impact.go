@@ -19,12 +19,14 @@ const (
 
 // ImpactEntry is a symbol affected at a specific depth.
 type ImpactEntry struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Kind       string `json:"kind"`
-	FilePath   string `json:"file_path"`
-	Line       int    `json:"start_line"`
-	RepoPrefix string `json:"repo_prefix,omitempty"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Kind            string  `json:"kind"`
+	FilePath        string  `json:"file_path"`
+	Line            int     `json:"start_line"`
+	RepoPrefix      string  `json:"repo_prefix,omitempty"`
+	EdgeConfidence  float64 `json:"edge_confidence,omitempty"`
+	ConfidenceLabel string  `json:"confidence_label,omitempty"`
 }
 
 // ImpactResult is the output of risk-tiered impact analysis.
@@ -74,12 +76,14 @@ func AnalyzeImpact(g *graph.Graph, symbolIDs []string, communities *CommunityRes
 				}
 
 				result.ByDepth[depth] = append(result.ByDepth[depth], ImpactEntry{
-					ID:         n.ID,
-					Name:       n.Name,
-					Kind:       string(n.Kind),
-					FilePath:   n.FilePath,
-					Line:       n.StartLine,
-					RepoPrefix: n.RepoPrefix,
+					ID:              n.ID,
+					Name:            n.Name,
+					Kind:            string(n.Kind),
+					FilePath:        n.FilePath,
+					Line:            n.StartLine,
+					RepoPrefix:      n.RepoPrefix,
+					EdgeConfidence:  e.Confidence,
+					ConfidenceLabel: graph.ConfidenceLabelFor(e.Kind, e.Confidence),
 				})
 
 				if isTestFile(n.FilePath) {
