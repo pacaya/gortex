@@ -53,7 +53,11 @@ builds:
 
 archives:
   - formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Version intentionally omitted — `/releases/latest/download/<name>` URLs
+    # require an exact filename, and users linking to the latest release
+    # shouldn't need to know the version. Version is still in the release
+    # tag and in `gortex version`.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: checksums.txt
@@ -68,7 +72,9 @@ changelog:
 
 nfpms:
   - id: gortex
-    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Match the archive naming — version omitted so `/releases/latest/download`
+    # URLs work without templating. Package metadata still carries the version.
+    file_name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     ids:
       - main
     formats:

@@ -39,19 +39,99 @@ Built for AI coding agents (Claude Code, Kiro, Cursor, Windsurf, Copilot, Contin
 - **Eval framework** — SWE-bench harness for A/B benchmarking tool effectiveness with Docker-based environments and multi-model support
 - **Zero dependencies** — everything runs in-process, in memory, no external services
 
+## Installation
+
+Pre-built binaries are published to [GitHub Releases](https://github.com/zzet/gortex/releases) for linux/amd64, linux/arm64, darwin/amd64 (Intel Mac), and darwin/arm64 (Apple Silicon). Windows support is planned.
+
+### macOS — Homebrew
+
+```bash
+brew install zzet/homebrew-tap/gortex
+```
+
+Homebrew handles updates on `brew upgrade`. No Gatekeeper prompt — `brew` doesn't set the quarantine attribute.
+
+### Linux — Debian / Ubuntu (.deb)
+
+```bash
+ARCH=$(dpkg --print-architecture)  # amd64 or arm64
+curl -LO "https://github.com/zzet/gortex/releases/latest/download/gortex_linux_${ARCH}.deb"
+sudo dpkg -i "gortex_linux_${ARCH}.deb"
+```
+
+### Linux — RHEL / Fedora / CentOS (.rpm)
+
+```bash
+ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64; [ "$ARCH" = aarch64 ] && ARCH=arm64
+curl -LO "https://github.com/zzet/gortex/releases/latest/download/gortex_linux_${ARCH}.rpm"
+sudo rpm -ivh "gortex_linux_${ARCH}.rpm"
+```
+
+### Linux — Alpine (.apk)
+
+```bash
+ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64; [ "$ARCH" = aarch64 ] && ARCH=arm64
+curl -LO "https://github.com/zzet/gortex/releases/latest/download/gortex_linux_${ARCH}.apk"
+sudo apk add --allow-untrusted "gortex_linux_${ARCH}.apk"
+```
+
+### Direct binary download (any Linux or macOS)
+
+```bash
+# Pick the right asset for your OS/arch
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')  # linux or darwin
+ARCH=$(uname -m)
+case $ARCH in
+  x86_64) ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+esac
+
+curl -LO "https://github.com/zzet/gortex/releases/latest/download/gortex_${OS}_${ARCH}.tar.gz"
+tar -xzf "gortex_${OS}_${ARCH}.tar.gz"
+sudo mv gortex /usr/local/bin/
+```
+
+On macOS, if you downloaded via browser (not `curl`), remove the quarantine flag once:
+
+```bash
+xattr -d com.apple.quarantine /usr/local/bin/gortex
+```
+
+### Verify the install
+
+```bash
+gortex version
+```
+
+### From source
+
+Requires Go 1.25+ and a C toolchain (the tree-sitter extractors are CGO — no way around it).
+
+```bash
+git clone https://github.com/zzet/gortex.git
+cd gortex
+go build -o gortex ./cmd/gortex/
+sudo mv gortex /usr/local/bin/
+```
+
+Or without cloning:
+
+```bash
+go install github.com/zzet/gortex/cmd/gortex@latest
+```
+
+`go install` drops the binary into `$(go env GOBIN)` (default `~/go/bin`) — make sure that's on your `PATH`.
+
 ## Quick Start
 
 ```bash
-# Build (requires CGO for tree-sitter C bindings)
-go build -o gortex ./cmd/gortex/
-
 # Set up Gortex for a project (creates configs for Claude Code, Kiro, Cursor, Copilot, Windsurf, Continue.dev, Cline, OpenCode, Antigravity — auto-detects installed tools)
 gortex init /path/to/repo
 
 # Or with codebase analysis for a richer CLAUDE.md
 gortex init --analyze /path/to/repo
 
-# Install/update only the hooks — PreToolUse (Read/Grep/Glob), PreCompact (orientation snapshot), Stop (post-task diagnostics)
+# Install/update only the hooks — PreToolUse (Read/Grep/Glob/Task), PreCompact (orientation snapshot), Stop (post-task diagnostics)
 gortex init --hooks /path/to/repo
 
 # Index a repo and print stats
