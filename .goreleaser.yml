@@ -24,26 +24,32 @@ builds:
     goarch:
       - amd64
       - arm64
-    # Per-target CC. goreleaser-cross exposes these cross-toolchains on
-    # PATH; CGO needs an explicit CC per target triple to pick the right
-    # linker. Overrides is cleaner than embedding an if/else in env.
+    # Per-target CC + CXX. goreleaser-cross exposes these cross-toolchains
+    # on PATH; CGO needs both set per target triple because some deps
+    # (tree-sitter yaml scanner, etc.) ship C++. Without CXX, the system
+    # default x86_64-linux-gnu-g++ leaks in and rejects macOS flags like
+    # -arch.
     overrides:
       - goos: darwin
         goarch: amd64
         env:
           - CC=o64-clang
+          - CXX=o64-clang++
       - goos: darwin
         goarch: arm64
         env:
           - CC=oa64-clang
+          - CXX=oa64-clang++
       - goos: linux
         goarch: amd64
         env:
           - CC=x86_64-linux-gnu-gcc
+          - CXX=x86_64-linux-gnu-g++
       - goos: linux
         goarch: arm64
         env:
           - CC=aarch64-linux-gnu-gcc
+          - CXX=aarch64-linux-gnu-g++
 
 archives:
   - formats: [tar.gz]
