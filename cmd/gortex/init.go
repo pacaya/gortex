@@ -55,7 +55,7 @@ func runInit(_ *cobra.Command, args []string) error {
 		if err := installHook(settingsPath); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "[gortex init --hooks] done — installed PreToolUse hook in %s\n", settingsPath)
+		fmt.Fprintln(os.Stderr, "[gortex init --hooks] done")
 		return nil
 	}
 
@@ -366,39 +366,6 @@ func installHook(settingsPath string) error {
 		settings = make(map[string]any)
 	}
 
-	// Check if Gortex hook already exists. If found with old matcher, upgrade it.
-	if hooks, ok := settings["hooks"].(map[string]any); ok {
-		if pre, ok := hooks["PreToolUse"].([]any); ok {
-			for _, h := range pre {
-				if hm, ok := h.(map[string]any); ok {
-					if hs, ok := hm["hooks"].([]any); ok {
-						for _, entry := range hs {
-							if em, ok := entry.(map[string]any); ok {
-								if cmd, ok := em["command"].(string); ok && contains(cmd, "gortex hook") {
-									// Upgrade matcher if it's the old Read|Grep pattern.
-									if matcher, ok := hm["matcher"].(string); ok && matcher == "Read|Grep" {
-										hm["matcher"] = "Read|Grep|Glob"
-										data, err := json.MarshalIndent(settings, "", "  ")
-										if err != nil {
-											return err
-										}
-										if err := os.WriteFile(settingsPath, data, 0o644); err != nil {
-											return err
-										}
-										fmt.Fprintf(os.Stderr, "[gortex init] upgraded hook matcher to Read|Grep|Glob in %s\n", settingsPath)
-										return nil
-									}
-									fmt.Fprintf(os.Stderr, "[gortex init] skip %s (Gortex hook already present)\n", settingsPath)
-									return nil
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
 	// Resolve the gortex binary path for the hook command.
 	// Try: 1) the binary that's running now, 2) "gortex" in PATH.
 	hookCommand := "gortex hook"
@@ -406,75 +373,75 @@ func installHook(settingsPath string) error {
 		hookCommand = exe + " hook"
 	}
 
-	// Build the PreToolUse entry (Read/Grep/Glob enrichment).
-	preToolUseEntry := map[string]any{
-		"matcher": "Read|Grep|Glob",
-		"hooks": []any{
-			map[string]any{
-				"type":          "command",
-				"command":       hookCommand,
-				"timeout":       3000,
-				"statusMessage": "Enriching with Gortex graph context...",
-			},
-		},
-	}
-
-	// Build the PreCompact entry (orientation snapshot before compaction).
-	// No matcher needed — PreCompact fires once per compaction.
-	preCompactEntry := map[string]any{
-		"hooks": []any{
-			map[string]any{
-				"type":          "command",
-				"command":       hookCommand,
-				"timeout":       3000,
-				"statusMessage": "Injecting Gortex orientation snapshot...",
-			},
-		},
-	}
-
-	// Build the Stop entry (post-task diagnostics on changed symbols).
-	// Fires after the agent finishes responding; self-guards against recursion
-	// via the stop_hook_active flag inside the handler.
-	stopEntry := map[string]any{
-		"hooks": []any{
-			map[string]any{
-				"type":          "command",
-				"command":       hookCommand,
-				"timeout":       5000,
-				"statusMessage": "Running Gortex post-task diagnostics...",
-			},
-		},
-	}
-
-	// Ensure hooks.PreToolUse exists and append.
+	// Ensure hooks map exists.
 	if _, ok := settings["hooks"]; !ok {
 		settings["hooks"] = make(map[string]any)
 	}
 	hooks := settings["hooks"].(map[string]any)
-	if _, ok := hooks["PreToolUse"]; !ok {
-		hooks["PreToolUse"] = []any{}
-	}
-	pre := hooks["PreToolUse"].([]any)
-	hooks["PreToolUse"] = append(pre, preToolUseEntry)
 
-	// Register PreCompact and Stop only if not already present — avoid
-	// duplicates on rerun. Both dedupe by looking for "gortex hook" in the command.
-	preCompactAlreadyInstalled := hasGortexHookEntry(hooks, "PreCompact")
-	if !preCompactAlreadyInstalled {
-		if _, ok := hooks["PreCompact"]; !ok {
-			hooks["PreCompact"] = []any{}
-		}
-		compact := hooks["PreCompact"].([]any)
-		hooks["PreCompact"] = append(compact, preCompactEntry)
+	// Upgrade the old PreToolUse matcher in place, if present.
+	matcherUpgraded := upgradeGortexMatcher(hooks)
+
+	// Collapse any duplicate Gortex entries added by earlier buggy runs — keep
+	// only the first Gortex-invoking entry per event, preserve any non-Gortex
+	// entries the user may have added.
+	dedupedCount := dedupGortexEntries(hooks, "PreToolUse") +
+		dedupGortexEntries(hooks, "PreCompact") +
+		dedupGortexEntries(hooks, "Stop")
+
+	// Check each hook event independently and install if missing.
+	preToolUseInstalled := hasGortexHookEntry(hooks, "PreToolUse")
+	preCompactInstalled := hasGortexHookEntry(hooks, "PreCompact")
+	stopInstalled := hasGortexHookEntry(hooks, "Stop")
+
+	if !preToolUseInstalled {
+		appendHookEntry(hooks, "PreToolUse", map[string]any{
+			"matcher": "Read|Grep|Glob",
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       3000,
+					"statusMessage": "Enriching with Gortex graph context...",
+				},
+			},
+		})
 	}
 
-	stopAlreadyInstalled := hasGortexHookEntry(hooks, "Stop")
-	if !stopAlreadyInstalled {
-		if _, ok := hooks["Stop"]; !ok {
-			hooks["Stop"] = []any{}
-		}
-		stop := hooks["Stop"].([]any)
-		hooks["Stop"] = append(stop, stopEntry)
+	if !preCompactInstalled {
+		// PreCompact fires once per compaction — no matcher needed.
+		appendHookEntry(hooks, "PreCompact", map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       3000,
+					"statusMessage": "Injecting Gortex orientation snapshot...",
+				},
+			},
+		})
+	}
+
+	if !stopInstalled {
+		// Stop fires after the agent finishes; handler skips when
+		// stop_hook_active=true to prevent recursion.
+		appendHookEntry(hooks, "Stop", map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       5000,
+					"statusMessage": "Running Gortex post-task diagnostics...",
+				},
+			},
+		})
+	}
+
+	// Nothing to do if everything was already installed, no duplicates to
+	// collapse, and no matcher upgrade.
+	if preToolUseInstalled && preCompactInstalled && stopInstalled && !matcherUpgraded && dedupedCount == 0 {
+		fmt.Fprintf(os.Stderr, "[gortex init] all hooks already present in %s\n", settingsPath)
+		return nil
 	}
 
 	data, err := json.MarshalIndent(settings, "", "  ")
@@ -485,22 +452,142 @@ func installHook(settingsPath string) error {
 		return err
 	}
 
-	// Build a human-readable summary of which hooks were newly installed.
-	var installed []string
-	installed = append(installed, "PreToolUse")
-	if !preCompactAlreadyInstalled {
-		installed = append(installed, "PreCompact")
+	// Report exactly what changed.
+	var changes []string
+	if matcherUpgraded {
+		changes = append(changes, "upgraded PreToolUse matcher")
 	}
-	if !stopAlreadyInstalled {
-		installed = append(installed, "Stop")
+	if dedupedCount > 0 {
+		changes = append(changes, fmt.Sprintf("removed %d duplicate entries", dedupedCount))
 	}
-	fmt.Fprintf(os.Stderr, "[gortex init] installed %s hooks in %s\n",
-		strings.Join(installed, " + "), settingsPath)
+	if !preToolUseInstalled {
+		changes = append(changes, "installed PreToolUse")
+	}
+	if !preCompactInstalled {
+		changes = append(changes, "installed PreCompact")
+	}
+	if !stopInstalled {
+		changes = append(changes, "installed Stop")
+	}
+	fmt.Fprintf(os.Stderr, "[gortex init] %s in %s\n",
+		strings.Join(changes, ", "), settingsPath)
 	return nil
 }
 
+// appendHookEntry adds an entry to hooks[event], creating the list if needed.
+func appendHookEntry(hooks map[string]any, event string, entry map[string]any) {
+	if _, ok := hooks[event]; !ok {
+		hooks[event] = []any{}
+	}
+	list := hooks[event].([]any)
+	hooks[event] = append(list, entry)
+}
+
+// upgradeGortexMatcher rewrites the old "Read|Grep" PreToolUse matcher to the
+// current "Read|Grep|Glob". Returns true when a change was made.
+func upgradeGortexMatcher(hooks map[string]any) bool {
+	pre, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		return false
+	}
+	upgraded := false
+	for _, h := range pre {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		matcher, _ := hm["matcher"].(string)
+		if matcher != "Read|Grep" {
+			continue
+		}
+		if !entryInvokesGortexHook(hm) {
+			continue
+		}
+		hm["matcher"] = "Read|Grep|Glob"
+		upgraded = true
+	}
+	return upgraded
+}
+
+// entryInvokesGortexHook returns true when any hooks[*].command looks like a
+// Gortex hook invocation. Matches any command that contains "gortex" (so the
+// binary path can be `gortex`, `./gortex`, `/path/to/gortex-something`, etc.)
+// and has "hook" as a subcommand token (separate word).
+func entryInvokesGortexHook(entry map[string]any) bool {
+	inner, ok := entry["hooks"].([]any)
+	if !ok {
+		return false
+	}
+	for _, e := range inner {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := em["command"].(string)
+		if commandInvokesGortexHook(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupGortexEntries collapses duplicate Gortex hook entries inside hooks[event]
+// down to the first one. Non-Gortex entries are preserved in order. Returns the
+// number of duplicates removed.
+func dedupGortexEntries(hooks map[string]any, event string) int {
+	list, ok := hooks[event].([]any)
+	if !ok {
+		return 0
+	}
+	seenGortex := false
+	kept := make([]any, 0, len(list))
+	removed := 0
+	for _, h := range list {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			kept = append(kept, h)
+			continue
+		}
+		if !entryInvokesGortexHook(hm) {
+			kept = append(kept, h)
+			continue
+		}
+		if seenGortex {
+			removed++
+			continue
+		}
+		seenGortex = true
+		kept = append(kept, h)
+	}
+	if removed > 0 {
+		hooks[event] = kept
+	}
+	return removed
+}
+
+// commandInvokesGortexHook returns true when cmd is a Gortex hook invocation.
+// Splits on whitespace and checks that "hook" is a standalone token and that
+// "gortex" appears somewhere in the binary path component.
+func commandInvokesGortexHook(cmd string) bool {
+	fields := strings.Fields(cmd)
+	if len(fields) < 2 {
+		return false
+	}
+	// Binary path is the first token, subcommand must be "hook" somewhere after.
+	if !strings.Contains(strings.ToLower(fields[0]), "gortex") {
+		return false
+	}
+	for _, f := range fields[1:] {
+		if f == "hook" {
+			return true
+		}
+	}
+	return false
+}
+
 // hasGortexHookEntry returns true when the given event (PreCompact, Stop, etc.)
-// already has a hook entry that invokes `gortex hook`.
+// already has a hook entry that invokes `gortex hook`. Delegates to
+// entryInvokesGortexHook so detection logic stays in one place.
 func hasGortexHookEntry(hooks map[string]any, event string) bool {
 	existing, ok := hooks[event].([]any)
 	if !ok {
@@ -511,18 +598,8 @@ func hasGortexHookEntry(hooks map[string]any, event string) bool {
 		if !ok {
 			continue
 		}
-		hs, ok := hm["hooks"].([]any)
-		if !ok {
-			continue
-		}
-		for _, entry := range hs {
-			em, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			if cmd, ok := em["command"].(string); ok && contains(cmd, "gortex hook") {
-				return true
-			}
+		if entryInvokesGortexHook(hm) {
+			return true
 		}
 	}
 	return false
