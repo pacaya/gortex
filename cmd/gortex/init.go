@@ -21,6 +21,8 @@ import (
 
 var initAnalyze bool
 var initHooksOnly bool
+var initInstallHooks = true
+var initNoHooks bool
 var initGlobal bool
 var initStartDaemon bool
 var initTrackRepo bool
@@ -34,7 +36,9 @@ var initCmd = &cobra.Command{
 
 func init() {
 	initCmd.Flags().BoolVar(&initAnalyze, "analyze", false, "index the repo first to generate a richer CLAUDE.md with codebase overview")
-	initCmd.Flags().BoolVar(&initHooksOnly, "hooks", false, "only install/update PreToolUse hooks in .claude/settings.local.json")
+	initCmd.Flags().BoolVar(&initInstallHooks, "hooks", true, "install Claude Code hooks (PreToolUse + PreCompact + Stop); use --no-hooks to skip")
+	initCmd.Flags().BoolVar(&initNoHooks, "no-hooks", false, "skip installing Claude Code hooks (inverse of --hooks)")
+	initCmd.Flags().BoolVar(&initHooksOnly, "hooks-only", false, "only install/update Claude Code hooks in .claude/settings.local.json, skip everything else")
 	initCmd.Flags().BoolVar(&initGlobal, "global", false, "install a user-wide config (~/.claude.json) that points every project at the daemon; skip per-repo file creation")
 	initCmd.Flags().BoolVar(&initStartDaemon, "start", false, "start the daemon immediately after --global setup (detached)")
 	initCmd.Flags().BoolVar(&initTrackRepo, "track", false, "track the current repo via the daemon after --global setup")
@@ -47,16 +51,27 @@ func runInit(cmd *cobra.Command, args []string) error {
 		root = args[0]
 	}
 
+	// --no-hooks is the explicit negation pair for --hooks. Reconcile so the
+	// rest of runInit / runInitGlobal only has to look at initInstallHooks.
+	if initNoHooks {
+		initInstallHooks = false
+	}
+
 	// Interactive wizard: only when no mode flag was passed AND we have
 	// a terminal on stdin. CI / scripted invocations fall through to the
-	// historical per-repo default silently. --hooks short-circuits both
+	// historical per-repo default silently. --hooks-only short-circuits both
 	// the wizard and the global path — it's a narrow "update hooks only"
-	// operation that shouldn't nag.
+	// operation that shouldn't nag. An explicit --hooks / --no-hooks
+	// pre-answers the hook question, so don't ask it again in the wizard.
 	if !initGlobal && !initHooksOnly && !cmd.Flags().Changed("global") && isInteractive() {
-		if choice, ran := runInteractiveInit(os.Stdin, cmd.ErrOrStderr()); ran {
+		hooksPreset := cmd.Flags().Changed("hooks") || cmd.Flags().Changed("no-hooks")
+		if choice, ran := runInteractiveInit(os.Stdin, cmd.ErrOrStderr(), hooksPreset); ran {
 			initGlobal = choice.Global
 			initTrackRepo = choice.Track
 			initStartDaemon = choice.Start
+			if !hooksPreset {
+				initInstallHooks = choice.Hooks
+			}
 		}
 	}
 
@@ -74,7 +89,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --hooks: only install/update hooks and exit.
+	// --hooks-only: only install/update hooks and exit.
 	if initHooksOnly {
 		settingsPath := filepath.Join(root, ".claude", "settings.local.json")
 		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
@@ -83,7 +98,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err := installHook(settingsPath); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stderr, "[gortex init --hooks] done")
+		fmt.Fprintln(os.Stderr, "[gortex init --hooks-only] done")
 		return nil
 	}
 
@@ -130,9 +145,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[gortex init] warning: could not install permissions: %v\n", err)
 	}
 
-	// 6. Install PreToolUse hook in .claude/settings.local.json (local, not committed)
-	if err := installHook(filepath.Join(root, ".claude", "settings.local.json")); err != nil {
-		fmt.Fprintf(os.Stderr, "[gortex init] warning: could not install hook: %v\n", err)
+	// 6. Install PreToolUse hook in .claude/settings.local.json (local, not committed).
+	// Skipped when the user passed --no-hooks (or answered "n" in the wizard).
+	if initInstallHooks {
+		if err := installHook(filepath.Join(root, ".claude", "settings.local.json")); err != nil {
+			fmt.Fprintf(os.Stderr, "[gortex init] warning: could not install hook: %v\n", err)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "[gortex init] skipping hook installation (--no-hooks)")
 	}
 
 	// 7. Set up Kiro IDE integration

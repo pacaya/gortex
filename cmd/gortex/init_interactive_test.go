@@ -31,44 +31,75 @@ func runWizard(t *testing.T, input string) (interactiveChoice, string) {
 }
 
 func TestInteractiveWizard_DefaultIsGlobal(t *testing.T) {
-	// Pressing Enter to every prompt must pick global, track=yes, start=yes.
-	// That's the "happy path" we optimized the wizard for.
-	choice, out := runWizard(t, "\n\n\n")
+	// Pressing Enter to every prompt (global, track, start, hooks) must
+	// pick the happy path: global=yes, track=yes, start=yes, hooks=yes.
+	choice, out := runWizard(t, "\n\n\n\n")
 	assert.True(t, choice.Global, "empty input must default to global")
 	assert.True(t, choice.Track)
 	assert.True(t, choice.Start)
+	assert.True(t, choice.Hooks, "empty input on hooks prompt must default to yes")
 	assert.Contains(t, out, "Global daemon (recommended)")
+	assert.Contains(t, out, "Install Claude Code hooks")
 }
 
 func TestInteractiveWizard_ChoosePerRepo(t *testing.T) {
-	choice, _ := runWizard(t, "2\n")
+	// Per-repo still asks the hooks question (hooks are useful in either mode).
+	choice, out := runWizard(t, "2\n\n")
 	assert.False(t, choice.Global, "option 2 must map to per-repo mode")
 	// Track / Start aren't asked when per-repo — they only make sense
 	// in global mode.
 	assert.False(t, choice.Track)
 	assert.False(t, choice.Start)
+	assert.True(t, choice.Hooks, "per-repo + empty hooks input must default to yes")
+	assert.Contains(t, out, "Install Claude Code hooks")
+}
+
+func TestInteractiveWizard_PerRepoDeclineHooks(t *testing.T) {
+	// Per-repo, explicitly decline hooks.
+	choice, _ := runWizard(t, "2\nn\n")
+	assert.False(t, choice.Global)
+	assert.False(t, choice.Hooks, "'n' to hooks prompt must set Hooks=false")
 }
 
 func TestInteractiveWizard_DeclineTrack(t *testing.T) {
-	// Global + decline-to-track + start-yes. Makes sure the two
-	// follow-up prompts are handled independently.
-	choice, _ := runWizard(t, "1\nn\ny\n")
+	// Global + decline-to-track + start-yes + hooks-yes. Makes sure each
+	// follow-up prompt is handled independently.
+	choice, _ := runWizard(t, "1\nn\ny\ny\n")
 	assert.True(t, choice.Global)
 	assert.False(t, choice.Track, "'n' to track must set Track=false")
 	assert.True(t, choice.Start)
+	assert.True(t, choice.Hooks)
 }
 
 func TestInteractiveWizard_DeclineBoth(t *testing.T) {
-	choice, _ := runWizard(t, "1\nn\nn\n")
+	// All four prompts: global / track-no / start-no / hooks-no.
+	choice, _ := runWizard(t, "1\nn\nn\nn\n")
 	assert.True(t, choice.Global)
 	assert.False(t, choice.Track)
 	assert.False(t, choice.Start)
+	assert.False(t, choice.Hooks)
+}
+
+func TestInteractiveWizard_HooksPresetSkipsPrompt(t *testing.T) {
+	// When --hooks / --no-hooks was already passed on the CLI, the wizard
+	// must not re-ask. We only feed three newlines (global, track, start)
+	// — if the hooks prompt fired, reader.ReadString would block/return
+	// EOF and Hooks would fall back to the struct default.
+	var out bytes.Buffer
+	in := strings.NewReader("\n\n\n")
+	choice, ok := runInteractiveInit(in, &out, true)
+	assert.True(t, ok)
+	assert.True(t, choice.Global)
+	assert.True(t, choice.Track)
+	assert.True(t, choice.Start)
+	assert.NotContains(t, out.String(), "Install Claude Code hooks",
+		"hooks prompt must be suppressed when hooksPreset=true")
 }
 
 func TestInteractiveWizard_UnrecognizedChoiceFallsBackToGlobal(t *testing.T) {
 	// Unknown first-prompt answer prints a warning and defaults to
 	// global. Users get out of trouble by pressing Enter next time.
-	choice, out := runWizard(t, "zzz\n\n\n")
+	choice, out := runWizard(t, "zzz\n\n\n\n")
 	assert.True(t, choice.Global)
 	assert.Contains(t, out, "Unrecognized")
 }
@@ -96,5 +127,5 @@ func TestIsNo(t *testing.T) {
 // production binary doesn't ship a second entry point that bypasses
 // the TTY check.
 func runInteractiveForTest(in *strings.Reader, out *bytes.Buffer) (interactiveChoice, bool) {
-	return runInteractiveInit(in, out)
+	return runInteractiveInit(in, out, false)
 }

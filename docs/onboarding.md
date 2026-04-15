@@ -121,7 +121,7 @@ Open your AI assistant in the repo. Ask it something concrete that requires unde
 
 **What should NOT happen:**
 
-- The assistant calls `Read` on 5 files and hunts for auth logic manually. If you see this, the hooks aren't wired up — run `gortex init --hooks` to reinstall just the hooks.
+- The assistant calls `Read` on 5 files and hunts for auth logic manually. If you see this, the hooks aren't wired up — run `gortex init --hooks-only` to reinstall just the hooks.
 
 **Quick sanity check from the CLI:**
 
@@ -161,7 +161,7 @@ All four degrade silently when the bridge is unreachable — they never block yo
 Check that `gortex` is on your `PATH` (`which gortex` should resolve). If you installed via Homebrew, restart the IDE — it caches PATH at launch.
 
 **The AI still uses `Read` / `Grep` on source files.**
-The hooks didn't install. Re-run `gortex init --hooks` and restart the AI tool. On Claude Code, also check that `.claude/settings.local.json` exists and contains `"gortex hook"` invocations under `hooks`.
+The hooks didn't install. Re-run `gortex init --hooks-only` and restart the AI tool. On Claude Code, also check that `.claude/settings.local.json` exists and contains `"gortex hook"` invocations under `hooks`.
 
 **`graph_stats` returns `total_nodes: 0`.**
 The index is empty. Either `gortex serve` isn't watching the right directory, or `.gortex.yaml` excludes everything. Run `gortex status --index /absolute/path/to/repo` to verify the paths.

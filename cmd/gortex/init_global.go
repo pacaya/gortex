@@ -48,15 +48,19 @@ func runInitGlobal(cmd *cobra.Command, root string) error {
 	}
 	steps = append(steps, fmt.Sprintf("wrote MCP config: %s", mcpPath))
 
-	// Step 2 — user-level hooks.
-	hookPath, err := userSettingsLocal()
-	if err != nil {
-		return err
+	// Step 2 — user-level hooks (skipped when --no-hooks or wizard said no).
+	if initInstallHooks {
+		hookPath, err := userSettingsLocal()
+		if err != nil {
+			return err
+		}
+		if err := installHook(hookPath); err != nil {
+			return err
+		}
+		steps = append(steps, fmt.Sprintf("installed hooks: %s", hookPath))
+	} else {
+		steps = append(steps, "skipped hooks (--no-hooks)")
 	}
-	if err := installHook(hookPath); err != nil {
-		return err
-	}
-	steps = append(steps, fmt.Sprintf("installed hooks: %s", hookPath))
 
 	// Step 3 — global config scaffold.
 	if err := ensureGlobalConfigExists(); err != nil {

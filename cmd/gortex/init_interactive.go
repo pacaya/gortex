@@ -16,6 +16,7 @@ type interactiveChoice struct {
 	Global bool
 	Track  bool
 	Start  bool
+	Hooks  bool
 }
 
 // runInteractiveInit prompts the user to pick between global and
@@ -28,7 +29,11 @@ type interactiveChoice struct {
 // successfully. A return of (_, false) means the user terminated the
 // prompt early (EOF / Ctrl-D); the caller should fall back to
 // historical defaults rather than making a guess.
-func runInteractiveInit(in io.Reader, out io.Writer) (interactiveChoice, bool) {
+//
+// hooksPreset tells the wizard that --hooks / --no-hooks was already
+// passed on the command line; in that case we skip the hooks prompt
+// to avoid nagging the user about a decision they already made.
+func runInteractiveInit(in io.Reader, out io.Writer, hooksPreset bool) (interactiveChoice, bool) {
 	reader := bufio.NewReader(in)
 
 	_, _ = fmt.Fprintln(out)
@@ -39,19 +44,36 @@ func runInteractiveInit(in io.Reader, out io.Writer) (interactiveChoice, bool) {
 	_, _ = fmt.Fprintln(out, "      spawns its own indexer (current default)")
 	_, _ = fmt.Fprint(out, "Choice [1/2] (default: 1): ")
 
-	choice := interactiveChoice{Global: true}
+	// Default Hooks=true matches the --hooks CLI default. Yes to everything
+	// is the happy path we optimize the wizard for.
+	choice := interactiveChoice{Global: true, Hooks: true}
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		// EOF / closed stdin — fall back to legacy per-repo behavior.
 		return interactiveChoice{}, false
 	}
+	isPerRepo := false
 	switch strings.TrimSpace(line) {
 	case "2", "p", "per-repo":
-		return interactiveChoice{Global: false}, true
+		isPerRepo = true
 	case "", "1", "g", "global":
 		// default path
 	default:
 		_, _ = fmt.Fprintf(out, "Unrecognized %q — defaulting to global.\n", strings.TrimSpace(line))
+	}
+
+	if isPerRepo {
+		// Per-repo mode: no Track/Start (they only make sense with the
+		// daemon) but still ask about hooks — they're useful in either mode.
+		choice.Global = false
+		if !hooksPreset {
+			_, _ = fmt.Fprint(out, "Install Claude Code hooks (PreToolUse + PreCompact + Stop)? [Y/n]: ")
+			if ln, err := reader.ReadString('\n'); err == nil {
+				choice.Hooks = !isNo(ln)
+			}
+		}
+		_, _ = fmt.Fprintln(out)
+		return choice, true
 	}
 
 	// Track-the-current-repo prompt. Declining is fine — the user can
@@ -66,6 +88,14 @@ func runInteractiveInit(in io.Reader, out io.Writer) (interactiveChoice, bool) {
 	_, _ = fmt.Fprint(out, "Start the daemon now (detached)? [Y/n]: ")
 	if ln, err := reader.ReadString('\n'); err == nil {
 		choice.Start = !isNo(ln)
+	}
+
+	// Hooks prompt — skipped when --hooks / --no-hooks was explicit.
+	if !hooksPreset {
+		_, _ = fmt.Fprint(out, "Install Claude Code hooks (PreToolUse + PreCompact + Stop)? [Y/n]: ")
+		if ln, err := reader.ReadString('\n'); err == nil {
+			choice.Hooks = !isNo(ln)
+		}
 	}
 
 	_, _ = fmt.Fprintln(out)

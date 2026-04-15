@@ -166,7 +166,8 @@ gortex status
 # Pick [2] at the wizard, or pass no --global flag and the config stays local:
 gortex init /path/to/repo               # creates .mcp.json, CLAUDE.md, hooks, commands
 gortex init --analyze /path/to/repo     # indexes first for a richer CLAUDE.md
-gortex init --hooks /path/to/repo       # (re)install hooks only
+gortex init --hooks-only /path/to/repo  # (re)install hooks only, skip everything else
+gortex init --no-hooks /path/to/repo    # full init but skip hook installation
 
 # Run the MCP server standalone (auto-detects daemon via stdio; --no-daemon forces embedded):
 gortex serve --index /path/to/repo --watch
