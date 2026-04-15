@@ -596,6 +596,13 @@ func (mi *MultiIndexer) ReconcileContractEdges() int {
 	// so the inlined contracts participate in pairing.
 	contracts.InlineWrappers(merged, g, mi.wrapperSourceReader())
 
+	// Bind provider-contract SymbolIDs that came from spec files
+	// (.proto for gRPC, OpenAPI YAML/JSON for HTTP). Without this
+	// step the matcher finds pairs but the bridge-emission check
+	// below skips them because provider SymbolID is empty. Must run
+	// before Match so Match sees the updated records.
+	contracts.BindProviderSymbols(merged, g)
+
 	result := contracts.Match(merged)
 	added := 0
 	for _, m := range result.Matched {

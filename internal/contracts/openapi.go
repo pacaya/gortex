@@ -70,13 +70,18 @@ func (e *OpenAPIExtractor) extractYAML(filePath string, src []byte) []Contract {
 		for _, mm := range openapiMethodRe.FindAllStringSubmatch(pathBlock, -1) {
 			method := strings.ToUpper(mm[1])
 			absOffset := pathsIdx + pm[0]
+			// Emit the ID in HTTP form so OpenAPI-declared providers
+			// pair with cross-repo HTTP consumers via the same
+			// matcher path (T2.4 Phase C). Type stays ContractOpenAPI
+			// for discoverability under `contracts list --type openapi`.
+			normPath := NormalizeHTTPPath(path)
 			contracts = append(contracts, Contract{
-				ID:         fmt.Sprintf("openapi::%s::%s", method, path),
+				ID:         fmt.Sprintf("http::%s::%s", method, normPath),
 				Type:       ContractOpenAPI,
 				Role:       RoleProvider,
 				FilePath:   filePath,
 				Line:       lineNumber(lines, absOffset),
-				Meta:       map[string]any{"method": method, "path": path},
+				Meta:       map[string]any{"method": method, "path": normPath},
 				Confidence: 0.95,
 			})
 		}
@@ -104,13 +109,14 @@ func (e *OpenAPIExtractor) extractJSON(filePath string, src []byte) []Contract {
 
 		for _, mm := range openapiJSONMethodRe.FindAllStringSubmatch(pathBlock, -1) {
 			method := strings.ToUpper(mm[1])
+			normPath := NormalizeHTTPPath(path)
 			contracts = append(contracts, Contract{
-				ID:         fmt.Sprintf("openapi::%s::%s", method, path),
+				ID:         fmt.Sprintf("http::%s::%s", method, normPath),
 				Type:       ContractOpenAPI,
 				Role:       RoleProvider,
 				FilePath:   filePath,
 				Line:       lineNumber(lines, pm[0]),
-				Meta:       map[string]any{"method": method, "path": path},
+				Meta:       map[string]any{"method": method, "path": normPath},
 				Confidence: 0.9,
 			})
 		}

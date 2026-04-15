@@ -3,6 +3,7 @@ package contracts
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -50,15 +51,22 @@ func (e *TopicExtractor) Extract(filePath string, src []byte, nodes []*graph.Nod
 	text := string(src)
 	lines := strings.Split(text, "\n")
 
+	fileNodes := filterFileNodes(filePath, nodes)
+	sort.Slice(fileNodes, func(i, j int) bool {
+		return fileNodes[i].StartLine < fileNodes[j].StartLine
+	})
+
 	for _, re := range topicPublishPatterns {
 		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
 			topic := text[m[2]:m[3]]
+			ln := lineNumber(lines, m[0])
 			contracts = append(contracts, Contract{
 				ID:         fmt.Sprintf("topic::%s", topic),
 				Type:       ContractTopic,
 				Role:       RoleProvider,
+				SymbolID:   findEnclosingSymbol(fileNodes, ln),
 				FilePath:   filePath,
-				Line:       lineNumber(lines, m[0]),
+				Line:       ln,
 				Meta:       map[string]any{"topic": topic},
 				Confidence: 0.85,
 			})
@@ -68,12 +76,14 @@ func (e *TopicExtractor) Extract(filePath string, src []byte, nodes []*graph.Nod
 	for _, re := range topicSubscribePatterns {
 		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
 			topic := text[m[2]:m[3]]
+			ln := lineNumber(lines, m[0])
 			contracts = append(contracts, Contract{
 				ID:         fmt.Sprintf("topic::%s", topic),
 				Type:       ContractTopic,
 				Role:       RoleConsumer,
+				SymbolID:   findEnclosingSymbol(fileNodes, ln),
 				FilePath:   filePath,
-				Line:       lineNumber(lines, m[0]),
+				Line:       ln,
 				Meta:       map[string]any{"topic": topic},
 				Confidence: 0.85,
 			})

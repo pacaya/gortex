@@ -3,6 +3,7 @@ package contracts
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -32,8 +33,14 @@ func (e *GraphQLExtractor) Extract(filePath string, src []byte, nodes []*graph.N
 	if strings.HasSuffix(filePath, ".graphql") || strings.HasSuffix(filePath, ".gql") {
 		contracts = append(contracts, e.extractSchemaProviders(filePath, src)...)
 	}
-	// Always look for consumer patterns (queries can live in any file).
-	contracts = append(contracts, e.extractConsumers(filePath, src)...)
+	// Consumer queries can live in any source file. Thread file nodes
+	// through so findEnclosingSymbol can anchor each consumer contract
+	// on its calling function — required for EdgeMatches bridges.
+	fileNodes := filterFileNodes(filePath, nodes)
+	sort.Slice(fileNodes, func(i, j int) bool {
+		return fileNodes[i].StartLine < fileNodes[j].StartLine
+	})
+	contracts = append(contracts, e.extractConsumers(filePath, src, fileNodes)...)
 
 	return contracts
 }
@@ -79,7 +86,7 @@ func (e *GraphQLExtractor) extractSchemaProviders(filePath string, src []byte) [
 	return contracts
 }
 
-func (e *GraphQLExtractor) extractConsumers(filePath string, src []byte) []Contract {
+func (e *GraphQLExtractor) extractConsumers(filePath string, src []byte, fileNodes []*graph.Node) []Contract {
 	var contracts []Contract
 	text := string(src)
 	lines := strings.Split(text, "\n")
@@ -88,7 +95,7 @@ func (e *GraphQLExtractor) extractConsumers(filePath string, src []byte) []Contr
 	for _, m := range gqlQueryOpRe.FindAllStringSubmatchIndex(text, -1) {
 		opType := text[m[2]:m[3]]
 		body := text[m[4]:m[5]]
-		contracts = append(contracts, e.fieldsFromBody(filePath, opType, body, lines, m[0])...)
+		contracts = append(contracts, e.fieldsFromBody(filePath, opType, body, lines, m[0], fileNodes)...)
 	}
 
 	// gql`` tagged template literals.
@@ -96,16 +103,18 @@ func (e *GraphQLExtractor) extractConsumers(filePath string, src []byte) []Contr
 		inner := text[m[2]:m[3]]
 		// Try to find the operation keyword inside the template.
 		for _, opM := range gqlQueryOpRe.FindAllStringSubmatch(inner, -1) {
-			contracts = append(contracts, e.fieldsFromBody(filePath, opM[1], opM[2], lines, m[0])...)
+			contracts = append(contracts, e.fieldsFromBody(filePath, opM[1], opM[2], lines, m[0], fileNodes)...)
 		}
 	}
 
 	return contracts
 }
 
-func (e *GraphQLExtractor) fieldsFromBody(filePath, opType, body string, lines []string, baseOffset int) []Contract {
+func (e *GraphQLExtractor) fieldsFromBody(filePath, opType, body string, lines []string, baseOffset int, fileNodes []*graph.Node) []Contract {
 	var contracts []Contract
 	opTypeCap := strings.ToUpper(opType[:1]) + opType[1:]
+	ln := lineNumber(lines, baseOffset)
+	sym := findEnclosingSymbol(fileNodes, ln)
 
 	for _, fLine := range strings.Split(body, "\n") {
 		fLine = strings.TrimSpace(fLine)
@@ -121,8 +130,9 @@ func (e *GraphQLExtractor) fieldsFromBody(filePath, opType, body string, lines [
 			ID:         fmt.Sprintf("graphql::%s::%s", opTypeCap, fieldName),
 			Type:       ContractGraphQL,
 			Role:       RoleConsumer,
+			SymbolID:   sym,
 			FilePath:   filePath,
-			Line:       lineNumber(lines, baseOffset),
+			Line:       ln,
 			Meta:       map[string]any{"operation": opTypeCap, "field": fieldName},
 			Confidence: 0.8,
 		})

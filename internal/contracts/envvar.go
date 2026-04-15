@@ -3,6 +3,7 @@ package contracts
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -53,14 +54,22 @@ func (e *EnvVarExtractor) Extract(filePath string, src []byte, nodes []*graph.No
 	} else if isDockerCompose(filePath) {
 		contracts = append(contracts, e.extractDockerComposeProviders(filePath, src)...)
 	} else {
-		contracts = append(contracts, e.extractCodeConsumers(filePath, src)...)
+		// Thread file nodes into consumer extraction so each os.Getenv
+		// site anchors on its enclosing function — required for tools
+		// like get_dependencies(handler) to trace which env vars a
+		// request needs read.
+		fileNodes := filterFileNodes(filePath, nodes)
+		sort.Slice(fileNodes, func(i, j int) bool {
+			return fileNodes[i].StartLine < fileNodes[j].StartLine
+		})
+		contracts = append(contracts, e.extractCodeConsumers(filePath, src, fileNodes)...)
 		contracts = append(contracts, e.extractCodeProviders(filePath, src)...)
 	}
 
 	return contracts
 }
 
-func (e *EnvVarExtractor) extractCodeConsumers(filePath string, src []byte) []Contract {
+func (e *EnvVarExtractor) extractCodeConsumers(filePath string, src []byte, fileNodes []*graph.Node) []Contract {
 	var contracts []Contract
 	text := string(src)
 	lines := strings.Split(text, "\n")
@@ -68,12 +77,14 @@ func (e *EnvVarExtractor) extractCodeConsumers(filePath string, src []byte) []Co
 	for _, re := range envConsumerPatterns {
 		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
 			varName := text[m[2]:m[3]]
+			ln := lineNumber(lines, m[0])
 			contracts = append(contracts, Contract{
 				ID:         fmt.Sprintf("env::%s", varName),
 				Type:       ContractEnv,
 				Role:       RoleConsumer,
+				SymbolID:   findEnclosingSymbol(fileNodes, ln),
 				FilePath:   filePath,
-				Line:       lineNumber(lines, m[0]),
+				Line:       ln,
 				Meta:       map[string]any{"var": varName},
 				Confidence: 0.9,
 			})

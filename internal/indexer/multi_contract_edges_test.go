@@ -476,6 +476,376 @@ func TestInlineWrappers_TuckShape(t *testing.T) {
 		nodeIDs(chain.Nodes))
 }
 
+// setupGoTopicPublisherRepo writes a minimal Go package that calls
+// kafka.Produce("user.created", ...) from inside a function — the
+// common publisher shape.
+func setupGoTopicPublisherRepo(t *testing.T, name, topic string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pub.go"), []byte(
+		"package main\n\nfunc publishEvent(p Producer) {\n\tp.Produce(\""+topic+"\", nil)\n}\n\ntype Producer interface{ Produce(topic string, v any) error }\n",
+	), 0o644))
+	return dir
+}
+
+// setupGoTopicSubscriberRepo mirrors the publisher: a Go function
+// calling kafka.Subscribe("user.created", ...) from a Go function.
+func setupGoTopicSubscriberRepo(t *testing.T, name, topic string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub.go"), []byte(
+		"package main\n\nfunc consumeEvent(c Consumer) {\n\tc.Subscribe(\""+topic+"\", nil)\n}\n\ntype Consumer interface{ Subscribe(topic string, h any) error }\n",
+	), 0o644))
+	return dir
+}
+
+// TestReconcileContractEdges_TopicBridge exercises Phase A1 — publish
+// and subscribe sites in two repos must bridge via EdgeMatches once
+// both sides anchor SymbolID on their enclosing function.
+func TestReconcileContractEdges_TopicBridge(t *testing.T) {
+	pubRoot := setupGoTopicPublisherRepo(t, "producer-svc", "user.created")
+	subRoot := setupGoTopicSubscriberRepo(t, "consumer-svc", "user.created")
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: pubRoot, Name: "producer-svc"},
+			{Path: subRoot, Name: "consumer-svc"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	g := graph.New()
+	mi := NewMultiIndexer(g, newTestRegistry(), search.NewBM25(), cm, zap.NewNop())
+	for _, entry := range cm.Global().Repos {
+		_, err := mi.TrackRepoCtx(context.Background(), entry)
+		require.NoError(t, err)
+	}
+
+	pub := "producer-svc/pub.go::publishEvent"
+	sub := "consumer-svc/sub.go::consumeEvent"
+
+	var matchEdge *graph.Edge
+	for _, e := range g.AllEdges() {
+		if e.Kind == graph.EdgeMatches && e.From == sub && e.To == pub {
+			matchEdge = e
+			break
+		}
+	}
+	require.NotNil(t, matchEdge,
+		"expected EdgeMatches %s → %s for topic bridge; have: %v",
+		sub, pub, matchEdgeSummaries(g))
+	assert.True(t, matchEdge.CrossRepo, "publisher and subscriber in different repos")
+}
+
+// setupGoEnvConsumerRepo calls os.Getenv from a named function.
+func setupGoEnvConsumerRepo(t *testing.T, name, envVar string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.go"), []byte(
+		"package main\n\nimport \"os\"\n\nfunc loadDatabase() string {\n\treturn os.Getenv(\""+envVar+"\")\n}\n",
+	), 0o644))
+	return dir
+}
+
+// TestEnvConsumer_SymbolIDSet covers the env-var pillar of Phase A4:
+// bridges are not expected (config files aren't functions) but the
+// consumer contract MUST carry a SymbolID so get_dependencies can
+// trace handler → env::VAR. The test asserts the os.Getenv call is
+// anchored on loadDatabase.
+func TestEnvConsumer_SymbolIDSet(t *testing.T) {
+	repo := setupGoEnvConsumerRepo(t, "svc", "DATABASE_URL")
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{{Path: repo, Name: "svc"}},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	g := graph.New()
+	mi := NewMultiIndexer(g, newTestRegistry(), search.NewBM25(), cm, zap.NewNop())
+	for _, entry := range cm.Global().Repos {
+		_, err := mi.TrackRepoCtx(context.Background(), entry)
+		require.NoError(t, err)
+	}
+
+	// Single-repo mode skips RepoPrefix, so the SymbolID is unprefixed.
+	// The point is the anchor is set at all — that's what T1.2's bridge
+	// emission check requires.
+	want := "config.go::loadDatabase"
+	var found bool
+	for _, e := range g.AllEdges() {
+		if e.Kind == graph.EdgeConsumes && e.From == want && e.To == "env::DATABASE_URL" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"expected EdgeConsumes %s → env::DATABASE_URL (SymbolID must anchor on loadDatabase)", want)
+}
+
+// setupGRPCProtoProviderRepo writes a repo containing:
+//   - a .proto file declaring service Users with one RPC
+//   - a Go implementation file with UsersServer.GetUser as the handler
+//     and a pb.RegisterUsersServer registration site
+//
+// After indexing, the proto file produces a provider contract
+// "grpc::Users::GetUser" whose SymbolID is initially empty.
+// BindProviderSymbols should resolve it to UsersServer.GetUser.
+func setupGRPCProtoProviderRepo(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "proto"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "proto", "users.proto"), []byte(`syntax = "proto3";
+package users;
+
+service Users {
+	rpc GetUser (GetUserRequest) returns (GetUserResponse);
+}
+
+message GetUserRequest { string id = 1; }
+message GetUserResponse { string name = 1; }
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "server.go"), []byte(`package main
+
+import "context"
+
+type UsersServer struct{}
+
+func (s *UsersServer) GetUser(ctx context.Context, req *GetUserRequest) (*GetUserResponse, error) {
+	return &GetUserResponse{Name: "Alice"}, nil
+}
+
+type GetUserRequest struct{ Id string }
+type GetUserResponse struct{ Name string }
+
+func register(grpcServer interface{}) {
+	pb.RegisterUsersServer(grpcServer, &UsersServer{})
+}
+`), 0o644))
+	return dir
+}
+
+// setupGRPCGoConsumerRepo mirrors the real pattern: establish
+// userClient via pb.NewUsersClient(conn), then invoke the RPC as a
+// method call. The two-pass extractor emits grpc::Users::GetUser
+// with SymbolID on the calling function.
+func setupGRPCGoConsumerRepo(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(`package main
+
+import (
+	"context"
+	"example.com/pb"
+)
+
+func callUsers(ctx context.Context, conn interface{}) {
+	userClient := pb.NewUsersClient(conn)
+	_, _ = userClient.GetUser(ctx, &pb.GetUserRequest{Id: "x"})
+}
+`), 0o644))
+	return dir
+}
+
+// TestReconcileContractEdges_GRPCBridge is the end-to-end guarantee
+// for gRPC: a .proto provider in repo A, a Go consumer in repo B
+// using pb.NewClient + method calls, plus an implementation method
+// in repo A matching the RPC by name on a *UsersServer receiver.
+// The matcher must pair them, BindProviderSymbols must resolve the
+// provider SymbolID to the handler, and ReconcileContractEdges must
+// emit EdgeMatches from the consumer call site to the handler —
+// enabling get_call_chain to cross the service boundary.
+func TestReconcileContractEdges_GRPCBridge(t *testing.T) {
+	providerRoot := setupGRPCProtoProviderRepo(t, "auth-service")
+	consumerRoot := setupGRPCGoConsumerRepo(t, "client-svc")
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: providerRoot, Name: "auth-service"},
+			{Path: consumerRoot, Name: "client-svc"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	g := graph.New()
+	mi := NewMultiIndexer(g, newMultiLangRegistry(), search.NewBM25(), cm, zap.NewNop())
+	for _, entry := range cm.Global().Repos {
+		_, err := mi.TrackRepoCtx(context.Background(), entry)
+		require.NoError(t, err)
+	}
+
+	consumerSym := "client-svc/main.go::callUsers"
+	providerSym := "auth-service/server.go::UsersServer.GetUser"
+
+	var matchEdge *graph.Edge
+	for _, e := range g.AllEdges() {
+		if e.Kind == graph.EdgeMatches && e.From == consumerSym && e.To == providerSym {
+			matchEdge = e
+			break
+		}
+	}
+	require.NotNil(t, matchEdge,
+		"expected EdgeMatches %s → %s for gRPC bridge; present match edges: %v",
+		consumerSym, providerSym, matchEdgeSummaries(g))
+	assert.True(t, matchEdge.CrossRepo, "consumer and provider live in different repos")
+
+	eng := query.NewEngine(g)
+	chain := eng.GetCallChain(consumerSym, query.QueryOptions{Depth: 4, Limit: 50, Detail: "brief"})
+	reached := false
+	for _, n := range chain.Nodes {
+		if n.ID == providerSym {
+			reached = true
+			break
+		}
+	}
+	assert.True(t, reached,
+		"get_call_chain(%s) must reach %s across the gRPC bridge; chain: %v",
+		consumerSym, providerSym, nodeIDs(chain.Nodes))
+}
+
+// setupOpenAPIProviderRepo writes a minimal repo containing an
+// OpenAPI 3.0 YAML spec plus a Go Gin implementation. After Phase C
+// OpenAPI providers emit IDs in the http::METHOD::path shape so they
+// match HTTP consumers from other repos; BindProviderSymbols then
+// attaches the spec-declared provider to the Gin-registered handler
+// so the bridge lands on real business logic.
+func setupOpenAPIProviderRepo(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openapi.yaml"), []byte(`openapi: 3.0.0
+info:
+  title: API
+  version: 1.0.0
+paths:
+  /v1/widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        '200':
+          description: ok
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(`package main
+
+import "github.com/gin-gonic/gin"
+
+func setupRoutes(r *gin.Engine) {
+	r.GET("/v1/widgets", listWidgets)
+}
+
+func listWidgets() {}
+`), 0o644))
+	return dir
+}
+
+// setupHTTPConsumerForOpenAPI writes a tiny Go consumer that calls
+// the same /v1/widgets endpoint via http.Get.
+func setupHTTPConsumerForOpenAPI(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/"+name+"\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "client.go"), []byte(`package main
+
+import "net/http"
+
+func fetchWidgets() {
+	http.Get("http://api.example.com/v1/widgets")
+}
+`), 0o644))
+	return dir
+}
+
+// TestReconcileContractEdges_OpenAPIBridge asserts Phase C: an
+// OpenAPI-declared provider pairs with an HTTP consumer from another
+// repo because both now produce http::GET::/v1/widgets IDs. The match
+// may land on either provider (spec or Gin registration) — both
+// point at the same handler once the matcher picks one; we accept
+// whichever and verify the consumer→handler bridge is intact.
+func TestReconcileContractEdges_OpenAPIBridge(t *testing.T) {
+	providerRoot := setupOpenAPIProviderRepo(t, "api-svc")
+	consumerRoot := setupHTTPConsumerForOpenAPI(t, "client-svc")
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: providerRoot, Name: "api-svc"},
+			{Path: consumerRoot, Name: "client-svc"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	g := graph.New()
+	mi := NewMultiIndexer(g, newMultiLangRegistry(), search.NewBM25(), cm, zap.NewNop())
+	for _, entry := range cm.Global().Repos {
+		_, err := mi.TrackRepoCtx(context.Background(), entry)
+		require.NoError(t, err)
+	}
+
+	consumerSym := "client-svc/client.go::fetchWidgets"
+	// Match edge may target listWidgets directly (Gin handler-level
+	// binding via T1.3) or it may go through the OpenAPI binding —
+	// both land on the same handler method. Accept either.
+	handlerSym := "api-svc/main.go::listWidgets"
+
+	var matchEdge *graph.Edge
+	for _, e := range g.AllEdges() {
+		if e.Kind == graph.EdgeMatches && e.From == consumerSym && e.To == handlerSym {
+			matchEdge = e
+			break
+		}
+	}
+	require.NotNil(t, matchEdge,
+		"expected EdgeMatches %s → %s for OpenAPI bridge; present match edges: %v",
+		consumerSym, handlerSym, matchEdgeSummaries(g))
+	assert.True(t, matchEdge.CrossRepo, "consumer and provider live in different repos")
+
+	eng := query.NewEngine(g)
+	chain := eng.GetCallChain(consumerSym, query.QueryOptions{Depth: 4, Limit: 50, Detail: "brief"})
+	reached := false
+	for _, n := range chain.Nodes {
+		if n.ID == handlerSym {
+			reached = true
+			break
+		}
+	}
+	assert.True(t, reached,
+		"get_call_chain(%s) must reach %s; chain: %v",
+		consumerSym, handlerSym, nodeIDs(chain.Nodes))
+}
+
 // matchEdgeSummaries dumps all EdgeMatches as "from → to" strings for
 // failure-message context when the expected bridges aren't present.
 func matchEdgeSummaries(g *graph.Graph) []string {

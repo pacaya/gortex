@@ -3,6 +3,7 @@ package contracts
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -40,15 +41,22 @@ func (e *WebSocketExtractor) Extract(filePath string, src []byte, nodes []*graph
 	text := string(src)
 	lines := strings.Split(text, "\n")
 
+	fileNodes := filterFileNodes(filePath, nodes)
+	sort.Slice(fileNodes, func(i, j int) bool {
+		return fileNodes[i].StartLine < fileNodes[j].StartLine
+	})
+
 	for _, re := range wsEmitPatterns {
 		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
 			event := text[m[2]:m[3]]
+			ln := lineNumber(lines, m[0])
 			contracts = append(contracts, Contract{
 				ID:         fmt.Sprintf("ws::%s", event),
 				Type:       ContractWS,
 				Role:       RoleProvider,
+				SymbolID:   findEnclosingSymbol(fileNodes, ln),
 				FilePath:   filePath,
-				Line:       lineNumber(lines, m[0]),
+				Line:       ln,
 				Meta:       map[string]any{"event": event},
 				Confidence: 0.85,
 			})
@@ -58,12 +66,14 @@ func (e *WebSocketExtractor) Extract(filePath string, src []byte, nodes []*graph
 	for _, re := range wsListenPatterns {
 		for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
 			event := text[m[2]:m[3]]
+			ln := lineNumber(lines, m[0])
 			contracts = append(contracts, Contract{
 				ID:         fmt.Sprintf("ws::%s", event),
 				Type:       ContractWS,
 				Role:       RoleConsumer,
+				SymbolID:   findEnclosingSymbol(fileNodes, ln),
 				FilePath:   filePath,
-				Line:       lineNumber(lines, m[0]),
+				Line:       ln,
 				Meta:       map[string]any{"event": event},
 				Confidence: 0.8,
 			})

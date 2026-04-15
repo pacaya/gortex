@@ -51,6 +51,86 @@ response = stub.GetUser(request)
 	assertContract(t, contracts[0], "grpc::UserService", ContractGRPC, RoleConsumer)
 }
 
+// TestGRPCExtractor_GoConsumer_MethodLevel covers the redesigned
+// two-pass scan: per-method contracts with IDs matching the provider
+// format "grpc::Service::Method", and SymbolID on the enclosing
+// function so matcher pairing produces EdgeMatches bridges.
+func TestGRPCExtractor_GoConsumer_MethodLevel(t *testing.T) {
+	ext := &GRPCExtractor{}
+	src := []byte(`package main
+
+import (
+	"context"
+	"example.com/pb"
+)
+
+func makeRPCCall(ctx context.Context) {
+	userClient := pb.NewUsersClient(conn)
+	_, _ = userClient.GetUser(ctx, &pb.GetUserRequest{Id: "x"})
+	_, _ = userClient.ListUsers(ctx, &pb.ListUsersRequest{})
+}
+`)
+	nodes := makeNodes("main.go", []struct {
+		name       string
+		start, end int
+	}{
+		{"makeRPCCall", 8, 12},
+	})
+
+	contracts := ext.Extract("main.go", src, nodes, nil)
+
+	want := map[string]string{
+		"grpc::Users::GetUser":   "main.go::makeRPCCall",
+		"grpc::Users::ListUsers": "main.go::makeRPCCall",
+	}
+	got := map[string]string{}
+	for _, c := range contracts {
+		if c.Role == RoleConsumer && c.Type == ContractGRPC {
+			got[c.ID] = c.SymbolID
+		}
+	}
+	for id, wantSym := range want {
+		gotSym, ok := got[id]
+		if !ok {
+			t.Errorf("missing consumer contract %s; all consumers: %v", id, got)
+			continue
+		}
+		if gotSym != wantSym {
+			t.Errorf("consumer %s: SymbolID want %q, got %q", id, wantSym, gotSym)
+		}
+	}
+
+	// Fallback service-level contract must be suppressed when
+	// method-level contracts already cover the service — otherwise
+	// the registry fills with duplicates.
+	for _, c := range contracts {
+		if c.ID == "grpc::Users" {
+			t.Errorf("unwanted service-level fallback emitted alongside method-level contracts: %+v", c)
+		}
+	}
+}
+
+// TestGRPCExtractor_GoConsumer_UnrelatedCallsAreNotGRPC guards the
+// false-positive case: "(\w+).(\w+)(" matches every method call in a
+// Go file, but we must only emit a gRPC consumer contract when the
+// receiver was previously established as a gRPC client.
+func TestGRPCExtractor_GoConsumer_UnrelatedCallsAreNotGRPC(t *testing.T) {
+	ext := &GRPCExtractor{}
+	src := []byte(`package main
+
+func main() {
+	logger.Info("hi")
+	unrelated.Handle("msg")
+}
+`)
+	contracts := ext.Extract("main.go", src, nil, nil)
+	for _, c := range contracts {
+		if c.Type == ContractGRPC {
+			t.Errorf("unexpected gRPC contract %+v — no NewClient assignment exists", c)
+		}
+	}
+}
+
 func assertContract(t *testing.T, c Contract, id string, ctype ContractType, role Role) {
 	t.Helper()
 	if c.ID != id {
