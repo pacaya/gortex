@@ -51,7 +51,7 @@ jobs:
       # even before the SARIF lands in the Security tab (GitHub batches
       # SARIF ingestion on a ~15min cadence).
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SARIF file
           path: results.sarif
