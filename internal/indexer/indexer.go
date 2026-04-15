@@ -237,11 +237,22 @@ func (idx *Indexer) prefixPath(relPath string) string {
 // applyRepoPrefix transforms nodes and edges produced by an extractor to include
 // the repo prefix in IDs and file paths. Sets Node.RepoPrefix on all nodes.
 // This is a no-op when repoPrefix is empty (single-repo mode).
+//
+// Edge targets beginning with "unresolved::" are a sentinel meaning "the
+// resolver will replace this with a real node ID after all files are
+// indexed." Prefixing them turns "unresolved::fetchUsers" into
+// "web/unresolved::fetchUsers", which the resolver's HasPrefix check on
+// "unresolved::" misses — leaving every call edge permanently unresolved
+// in multi-repo mode and breaking get_callers / get_call_chain across all
+// languages. Skip prefixing on unresolved targets; the resolver will land
+// the edge on a real ID that already carries its own correct prefix
+// (possibly cross-repo, which the resolver marks explicitly).
 func (idx *Indexer) applyRepoPrefix(nodes []*graph.Node, edges []*graph.Edge) {
 	if idx.repoPrefix == "" {
 		return
 	}
 	prefix := idx.repoPrefix + "/"
+	const unresolvedMarker = "unresolved::"
 	for _, n := range nodes {
 		n.ID = prefix + n.ID
 		n.FilePath = prefix + n.FilePath
@@ -249,7 +260,9 @@ func (idx *Indexer) applyRepoPrefix(nodes []*graph.Node, edges []*graph.Edge) {
 	}
 	for _, e := range edges {
 		e.From = prefix + e.From
-		e.To = prefix + e.To
+		if !strings.HasPrefix(e.To, unresolvedMarker) {
+			e.To = prefix + e.To
+		}
 		e.FilePath = prefix + e.FilePath
 	}
 }

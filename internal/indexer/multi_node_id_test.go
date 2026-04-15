@@ -41,6 +41,87 @@ func (h *Handler) CreateTuck() string { return "ok" }
 	return dir
 }
 
+// TestMultiRepo_ResolvesCallEdges guards against a regression where every
+// call edge in multi-repo mode stayed permanently unresolved. applyRepoPrefix
+// used to prefix the "unresolved::" sentinel (producing "web/unresolved::X")
+// which the resolver's HasPrefix check wouldn't recognize. Symptom was
+// universal: get_callers on any function in multi-repo mode returned empty.
+// Here: two Go files in two tracked repos, one calls the other. After index,
+// the call edge must resolve to the real target ID — not to an "unresolved::"
+// placeholder.
+func TestMultiRepo_ResolvesCallEdges(t *testing.T) {
+	// repo A defines Greet(); repo B's Main() calls Greet — same package name
+	// so Go's same-package resolution still has work to do across repos.
+	repoA := filepath.Join(t.TempDir(), "lib-svc")
+	require.NoError(t, os.MkdirAll(repoA, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoA, "greet.go"),
+		[]byte("package main\n\nfunc Greet() string { return \"hi\" }\n"),
+		0o644))
+
+	repoB := filepath.Join(t.TempDir(), "app-svc")
+	require.NoError(t, os.MkdirAll(repoB, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoB, "main.go"),
+		[]byte("package main\n\nfunc Main() {\n\t_ = Greet()\n}\n"),
+		0o644))
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: repoA, Name: "lib-svc"},
+			{Path: repoB, Name: "app-svc"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	g := graph.New()
+	mi := NewMultiIndexer(g, newTestRegistry(), search.NewBM25(), cm, zap.NewNop())
+	for _, entry := range cm.Global().Repos {
+		_, err := mi.TrackRepoCtx(context.Background(), entry)
+		require.NoError(t, err, "track %s", entry.Name)
+	}
+
+	// Zero edge targets may remain under the unresolved sentinel with any
+	// prefix applied. The invariant is stricter than "Main → Greet resolved"
+	// because the original bug showed up as contains("unresolved::") for
+	// the vast majority of call edges.
+	var leaked []string
+	for _, e := range g.AllEdges() {
+		if strings.Contains(e.To, "/unresolved::") {
+			leaked = append(leaked, e.From+" → "+e.To)
+		}
+	}
+	assert.Empty(t, leaked,
+		"edges with repo-prefixed unresolved targets indicate applyRepoPrefix "+
+			"polluted the resolver sentinel:\n  %s",
+		strings.Join(leaked, "\n  "))
+
+	// Positive check: the cross-repo call edge lands on the right target.
+	main := "app-svc/main.go::Main"
+	greet := "lib-svc/greet.go::Greet"
+	found := false
+	for _, e := range g.GetOutEdges(main) {
+		if e.Kind == graph.EdgeCalls && e.To == greet {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found,
+		"expected resolved EdgeCalls %s → %s; out-edges from Main: %v",
+		main, greet, outEdgeSummaries(g, main))
+}
+
+func outEdgeSummaries(g *graph.Graph, id string) []string {
+	var out []string
+	for _, e := range g.GetOutEdges(id) {
+		out = append(out, string(e.Kind)+":"+e.To)
+	}
+	return out
+}
+
 // TestTrackRepoCtx_FirstOfManyStillGetsPrefix guards against the bug where
 // the first repo tracked via TrackRepoCtx at daemon warmup was indexed
 // without a RepoPrefix because willBeMultiRepo was decided by counting
