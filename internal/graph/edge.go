@@ -13,6 +13,12 @@ const (
 	EdgeMemberOf     EdgeKind = "member_of"
 	EdgeProvides     EdgeKind = "provides"
 	EdgeConsumes     EdgeKind = "consumes"
+	// EdgeMatches links a consumer contract node to the provider contract
+	// node it resolves to (e.g. consumer http:GET:/v1/tucks → provider
+	// http:GET:/v1/tucks, across repos). Traversals bridge service
+	// boundaries by hopping Consumer → EdgeConsumes⁻¹ → consumer-contract
+	// → EdgeMatches → provider-contract → EdgeProvides⁻¹ → handler.
+	EdgeMatches EdgeKind = "matches"
 )
 
 type Edge struct {
@@ -104,7 +110,7 @@ func DefaultOriginFor(kind EdgeKind, confidence float64, semanticSource string) 
 	// Structural AST edges are unambiguous by construction.
 	switch kind {
 	case EdgeDefines, EdgeImports, EdgeExtends, EdgeMemberOf,
-		EdgeImplements, EdgeProvides, EdgeConsumes:
+		EdgeImplements, EdgeProvides, EdgeConsumes, EdgeMatches:
 		return OriginASTResolved
 	}
 	// Resolution-derived edges fall back to confidence score.
@@ -126,7 +132,7 @@ func ConfidenceLabelFor(kind EdgeKind, confidence float64) string {
 	// Structural edges from AST are always extracted.
 	switch kind {
 	case EdgeDefines, EdgeImports, EdgeExtends, EdgeMemberOf, EdgeImplements,
-		EdgeProvides, EdgeConsumes:
+		EdgeProvides, EdgeConsumes, EdgeMatches:
 		return "EXTRACTED"
 	}
 	// Resolution-derived edges: classify by confidence score.

@@ -55,6 +55,20 @@ func NormalizeHTTPPath(path string) string {
 	// Strip leading/trailing whitespace and quotes.
 	path = strings.Trim(path, " \t\"'`")
 
+	// Strip scheme + authority so a consumer URL like
+	// "http://api.example.com/v1/users" matches a provider route like
+	// "/v1/users". Without this, the consumer's Contract.ID includes the
+	// host and never pairs with the provider's, so cross-service traversal
+	// stops at the HTTP call site.
+	if idx := strings.Index(path, "://"); idx >= 0 {
+		rest := path[idx+3:]
+		if slash := strings.Index(rest, "/"); slash >= 0 {
+			path = rest[slash:]
+		} else {
+			path = "/"
+		}
+	}
+
 	// Normalise parameter placeholders.
 	path = paramPatterns.ReplaceAllStringFunc(path, func(m string) string {
 		sub := paramPatterns.FindStringSubmatch(m)

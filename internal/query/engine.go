@@ -100,14 +100,20 @@ func (e *Engine) GetDependents(nodeID string, opts QueryOptions) *SubGraph {
 	return e.bfs(nodeID, opts, false, []graph.EdgeKind{graph.EdgeImports, graph.EdgeCalls, graph.EdgeReferences})
 }
 
-// GetCallChain traces the call graph forward from a function.
+// GetCallChain traces the call graph forward from a function. Follows
+// EdgeCalls for intra-service traversal and EdgeMatches to cross service
+// boundaries — a consumer function's outbound HTTP/gRPC/topic call is
+// linked to the provider's handler via a matcher-produced edge, so the
+// same BFS walks straight through.
 func (e *Engine) GetCallChain(funcID string, opts QueryOptions) *SubGraph {
-	return e.bfs(funcID, opts, true, []graph.EdgeKind{graph.EdgeCalls})
+	return e.bfs(funcID, opts, true, []graph.EdgeKind{graph.EdgeCalls, graph.EdgeMatches})
 }
 
-// GetCallers returns all callers of a function.
+// GetCallers returns all callers of a function. Traverses EdgeCalls and
+// EdgeMatches in reverse: a provider handler's callers include every
+// consumer (possibly in another repo) that resolves to it via the matcher.
 func (e *Engine) GetCallers(funcID string, opts QueryOptions) *SubGraph {
-	return e.bfs(funcID, opts, false, []graph.EdgeKind{graph.EdgeCalls})
+	return e.bfs(funcID, opts, false, []graph.EdgeKind{graph.EdgeCalls, graph.EdgeMatches})
 }
 
 // FindImplementations returns all types implementing an interface.

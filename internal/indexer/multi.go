@@ -72,10 +72,18 @@ func (mi *MultiIndexer) IndexAll() (map[string]*IndexResult, error) {
 
 	// Single-repo mode: delegate without prefixing.
 	if len(repos) == 1 {
-		return mi.indexSingleRepo(repos[0])
+		r, err := mi.indexSingleRepo(repos[0])
+		if err == nil {
+			mi.ReconcileContractEdges()
+		}
+		return r, err
 	}
 
-	return mi.indexMultiRepo(repos)
+	r, err := mi.indexMultiRepo(repos)
+	if err == nil {
+		mi.ReconcileContractEdges()
+	}
+	return r, err
 }
 
 // indexSingleRepo indexes a single repo without prefixing for backward compatibility.
@@ -274,6 +282,8 @@ func (mi *MultiIndexer) IndexRepo(repoPrefix string) (*IndexResult, error) {
 	// TODO: After re-indexing, run CrossRepoResolver.ResolveForRepo(repoPrefix)
 	// to update cross-repo edges. This will be implemented in Task 7.1.
 
+	mi.ReconcileContractEdges()
+
 	return result, nil
 }
 
@@ -363,6 +373,8 @@ func (mi *MultiIndexer) TrackRepoCtx(ctx context.Context, entry config.RepoEntry
 		mi.logger.Warn("failed to add repo to config", zap.Error(err))
 	}
 
+	mi.ReconcileContractEdges()
+
 	return result, nil
 }
 
@@ -387,6 +399,8 @@ func (mi *MultiIndexer) UntrackRepo(repoPrefix string) (int, int) {
 				zap.String("prefix", repoPrefix), zap.Error(err))
 		}
 	}
+
+	mi.ReconcileContractEdges()
 
 	return nodesRemoved, edgesRemoved
 }
@@ -481,6 +495,74 @@ func (mi *MultiIndexer) MergedContractRegistry() *contracts.Registry {
 		merged.AddAll(cr.All(), repoPrefix)
 	}
 	return merged
+}
+
+// ReconcileContractEdges walks the merged contract registry, runs the
+// consumer↔provider matcher, and writes the results into the graph as
+// EdgeMatches edges pointing from consumer-contract nodes to their matched
+// provider-contract nodes. Every call evicts the prior set of EdgeMatches
+// first so the edges stay in sync with the current contract view; that's
+// correct after track / untrack / re-index / watcher re-scan. Returns the
+// number of match edges added so callers can log or test the effect.
+//
+// This is what makes get_call_chain traverse service boundaries: without a
+// persisted contract→contract edge, the matcher's result is only visible
+// via the `contracts check` tool and traversals stop at each service's
+// boundary.
+func (mi *MultiIndexer) ReconcileContractEdges() int {
+	g := mi.Graph()
+	if g == nil {
+		return 0
+	}
+
+	// Evict any prior EdgeMatches so the graph reflects only the current
+	// registry. Collect first, remove second — we're mutating the same
+	// out-edge lists we'd be iterating otherwise.
+	type edgeKey struct{ from, to string }
+	var stale []edgeKey
+	for _, e := range g.AllEdges() {
+		if e.Kind == graph.EdgeMatches {
+			stale = append(stale, edgeKey{e.From, e.To})
+		}
+	}
+	for _, k := range stale {
+		g.RemoveEdge(k.from, k.to, graph.EdgeMatches)
+	}
+
+	merged := mi.MergedContractRegistry()
+	if merged == nil {
+		return 0
+	}
+	result := contracts.Match(merged)
+	added := 0
+	for _, m := range result.Matched {
+		// Connect the consumer's enclosing symbol directly to the
+		// provider's enclosing symbol. Contract nodes in the graph are
+		// deduped by Contract.ID, so a provider and a consumer that share
+		// the same ID collapse into one node — a contract→contract edge
+		// would be a self-loop. Symbol→symbol bypasses that and gives
+		// get_call_chain the traversal it needs: saveTuck (extension) →
+		// Handler.CreateTuck (core-api).
+		if m.Provider.SymbolID == "" || m.Consumer.SymbolID == "" {
+			continue
+		}
+		if m.Provider.SymbolID == m.Consumer.SymbolID {
+			continue
+		}
+		g.AddEdge(&graph.Edge{
+			From:            m.Consumer.SymbolID,
+			To:              m.Provider.SymbolID,
+			Kind:            graph.EdgeMatches,
+			FilePath:        m.Consumer.FilePath,
+			Line:            m.Consumer.Line,
+			Confidence:      1.0,
+			ConfidenceLabel: "EXTRACTED",
+			Origin:          graph.OriginASTResolved,
+			CrossRepo:       m.CrossRepo,
+		})
+		added++
+	}
+	return added
 }
 
 // Graph returns the underlying shared graph.
