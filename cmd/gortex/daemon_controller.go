@@ -203,6 +203,68 @@ func (c *realController) Reload(ctx context.Context) (json.RawMessage, error) {
 	})
 }
 
+// searchBackendInfo bundles the daemon.SearchBackendStats payload with
+// the separate text/vector byte counts we need to split per-repo.
+type searchBackendInfo struct {
+	daemon.SearchBackendStats
+	vectorBytes uint64
+}
+
+// resolveSearchBackend inspects the live search backend and produces
+// the stats needed by status rendering: which backend is active, total
+// document count, its heap footprint, and (for disk-backed Bleve) the
+// on-disk size.
+//
+// Real-world unwrap order: Swappable → HybridBackend → (text, vector).
+// The text side is itself a concrete BM25/Bleve. Both layers have to
+// be peeled; if we stop early we fall into the default branch and the
+// status reports "unknown" — which was the bug users saw.
+func resolveSearchBackend(b search.Backend) searchBackendInfo {
+	out := searchBackendInfo{}
+	if b == nil {
+		return out
+	}
+
+	// 1) Unwrap Swappable so we see the currently-active inner.
+	inner := b
+	if sw, ok := inner.(*search.Swappable); ok {
+		inner = sw.Inner()
+	}
+	// 2) If Hybrid is in play, split its text/vector sizes and keep
+	//    drilling into the text side for name/doc-count identification.
+	if hyb, ok := inner.(*search.HybridBackend); ok {
+		out.vectorBytes = hyb.VectorSizeBytes()
+		inner = hyb.TextBackend()
+		// TextBackend() itself could be a Swappable in some setups —
+		// unlikely today but cheap to guard.
+		if sw, ok := inner.(*search.Swappable); ok {
+			inner = sw.Inner()
+		}
+	}
+
+	switch back := inner.(type) {
+	case *search.BleveBackend:
+		if path := back.DiskPath(); path != "" {
+			out.Name = "bleve-disk"
+			out.DiskPath = path
+			out.DiskBytes = back.DiskBytes()
+		} else {
+			out.Name = "bleve-memory"
+		}
+		out.DocCount = back.Count()
+		out.Bytes = back.SizeBytes()
+	case *search.BM25Backend:
+		out.Name = "bm25"
+		out.DocCount = back.Count()
+		out.Bytes = back.SizeBytes()
+	default:
+		out.Name = "unknown"
+		out.DocCount = b.Count()
+		out.Bytes = search.BackendSize(b)
+	}
+	return out
+}
+
 // Status gathers per-repo stats and basic process metrics. Daemon-level
 // fields (PID, uptime, socket, session count) are filled in by the
 // daemon itself before the response goes out.
@@ -210,7 +272,11 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var tracked []daemon.TrackedRepoStatus
+	var (
+		tracked                  []daemon.TrackedRepoStatus
+		searchBackendForResponse daemon.SearchBackendStats
+		totalNodes               int
+	)
 	if c.multiIndexer != nil {
 		// meta.NodeCount / meta.EdgeCount were frozen at TrackRepo time
 		// from graph.NodeCount() — which is the *whole* multi-repo graph,
@@ -230,20 +296,7 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		// but it's the best attribution we can make without indexing
 		// per-repo which would double storage for the sake of a status
 		// breakdown.
-		var (
-			globalSearchBytes, globalVectorBytes uint64
-			totalNodes                           int
-		)
-		if backend := c.multiIndexer.Search(); backend != nil {
-			// If the backend is Hybrid, split text vs vector; otherwise
-			// treat the whole thing as "search."
-			if hyb, ok := backend.(*search.HybridBackend); ok {
-				globalSearchBytes = hyb.TextSizeBytes()
-				globalVectorBytes = hyb.VectorSizeBytes()
-			} else {
-				globalSearchBytes = search.BackendSize(backend)
-			}
-		}
+		backendStats := resolveSearchBackend(c.multiIndexer.Search())
 		for _, s := range repoStats {
 			totalNodes += s.TotalNodes
 		}
@@ -264,8 +317,9 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 			}
 			if totalNodes > 0 && nodes > 0 {
 				share := float64(nodes) / float64(totalNodes)
-				mem.SearchBytes = uint64(float64(globalSearchBytes) * share)
-				mem.VectorsBytes = uint64(float64(globalVectorBytes) * share)
+				mem.SearchBytes = uint64(float64(backendStats.Bytes) * share)
+				mem.VectorsBytes = uint64(float64(backendStats.vectorBytes) * share)
+				mem.DiskBytes = uint64(float64(backendStats.DiskBytes) * share)
 			}
 			mem.TotalBytes = mem.NodesBytes + mem.EdgesBytes + mem.SearchBytes + mem.VectorsBytes
 
@@ -279,6 +333,7 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 				Memory:    mem,
 			})
 		}
+		searchBackendForResponse = backendStats.SearchBackendStats
 	}
 
 	var mem runtime.MemStats
@@ -287,6 +342,18 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 	return daemon.StatusResponse{
 		TrackedRepos:  tracked,
 		MemoryBytes:   mem.Alloc,
+		SearchBackend: searchBackendForResponse,
+		Runtime: daemon.RuntimeStats{
+			Alloc:        mem.Alloc,
+			Sys:          mem.Sys,
+			HeapInuse:    mem.HeapInuse,
+			HeapIdle:     mem.HeapIdle,
+			HeapReleased: mem.HeapReleased,
+			StackInuse:   mem.StackInuse,
+			NumGC:        mem.NumGC,
+			NumGoroutine: runtime.NumGoroutine(),
+		},
+		PProfAddr:     daemonPProfAddr(),
 		Ready:         c.ready.Load(),
 		WarmupSeconds: c.warmupSeconds.Load(),
 	}, nil

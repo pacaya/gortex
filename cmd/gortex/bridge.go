@@ -90,19 +90,24 @@ func runBridge(_ *cobra.Command, _ []string) error {
 	languages.RegisterAll(reg)
 	idx := indexer.New(g, reg, cfg.Index, logger)
 
-	// Set up embedding provider for semantic search.
+	// Set up embedding provider for semantic search. Kept local so it
+	// can be handed off to MultiIndexer below; otherwise per-repo
+	// indexers built inside TrackRepoCtx have embedder=nil.
+	var embedder embedding.Provider
 	if bridgeEmbeddingsURL != "" {
-		embedder := embedding.NewAPIProvider(bridgeEmbeddingsURL, bridgeEmbeddingsModel)
-		idx.SetEmbedder(embedder)
+		embedder = embedding.NewAPIProvider(bridgeEmbeddingsURL, bridgeEmbeddingsModel)
 		fmt.Fprintf(os.Stderr, "[gortex] bridge: semantic search enabled (API: %s)\n", bridgeEmbeddingsURL)
 	} else if bridgeEmbeddings {
-		embedder, err := embedding.NewLocalProvider()
+		e, err := embedding.NewLocalProvider()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[gortex] bridge: embeddings disabled: %v\n", err)
 		} else {
-			idx.SetEmbedder(embedder)
+			embedder = e
 			fmt.Fprintf(os.Stderr, "[gortex] bridge: semantic search enabled (local)\n")
 		}
+	}
+	if embedder != nil {
+		idx.SetEmbedder(embedder)
 	}
 
 	// Set up semantic enrichment.
@@ -185,6 +190,9 @@ func runBridge(_ *cobra.Command, _ []string) error {
 	var mi *indexer.MultiIndexer
 	if cm != nil {
 		mi = indexer.NewMultiIndexer(g, reg, idx.Search(), cm, logger)
+		if embedder != nil {
+			mi.SetEmbedder(embedder)
+		}
 	}
 
 	var multiOpts []gortexmcp.MultiRepoOptions

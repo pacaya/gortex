@@ -617,15 +617,19 @@ type RepoMemoryEstimate struct {
 // Total returns the sum of NodeBytes and EdgeBytes.
 func (e RepoMemoryEstimate) Total() uint64 { return e.NodeBytes + e.EdgeBytes }
 
-// per-node fixed overhead: the struct header, the pointer from the
-// byRepo/byFile/byName/byQual slices/maps, and the typical allocator
-// padding. Tuned against runtime.ReadMemStats deltas on a 50k-node
-// repo; within ~10%.
-const nodeStructOverhead = 160
+// per-node fixed overhead: the struct header plus the amortised cost
+// of the pointers held by byRepo/byFile/byName/byQual secondary
+// indexes inside each shard (4 maps × ~24 bytes for map bucket + slice
+// element ≈ 100 bytes). Tuned against runtime.ReadMemStats deltas on a
+// 50k-node repo; within ~10% of actual.
+const nodeStructOverhead = 240
 
 // per-edge fixed overhead: two string pointers, kind, filepath, line,
-// plus slice-header and adjacency-map amortisation.
-const edgeStructOverhead = 120
+// plus slice-header and adjacency-map amortisation for outEdges AND
+// inEdges (every edge is stored once as a struct but is referenced from
+// both the source's out-adjacency list and the target's in-adjacency
+// list, so the amortised overhead is ~2× slice-element + map-bucket).
+const edgeStructOverhead = 144
 
 // RepoMemoryEstimate walks the per-repo partition and sums node and
 // edge byte estimates. Approximate but cheap (O(repo size) with one

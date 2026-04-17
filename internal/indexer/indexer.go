@@ -127,12 +127,32 @@ func (idx *Indexer) swappable() *search.Swappable {
 // in-memory backend keeps serving correctly, just with worse memory
 // characteristics).
 func (idx *Indexer) upgradeSearchToBleve() {
-	blv, err := search.NewBleve()
-	if err != nil {
-		idx.logger.Warn("search: bleve construction failed, staying on in-memory",
-			zap.Error(err))
-		return
+	// Opt-in disk backend. Scorch stores the inverted index on disk
+	// (~10-20× less heap than upsidedown+gtreap) at the cost of file
+	// I/O during build. Users point GORTEX_BLEVE_DISK_DIR at a
+	// writable path; we manage the file lifecycle inside it.
+	diskDir := os.Getenv("GORTEX_BLEVE_DISK_DIR")
+
+	var (
+		blv *search.BleveBackend
+		err error
+	)
+	if diskDir != "" {
+		blv, err = search.NewBleveDisk(diskDir)
+		if err != nil {
+			idx.logger.Warn("search: bleve disk construction failed, falling back to in-memory",
+				zap.String("dir", diskDir), zap.Error(err))
+		}
 	}
+	if blv == nil {
+		blv, err = search.NewBleve()
+		if err != nil {
+			idx.logger.Warn("search: bleve construction failed, staying on in-memory",
+				zap.Error(err))
+			return
+		}
+	}
+
 	for _, n := range idx.graph.AllNodes() {
 		if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
 			continue
@@ -141,8 +161,15 @@ func (idx *Indexer) upgradeSearchToBleve() {
 		blv.Add(n.ID, n.Name, n.FilePath, sig)
 	}
 	idx.swappable().Swap(blv)
+
+	mode := "memory"
+	if blv.DiskPath() != "" {
+		mode = "disk"
+	}
 	idx.logger.Info("search: upgraded to Bleve backend (background)",
-		zap.Int("symbols", blv.Count()))
+		zap.Int("symbols", blv.Count()),
+		zap.String("mode", mode),
+		zap.String("disk_path", blv.DiskPath()))
 }
 
 // Graph returns the underlying graph.
@@ -754,8 +781,21 @@ func (idx *Indexer) buildSearchIndex() {
 
 	// Wrap text + vector into hybrid backend, swapping it in atomically
 	// so any concurrent searches keep seeing a coherent backend.
+	//
+	// Unwrap any existing HybridBackend to its text side before
+	// re-wrapping. Without this, buildSearchIndex called again (e.g.
+	// once per tracked repo during daemon warmup) would stack a fresh
+	// Hybrid on top of the previous one — nested Hybrids retain all
+	// their stale vector indexes, ballooning live memory by an order
+	// of magnitude. The text backend (BM25 or Bleve) has already been
+	// updated with every node via idx.search.Add above; a single
+	// Hybrid wrapping it + the latest vecBackend is all we need.
 	sw := idx.swappable()
-	sw.Swap(search.NewHybrid(sw.Inner(), vecBackend, idx.embedder))
+	inner := sw.Inner()
+	if hyb, ok := inner.(*search.HybridBackend); ok {
+		inner = hyb.TextBackend()
+	}
+	sw.Swap(search.NewHybrid(inner, vecBackend, idx.embedder))
 	idx.logger.Info("vector index built",
 		zap.Int("symbols", vecBackend.Count()),
 		zap.Int("dimensions", dims))

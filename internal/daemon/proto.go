@@ -116,13 +116,48 @@ type StatusResponse struct {
 	SocketPath    string              `json:"socket_path"`
 	TrackedRepos  []TrackedRepoStatus `json:"tracked_repos"`
 	Sessions      int                 `json:"sessions"`
-	MemoryBytes   uint64              `json:"memory_bytes"`
+	// MemoryBytes is runtime.MemStats.Alloc — live allocated heap.
+	// Retained for backwards compatibility with older clients; new
+	// clients should read from Runtime.
+	MemoryBytes   uint64             `json:"memory_bytes"`
+	Runtime       RuntimeStats       `json:"runtime"`
+	SearchBackend SearchBackendStats `json:"search_backend"`
+	// PProfAddr is set when the daemon has opened an HTTP pprof
+	// listener (via the GORTEX_DAEMON_PPROF_ADDR env var). Empty
+	// string means pprof is not enabled on this daemon.
+	PProfAddr string `json:"pprof_addr,omitempty"`
 	// Ready is false while the daemon is still loading the snapshot and
 	// re-indexing tracked repos in the background. The socket is reachable
 	// even when Ready=false; queries against not-yet-indexed repos may
 	// return partial results until warmup completes.
-	Ready          bool  `json:"ready"`
-	WarmupSeconds  int64 `json:"warmup_seconds"`
+	Ready         bool  `json:"ready"`
+	WarmupSeconds int64 `json:"warmup_seconds"`
+}
+
+// RuntimeStats captures Go runtime.MemStats fields users care about
+// when diagnosing daemon memory: live vs reserve, GC pressure, and
+// goroutine count. All byte fields are raw (not human-formatted).
+type RuntimeStats struct {
+	Alloc         uint64 `json:"alloc"`          // live heap allocations
+	Sys           uint64 `json:"sys"`            // total bytes from OS
+	HeapInuse     uint64 `json:"heap_inuse"`     // bytes in in-use spans
+	HeapIdle      uint64 `json:"heap_idle"`      // bytes in idle spans (released or reserve)
+	HeapReleased  uint64 `json:"heap_released"`  // bytes returned to OS
+	StackInuse    uint64 `json:"stack_inuse"`    // goroutine stacks
+	NumGC         uint32 `json:"num_gc"`         // completed GC cycles
+	NumGoroutine  int    `json:"num_goroutine"`  // live goroutines
+}
+
+// SearchBackendStats identifies which search backend is currently
+// serving queries, so users can read the `search_b` column in the
+// repo breakdown with the right mental model. Bleve with the default
+// gtreap KV store costs ~32 KiB per document; BM25 costs ~2 KiB.
+type SearchBackendStats struct {
+	Name     string `json:"name"`                 // "bm25" | "bleve-memory" | "bleve-disk"
+	DocCount int    `json:"doc_count"`            // indexed documents across all repos
+	Bytes    uint64 `json:"bytes"`                // approximate heap footprint
+	DiskPath string `json:"disk_path,omitempty"`  // set only when Name == "bleve-disk"
+	DiskBytes uint64 `json:"disk_bytes,omitempty"` // current on-disk size for "bleve-disk"
 }
 
 // SearchSymbolsParams is the payload for ControlSearchSymbols.
@@ -174,7 +209,12 @@ type MemoryBreakdown struct {
 	EdgesBytes   uint64 `json:"edges_bytes"`
 	SearchBytes  uint64 `json:"search_bytes"`
 	VectorsBytes uint64 `json:"vectors_bytes"`
-	TotalBytes   uint64 `json:"total_bytes"`
+	// DiskBytes is populated only when the Bleve backend is running in
+	// disk mode (GORTEX_BLEVE_DISK_DIR set). Each repo gets a
+	// node-proportional share of the on-disk index size. Zero in
+	// memory-only mode.
+	DiskBytes  uint64 `json:"disk_bytes,omitempty"`
+	TotalBytes uint64 `json:"total_bytes"`
 }
 
 // WriteJSONLine writes v as one JSON object followed by a newline. The

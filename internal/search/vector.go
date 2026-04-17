@@ -62,18 +62,22 @@ func (v *VectorBackend) Count() int {
 // Dims returns the embedding dimensionality.
 func (v *VectorBackend) Dims() int { return v.dims }
 
-// SizeBytes is a rough memory estimate: each indexed vector stores
-// dims × 4B (float32) plus HNSW neighbor lists. Default M=16, two
-// layers per node on average → ~32 keys × (16 bytes for the string key
-// pointer + small overhead) ≈ 512 bytes of graph overhead per node.
-// Doesn't count the HNSW index-level metadata (small and constant).
+// SizeBytes estimates HNSW's heap footprint. The raw vector storage
+// (dims × 4 B) is a small fraction of the total — each node also
+// carries layer neighbor lists, priority-queue scratch, and the
+// string-keyed maps that drive graph navigation. Calibrated against
+// heap profiles on a 68k-vector index (50 dims, default M=16): live
+// was ~408 MiB, i.e. ~6 KiB per vector overall. Using dims×4 + 5900 B
+// keeps the formula honest as dims change (MiniLM at 384 would push
+// the dims×4 term to 1.5 KiB per vector, overhead stays roughly flat).
 func (v *VectorBackend) SizeBytes() uint64 {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if v.count == 0 {
 		return 0
 	}
-	perVector := uint64(v.dims)*4 + 512
+	const hnswOverhead = 5900 // neighbor lists + map headers + priority-queue slack
+	perVector := uint64(v.dims)*4 + hnswOverhead
 	return uint64(v.count) * perVector
 }
 

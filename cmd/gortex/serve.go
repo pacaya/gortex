@@ -119,19 +119,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	idx := indexer.New(g, reg, cfg.Index, logger)
 
-	// Set up embedding provider for semantic search.
+	// Set up embedding provider for semantic search. Held in a local
+	// variable so it can be plumbed into MultiIndexer below — without
+	// that, per-repo indexers created by MultiIndexer have embedder=nil
+	// and skip the vector pass.
+	var embedder embedding.Provider
 	if serveEmbeddingsURL != "" {
-		embedder := embedding.NewAPIProvider(serveEmbeddingsURL, serveEmbeddingsModel)
-		idx.SetEmbedder(embedder)
+		embedder = embedding.NewAPIProvider(serveEmbeddingsURL, serveEmbeddingsModel)
 		fmt.Fprintf(os.Stderr, "[gortex] semantic search enabled (API: %s)\n", serveEmbeddingsURL)
 	} else if serveEmbeddings {
-		embedder, err := embedding.NewLocalProvider()
+		e, err := embedding.NewLocalProvider()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[gortex] warning: embeddings disabled: %v\n", err)
 		} else {
-			idx.SetEmbedder(embedder)
+			embedder = e
 			fmt.Fprintf(os.Stderr, "[gortex] semantic search enabled (local)\n")
 		}
+	}
+	if embedder != nil {
+		idx.SetEmbedder(embedder)
 	}
 
 	// Set up semantic enrichment.
@@ -222,6 +228,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var mi *indexer.MultiIndexer
 	if cm != nil {
 		mi = indexer.NewMultiIndexer(g, reg, idx.Search(), cm, logger)
+		if embedder != nil {
+			mi.SetEmbedder(embedder)
+		}
 	}
 
 	// Build multi-repo options for the MCP server.

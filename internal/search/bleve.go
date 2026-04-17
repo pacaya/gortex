@@ -1,6 +1,9 @@
 package search
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 
@@ -17,8 +20,30 @@ import (
 // BleveBackend wraps Bleve for full-text search over code symbols.
 // Better for large repos (50k+ symbols) and multi-repo mode.
 type BleveBackend struct {
-	index bleve.Index
-	count atomic.Int64
+	index    bleve.Index
+	count    atomic.Int64
+	diskPath string // non-empty when the index is disk-backed (scorch)
+}
+
+// DiskPath returns the directory containing the on-disk index, or ""
+// when the backend is running fully in memory.
+func (b *BleveBackend) DiskPath() string { return b.diskPath }
+
+// DiskBytes walks the index directory and sums file sizes. Zero when
+// in-memory. Called at most once per `gortex daemon status` invocation.
+func (b *BleveBackend) DiskBytes() uint64 {
+	if b.diskPath == "" {
+		return 0
+	}
+	var total uint64
+	_ = filepath.Walk(b.diskPath, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		total += uint64(info.Size())
+		return nil
+	})
+	return total
 }
 
 // symbolDoc is the document structure indexed by Bleve.
@@ -30,7 +55,8 @@ type symbolDoc struct {
 	All string `json:"all"`
 }
 
-// NewBleve creates a Bleve-backed search index (in-memory).
+// NewBleve creates a Bleve-backed search index (in-memory via
+// upsidedown + gtreap). Heavy but self-contained — no disk writes.
 func NewBleve() (*BleveBackend, error) {
 	indexMapping := buildMapping()
 
@@ -40,6 +66,35 @@ func NewBleve() (*BleveBackend, error) {
 	}
 
 	return &BleveBackend{index: idx}, nil
+}
+
+// NewBleveDisk creates a disk-backed Bleve index under dir using the
+// scorch storage engine. The dir is created if missing; any existing
+// index at the same path is removed first because we always rebuild
+// from scratch (we don't have incremental-write semantics yet).
+// Scorch is ~10-20× more memory-efficient than the in-memory
+// upsidedown+gtreap store at the cost of disk IO on write, which only
+// matters during initial index construction.
+func NewBleveDisk(dir string) (*BleveBackend, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("bleve disk dir: %w", err)
+	}
+	// Use a fixed child name so a caller passing a shared parent dir
+	// doesn't overwrite neighbouring state.
+	indexPath := filepath.Join(dir, "bleve.scorch")
+	if _, err := os.Stat(indexPath); err == nil {
+		if rmErr := os.RemoveAll(indexPath); rmErr != nil {
+			return nil, fmt.Errorf("clearing old bleve index at %s: %w", indexPath, rmErr)
+		}
+	}
+
+	indexMapping := buildMapping()
+	idx, err := bleve.New(indexPath, indexMapping)
+	if err != nil {
+		return nil, fmt.Errorf("opening bleve disk index at %s: %w", indexPath, err)
+	}
+
+	return &BleveBackend{index: idx, diskPath: indexPath}, nil
 }
 
 func buildMapping() *mapping.IndexMappingImpl {
@@ -152,14 +207,17 @@ func (b *BleveBackend) Count() int {
 	return int(b.count.Load())
 }
 
-// SizeBytes approximates Bleve's in-memory footprint. Bleve doesn't
-// expose a direct byte size, so we scale by document count: ~2 KB per
-// indexed symbol covers the tokenised term dictionary, posting lists,
-// and stored fields for the symbolDoc structure we write. The
-// constant was calibrated against a 50k-symbol index on a typical Go
-// repo (~100 MiB) — within a factor of ~1.5× of actual.
+// SizeBytes approximates Bleve's in-memory footprint. Bleve (with the
+// default upsidedown + gtreap KV store) is much hungrier than the
+// fields-and-postings accounting would suggest — gtreap's immutable
+// persistent trees retain copy-on-write versions, and the upsidedown
+// row layout expands every symbol into many keys. Calibrated against
+// heap profiles on a ~65k-symbol index: live Bleve heap was ~2.0 GiB,
+// i.e. ~32 KiB per document. Earlier estimates of ~2 KiB/doc were off
+// by 16× and were the root cause of the large "other" bucket users
+// saw in `gortex daemon status`.
 func (b *BleveBackend) SizeBytes() uint64 {
-	return uint64(b.count.Load()) * 2048
+	return uint64(b.count.Load()) * 32768
 }
 
 func (b *BleveBackend) Close() {

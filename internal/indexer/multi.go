@@ -13,6 +13,7 @@ import (
 
 	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/contracts"
+	"github.com/zzet/gortex/internal/embedding"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/search"
@@ -36,11 +37,23 @@ type MultiIndexer struct {
 	graph     *graph.Graph
 	registry  *parser.Registry
 	search    search.Backend
+	embedder  embedding.Provider
 	repos     map[string]*RepoMetadata // repoPrefix → metadata
 	indexers  map[string]*Indexer       // repoPrefix → per-repo indexer
 	configMgr *config.ConfigManager
 	logger    *zap.Logger
 	mu        sync.RWMutex
+}
+
+// SetEmbedder installs the embedding provider every per-repo indexer
+// should use. Must be called before IndexAll / TrackRepo for vectors
+// to land in the graph — without this the fresh Indexer created per
+// repo has embedder=nil and buildSearchIndex skips the vector pass.
+// Safe to call zero or one times; subsequent calls silently replace.
+func (mi *MultiIndexer) SetEmbedder(e embedding.Provider) {
+	mi.mu.Lock()
+	defer mi.mu.Unlock()
+	mi.embedder = e
 }
 
 // NewMultiIndexer creates a MultiIndexer.
@@ -98,6 +111,9 @@ func (mi *MultiIndexer) indexSingleRepo(entry config.RepoEntry) (map[string]*Ind
 
 	idx := New(mi.graph, mi.registry, cfg.Index, mi.logger)
 	idx.search = mi.search
+	if mi.embedder != nil {
+		idx.SetEmbedder(mi.embedder)
+	}
 	// No repo prefix in single-repo mode.
 
 	result, err := idx.Index(absPath)
@@ -180,6 +196,9 @@ func (mi *MultiIndexer) indexMultiRepo(repos []config.RepoEntry) (map[string]*In
 			cfg := mi.configMgr.GetRepoConfig(prefix)
 			idx := New(mi.graph, mi.registry, cfg.Index, mi.logger)
 			idx.search = mi.search
+			if mi.embedder != nil {
+				idx.SetEmbedder(mi.embedder)
+			}
 			idx.SetRepoPrefix(prefix)
 			idx.SetTrackedRepoModules(trackedModules)
 
@@ -255,6 +274,9 @@ func (mi *MultiIndexer) IndexRepo(repoPrefix string) (*IndexResult, error) {
 	cfg := mi.configMgr.GetRepoConfig(repoPrefix)
 	idx := New(mi.graph, mi.registry, cfg.Index, mi.logger)
 	idx.search = mi.search
+	if mi.embedder != nil {
+		idx.SetEmbedder(mi.embedder)
+	}
 	if mi.IsMultiRepo() {
 		idx.SetRepoPrefix(repoPrefix)
 	}
@@ -343,6 +365,9 @@ func (mi *MultiIndexer) TrackRepoCtx(ctx context.Context, entry config.RepoEntry
 	cfg := mi.configMgr.GetRepoConfig(prefix)
 	idx := New(mi.graph, mi.registry, cfg.Index, mi.logger)
 	idx.search = mi.search
+	if mi.embedder != nil {
+		idx.SetEmbedder(mi.embedder)
+	}
 	if willBeMultiRepo {
 		idx.SetRepoPrefix(prefix)
 	}

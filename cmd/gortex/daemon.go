@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
@@ -133,6 +135,11 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	}
 	srv.Controller = controller
 	srv.MCPDispatcher = newMCPDispatcher(state.mcpServer, state.multiIndexer, logger)
+
+	// Opt-in pprof endpoint. No-op unless GORTEX_DAEMON_PPROF_ADDR is
+	// set — keeps profiling off by default so the daemon doesn't hand
+	// its heap to anything on localhost.
+	startPProfIfEnabled(logger)
 
 	// Periodic snapshots — 10 minute interval. On a crash we lose at
 	// most one interval's worth of work, which is acceptable given
@@ -312,46 +319,167 @@ func runDaemonStatus(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("parse status: %w", err)
 	}
 	w := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(w, "daemon      %s\n", st.Version)
-	_, _ = fmt.Fprintf(w, "pid         %d\n", st.PID)
-	_, _ = fmt.Fprintf(w, "socket      %s\n", st.SocketPath)
-	_, _ = fmt.Fprintf(w, "uptime      %s\n", formatDuration(time.Duration(st.UptimeSeconds)*time.Second))
-	if st.Ready {
-		_, _ = fmt.Fprintf(w, "state       ready (warmup %s)\n",
-			formatDuration(time.Duration(st.WarmupSeconds)*time.Second))
-	} else {
-		_, _ = fmt.Fprintf(w, "state       warming up (socket is reachable, background re-index in progress)\n")
-	}
-	_, _ = fmt.Fprintf(w, "sessions    %d\n", st.Sessions)
-	if st.MemoryBytes > 0 {
-		_, _ = fmt.Fprintf(w, "memory      %s\n", formatBytes(st.MemoryBytes))
-	}
-	if len(st.TrackedRepos) > 0 {
-		_, _ = fmt.Fprintln(w, "tracked repos:")
-		// Sort biggest-memory first so the usual question "who's eating
-		// all the RAM?" is answered by the first line.
-		rows := make([]daemon.TrackedRepoStatus, len(st.TrackedRepos))
-		copy(rows, st.TrackedRepos)
-		sort.Slice(rows, func(i, j int) bool {
-			return rows[i].Memory.TotalBytes > rows[j].Memory.TotalBytes
-		})
-		for _, r := range rows {
-			_, _ = fmt.Fprintf(w, "  %-20s %s  (%d files, %d nodes, %d edges, %s)\n",
-				r.Prefix, r.Path, r.Files, r.Nodes, r.Edges,
-				formatBytes(r.Memory.TotalBytes))
-			// Break down only when there's something to show.
-			if r.Memory.TotalBytes > 0 {
-				_, _ = fmt.Fprintf(w, "    nodes=%s edges=%s search=%s vectors=%s\n",
-					formatBytes(r.Memory.NodesBytes),
-					formatBytes(r.Memory.EdgesBytes),
-					formatBytes(r.Memory.SearchBytes),
-					formatBytes(r.Memory.VectorsBytes))
-			}
-		}
-	} else {
-		_, _ = fmt.Fprintln(w, "tracked repos: (none)")
-	}
+	renderDaemonHeader(w, st)
+	renderDaemonRepos(w, st)
 	return nil
+}
+
+// renderDaemonHeader writes the fixed-schema key/value facts about the
+// daemon process as a borderless two-column table.
+func renderDaemonHeader(w io.Writer, st daemon.StatusResponse) {
+	t := table.NewWriter()
+	t.SetOutputMirror(w)
+	t.SetStyle(table.StyleLight)
+	t.Style().Options.DrawBorder = false
+	t.Style().Options.SeparateColumns = false
+	t.Style().Options.SeparateHeader = false
+	t.Style().Options.SeparateRows = false
+	t.SetColumnConfigs([]table.ColumnConfig{
+		{Number: 1, Align: text.AlignLeft, WidthMax: 12},
+		{Number: 2, Align: text.AlignLeft},
+	})
+	t.AppendRow(table.Row{"daemon", st.Version})
+	t.AppendRow(table.Row{"pid", st.PID})
+	t.AppendRow(table.Row{"socket", st.SocketPath})
+	t.AppendRow(table.Row{"uptime", formatDuration(time.Duration(st.UptimeSeconds) * time.Second)})
+	if st.Ready {
+		t.AppendRow(table.Row{"state",
+			fmt.Sprintf("ready (warmup %s)", formatDuration(time.Duration(st.WarmupSeconds)*time.Second))})
+	} else {
+		t.AppendRow(table.Row{"state", "warming up (socket reachable, background re-index in progress)"})
+	}
+	t.AppendRow(table.Row{"sessions", st.Sessions})
+	if st.MemoryBytes > 0 {
+		t.AppendRow(table.Row{"memory", formatBytes(st.MemoryBytes)})
+	}
+	if sb := st.SearchBackend; sb.Name != "" {
+		switch {
+		case sb.DiskPath != "":
+			t.AppendRow(table.Row{"search", fmt.Sprintf(
+				"%s  docs=%d  heap=%s  disk=%s  path=%s",
+				sb.Name, sb.DocCount, formatBytes(sb.Bytes),
+				formatBytes(sb.DiskBytes), sb.DiskPath)})
+		default:
+			t.AppendRow(table.Row{"search", fmt.Sprintf(
+				"%s  docs=%d  heap=%s", sb.Name, sb.DocCount, formatBytes(sb.Bytes))})
+		}
+	}
+	rt := st.Runtime
+	if rt.Sys > 0 {
+		t.AppendRow(table.Row{"runtime", fmt.Sprintf(
+			"alloc=%s  sys=%s  heap_inuse=%s  heap_idle=%s  heap_released=%s  stacks=%s  gc=%d  goroutines=%d",
+			formatBytes(rt.Alloc),
+			formatBytes(rt.Sys),
+			formatBytes(rt.HeapInuse),
+			formatBytes(rt.HeapIdle),
+			formatBytes(rt.HeapReleased),
+			formatBytes(rt.StackInuse),
+			rt.NumGC,
+			rt.NumGoroutine,
+		)})
+	}
+	if st.PProfAddr != "" {
+		t.AppendRow(table.Row{"pprof", fmt.Sprintf(
+			"http://%s/debug/pprof/  (example: go tool pprof -http=: http://%s/debug/pprof/heap)",
+			st.PProfAddr, st.PProfAddr)})
+	}
+	t.Render()
+}
+
+// renderDaemonRepos writes the per-repo breakdown as a single table.
+// Rows sort by attributed memory descending so the largest consumers
+// appear first. An "other" row at the bottom covers the delta between
+// process-total memory and the sum of attributed per-repo memory —
+// embedder model weights, runtime heap headroom, semantic caches, etc.
+func renderDaemonRepos(w io.Writer, st daemon.StatusResponse) {
+	if len(st.TrackedRepos) == 0 {
+		_, _ = fmt.Fprintln(w, "\ntracked repos: (none)")
+		return
+	}
+
+	rows := make([]daemon.TrackedRepoStatus, len(st.TrackedRepos))
+	copy(rows, st.TrackedRepos)
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].Memory.TotalBytes > rows[j].Memory.TotalBytes
+	})
+
+	// The disk_b column only appears when any repo actually has disk
+	// usage — i.e. Bleve is running in disk mode. Keeping it
+	// conditional stops the default in-memory output from carrying a
+	// dead column users would (rightly) ask about.
+	showDisk := false
+	for _, r := range rows {
+		if r.Memory.DiskBytes > 0 {
+			showDisk = true
+			break
+		}
+	}
+
+	_, _ = fmt.Fprintln(w, "\ntracked repos:")
+	t := table.NewWriter()
+	t.SetOutputMirror(w)
+	t.SetStyle(table.StyleLight)
+	t.Style().Format.Header = text.FormatDefault
+	t.Style().Format.Footer = text.FormatDefault
+
+	header := table.Row{
+		"repo", "total", "files", "nodes", "edges",
+		"nodes_b", "edges_b", "search_b", "vectors_b",
+	}
+	colConfigs := []table.ColumnConfig{
+		{Number: 1, Align: text.AlignLeft},
+		{Number: 2, Align: text.AlignRight},
+		{Number: 3, Align: text.AlignRight},
+		{Number: 4, Align: text.AlignRight},
+		{Number: 5, Align: text.AlignRight},
+		{Number: 6, Align: text.AlignRight},
+		{Number: 7, Align: text.AlignRight},
+		{Number: 8, Align: text.AlignRight},
+		{Number: 9, Align: text.AlignRight},
+	}
+	if showDisk {
+		header = append(header, "disk_b")
+		colConfigs = append(colConfigs, table.ColumnConfig{Number: len(colConfigs) + 1, Align: text.AlignRight})
+	}
+	header = append(header, "path")
+	colConfigs = append(colConfigs, table.ColumnConfig{Number: len(colConfigs) + 1, Align: text.AlignLeft})
+	t.AppendHeader(header)
+	t.SetColumnConfigs(colConfigs)
+
+	var attributed uint64
+	for _, r := range rows {
+		attributed += r.Memory.TotalBytes
+		row := table.Row{
+			r.Prefix,
+			formatBytes(r.Memory.TotalBytes),
+			r.Files,
+			r.Nodes,
+			r.Edges,
+			formatBytes(r.Memory.NodesBytes),
+			formatBytes(r.Memory.EdgesBytes),
+			formatBytes(r.Memory.SearchBytes),
+			formatBytes(r.Memory.VectorsBytes),
+		}
+		if showDisk {
+			row = append(row, formatBytes(r.Memory.DiskBytes))
+		}
+		row = append(row, r.Path)
+		t.AppendRow(row)
+	}
+
+	if st.MemoryBytes > attributed {
+		other := st.MemoryBytes - attributed
+		footer := table.Row{
+			"other", formatBytes(other), "", "", "", "", "", "", "",
+		}
+		if showDisk {
+			footer = append(footer, "")
+		}
+		footer = append(footer, "embedder + runtime + caches (not attributed)")
+		t.AppendFooter(footer)
+	}
+
+	t.Render()
 }
 
 func runDaemonLogs(cmd *cobra.Command, _ []string) error {

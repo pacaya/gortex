@@ -64,12 +64,16 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	// Embeddings: default to the bundled Hugot provider (pure-Go ONNX).
 	// API-first if GORTEX_EMBEDDINGS_URL is set — lets the daemon share an
 	// embedding server with bridge mode when both are in use.
+	var embedder embedding.Provider
 	if url := os.Getenv("GORTEX_EMBEDDINGS_URL"); url != "" {
-		idx.SetEmbedder(embedding.NewAPIProvider(url, os.Getenv("GORTEX_EMBEDDINGS_MODEL")))
-	} else if embedder, embErr := embedding.NewLocalProvider(); embErr == nil {
-		idx.SetEmbedder(embedder)
+		embedder = embedding.NewAPIProvider(url, os.Getenv("GORTEX_EMBEDDINGS_MODEL"))
+	} else if e, embErr := embedding.NewLocalProvider(); embErr == nil {
+		embedder = e
 	} else {
 		logger.Warn("daemon: embedding provider unavailable", zap.Error(embErr))
+	}
+	if embedder != nil {
+		idx.SetEmbedder(embedder)
 	}
 
 	cm, err := config.NewConfigManager("")
@@ -80,6 +84,12 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	var mi *indexer.MultiIndexer
 	if cm != nil {
 		mi = indexer.NewMultiIndexer(g, reg, idx.Search(), cm, logger)
+		// Without this, every per-repo Indexer created inside TrackRepoCtx
+		// has embedder=nil and buildSearchIndex skips the vector pass —
+		// daemon-tracked repos end up with text-only search.
+		if embedder != nil {
+			mi.SetEmbedder(embedder)
+		}
 	}
 
 	// MCP server wiring. Multi-repo options are passed only when a
