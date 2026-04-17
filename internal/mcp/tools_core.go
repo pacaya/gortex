@@ -359,6 +359,7 @@ func (s *Server) registerCoreTools() {
 			mcp.WithDescription("Use instead of Read to understand a file's role: returns all its symbols and imports without reading source lines."),
 			mcp.WithString("path", mcp.Required(), mcp.Description("Relative file path")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
+			mcp.WithString("format", mcp.Description("Output format: json (default) or gcx (GCX1 compact wire format)")),
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),

@@ -107,6 +107,7 @@ func (s *Server) registerEnhancementTools() {
 			mcp.WithDescription("Unified graph analysis. kind=dead_code: symbols with zero incoming edges. kind=hotspots: high-complexity symbols by fan-in/out. kind=cycles: circular dependency chains. kind=would_create_cycle: check if a new edge would form a cycle (requires from_id, to_id)."),
 			mcp.WithString("kind", mcp.Required(), mcp.Description("Analysis kind: dead_code | hotspots | cycles | would_create_cycle")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-result text output")),
+			mcp.WithString("format", mcp.Description("Output format: json (default) or gcx (GCX1 compact wire format, per-kind hand-tuned encoder)")),
 			mcp.WithBoolean("include_variables", mcp.Description("(dead_code) Include variable nodes (default false — usually false positives without data-flow analysis)")),
 			mcp.WithNumber("threshold", mcp.Description("(hotspots) Complexity score threshold (default: mean + 2σ)")),
 			mcp.WithString("scope", mcp.Description("(cycles) File path or package prefix to limit scope")),
@@ -178,6 +179,7 @@ func (s *Server) registerEnhancementTools() {
 			mcp.WithString("type", mcp.Description("(list) Filter by type: http, grpc, graphql, topic, ws, env, openapi")),
 			mcp.WithString("role", mcp.Description("(list) Filter by role: provider or consumer")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-contract text output")),
+			mcp.WithString("format", mcp.Description("Output format: json (default) or gcx (GCX1 compact wire format)")),
 		),
 		s.handleContracts,
 	)
