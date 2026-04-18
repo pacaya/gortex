@@ -29,6 +29,7 @@ Gortex is running as an MCP server. You MUST use graph queries instead of file r
 | Multiple `get_symbol` calls           | `batch_symbols` (one call for N symbols) |
 | `Grep` for references                 | `find_usages` (zero false positives)     |
 | `Grep` to find a symbol by name       | `search_symbols` (BM25 + camelCase-aware)|
+| Filtering `search_symbols` by hand    | `winnow_symbols` — structured constraint chain (kind, language, community, path_prefix, min_fan_in, min_fan_out, min_churn, text_match) with per-axis score contributions |
 | `Read` to understand a file           | `get_file_summary` or `get_editing_context` |
 | `Read` multiple files to trace calls  | `get_call_chain` / `get_callers`         |
 | Guessing an import path               | `find_import_path`                       |

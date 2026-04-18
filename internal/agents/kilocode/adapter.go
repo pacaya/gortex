@@ -32,7 +32,7 @@ func (a *Adapter) DocsURL() string { return DocsURL }
 // alwaysAllow is Kilo Code's auto-approve list, matching the Cline
 // equivalent — Kilo Code is a Cline fork and uses the same field.
 var alwaysAllow = []string{
-	"graph_stats", "search_symbols", "get_symbol", "get_file_summary",
+	"graph_stats", "search_symbols", "winnow_symbols", "get_symbol", "get_file_summary",
 	"get_editing_context", "get_dependencies", "get_dependents",
 	"get_call_chain", "get_callers", "find_implementations", "find_usages",
 	"get_cluster", "get_symbol_source", "batch_symbols",

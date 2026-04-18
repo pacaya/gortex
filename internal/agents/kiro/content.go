@@ -44,6 +44,7 @@ Gortex is running as an MCP server. It indexes this repository into an in-memory
 | Multiple ` + "`get_symbol`" + ` calls           | ` + "`batch_symbols`" + ` (one call for N symbols) |
 | Searching for references              | ` + "`find_usages`" + ` (zero false positives)     |
 | Searching to find a symbol by name    | ` + "`search_symbols`" + ` (BM25 + camelCase)      |
+| Filtering ` + "`search_symbols`" + ` by hand    | ` + "`winnow_symbols`" + ` — structured constraint chain (kind, language, community, path_prefix, min_fan_in, min_churn) with per-axis score contributions |
 | Reading to understand a file          | ` + "`get_file_summary`" + ` or ` + "`get_editing_context`" + ` |
 | Reading multiple files to trace calls | ` + "`get_call_chain`" + ` / ` + "`get_callers`" + `         |
 | Guessing an import path              | ` + "`find_import_path`" + `                       |
@@ -274,7 +275,7 @@ const hookPreRead = `{
 // auto-approve without prompting. Baked into the mcp.json entry so
 // the user isn't interrupted for every query call.
 var AutoApproveTools = []string{
-	"graph_stats", "search_symbols", "get_symbol", "get_file_summary",
+	"graph_stats", "search_symbols", "winnow_symbols", "get_symbol", "get_file_summary",
 	"get_editing_context", "get_dependencies", "get_dependents",
 	"get_call_chain", "get_callers", "find_implementations", "find_usages",
 	"get_cluster", "get_symbol_source", "batch_symbols",

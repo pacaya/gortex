@@ -117,6 +117,28 @@ func (s *Server) registerEnhancementTools() {
 		s.handleAnalyze,
 	)
 
+	// winnow_symbols — multi-axis constraint-chain retrieval
+	s.mcpServer.AddTool(
+		mcp.NewTool("winnow_symbols",
+			mcp.WithDescription("Structured constraint-chain retrieval. Combines BM25 text matching with structural filters (kind, language, fan-in/out, community, path prefix, churn) and returns a ranked list with per-axis score contributions. Use when search_symbols' free-text-only query is too coarse — e.g. 'methods in the auth community with fan-in >= 5 touching handlers/'."),
+			mcp.WithString("kind", mcp.Description("Comma-separated node kinds to keep (function, method, type, interface, variable, contract)")),
+			mcp.WithString("language", mcp.Description("Filter to a single language (go, typescript, python, ...)")),
+			mcp.WithString("path_prefix", mcp.Description("Comma-separated file path prefixes — any match passes")),
+			mcp.WithString("community", mcp.Description("Community ID (community-0) or label to scope to a functional cluster")),
+			mcp.WithString("text_match", mcp.Description("BM25 text query; when absent ranking is purely structural")),
+			mcp.WithNumber("min_fan_in", mcp.Description("Minimum incoming calls+references (default: 0)")),
+			mcp.WithNumber("min_fan_out", mcp.Description("Minimum outgoing calls (default: 0)")),
+			mcp.WithNumber("min_churn", mcp.Description("Minimum session modification count (default: 0)")),
+			mcp.WithNumber("limit", mcp.Description("Max results (default: 20)")),
+			mcp.WithBoolean("compact", mcp.Description("One-line-per-result text output")),
+			mcp.WithString("format", mcp.Description("Output format: json (default) or gcx (GCX1 compact wire format)")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+		),
+		s.handleWinnowSymbols,
+	)
+
 	// scaffold
 	s.mcpServer.AddTool(
 		mcp.NewTool("scaffold",

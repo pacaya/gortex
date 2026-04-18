@@ -45,7 +45,7 @@ func settingsPaths(home string) []string {
 // alwaysAllow is Cline's auto-approve allow-list. Matches the
 // Gortex tool surface so Cline doesn't ask the user on every query.
 var alwaysAllow = []string{
-	"graph_stats", "search_symbols", "get_symbol", "get_file_summary",
+	"graph_stats", "search_symbols", "winnow_symbols", "get_symbol", "get_file_summary",
 	"get_editing_context", "get_dependencies", "get_dependents",
 	"get_call_chain", "get_callers", "find_implementations", "find_usages",
 	"get_cluster", "get_symbol_signature", "get_symbol_source", "batch_symbols",

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -86,6 +87,72 @@ func shouldSkipGraphNode(n *graph.Node) bool {
 // --------------------------------------------------------------------
 // Hand-tuned encoders for the top-10 hot-path tools.
 // --------------------------------------------------------------------
+
+// encodeWinnowSymbols emits one row per ranked hit with per-axis score
+// contributions. The contributions column is a pipe-separated list of
+// `axis=value` pairs so decoders can recover the attribution without a
+// nested structure.
+func encodeWinnowSymbols(rows []winnowResult, total, limit int) ([]byte, error) {
+	truncated := total > limit
+	var buf bytes.Buffer
+	enc := newGCX(&buf, "winnow_symbols",
+		[]string{"id", "kind", "name", "path", "line", "sig", "score", "fan_in", "fan_out", "churn", "community", "contributions"},
+		"total", fmt.Sprintf("%d", total),
+		"truncated", boolString(truncated),
+		"weights", formatAxisWeights(winnowAxisWeights),
+	)
+	if err := enc.WriteComment(fmt.Sprintf("%d result(s)", len(rows))); err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		if shouldSkipGraphNode(r.Node) {
+			continue
+		}
+		if err := enc.WriteRow(
+			r.Node.ID,
+			string(r.Node.Kind),
+			nodeShort(r.Node),
+			r.Node.FilePath,
+			r.Node.StartLine,
+			nodeSig(r.Node),
+			roundFloat(r.Score),
+			r.FanIn,
+			r.FanOut,
+			r.Churn,
+			r.Community,
+			formatContributions(r.Contributions),
+		); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), enc.Close()
+}
+
+// formatContributions renders the per-axis attribution map as a stable
+// pipe-separated key=value list (sorted by key for determinism).
+func formatContributions(m map[string]float64) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		fmt.Fprintf(&b, "%s=%.3f", k, m[k])
+	}
+	return b.String()
+}
+
+// formatAxisWeights mirrors formatContributions for the meta header.
+func formatAxisWeights(m map[string]float64) string {
+	return formatContributions(m)
+}
 
 // encodeSearchSymbols emits one row per search hit with the minimum
 // fields an agent needs to decide whether to fetch more detail.
