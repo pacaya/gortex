@@ -56,6 +56,15 @@ type Watcher struct {
 	stopped          chan struct{}
 	symbolChangeCb   SymbolChangeCallback
 	symbolChangeCbMu sync.RWMutex
+
+	// Storm-mode state. Guarded by stormMu so the hot per-file
+	// debounce path (mu) doesn't contend with rate-tracking.
+	stormMu      sync.Mutex
+	eventTimes   []time.Time           // sliding window of recent event timestamps
+	stormBatch   map[string]ChangeKind // dirty set during an event storm
+	stormTimer   *time.Timer           // fires after the quiet period
+	stormActive  bool                  // true while waiting to drain
+	stormDrained func(int)             // test hook: batch drained; batch size arg
 }
 
 const maxHistory = 1000
@@ -78,21 +87,36 @@ func NewWatcher(idx *Indexer, cfg config.WatchConfig, logger *zap.Logger) (*Watc
 	}
 	cfg.DebounceMs = debounce
 
+	// Storm-mode defaults — kept conservative so a repo producing
+	// normal save traffic stays on the per-file path. Threshold of
+	// zero means the user explicitly disabled storm mode; negative is
+	// coerced to zero for safety.
+	if cfg.StormThreshold < 0 {
+		cfg.StormThreshold = 0
+	}
+	if cfg.StormWindowMs <= 0 {
+		cfg.StormWindowMs = 500
+	}
+	if cfg.StormQuietPeriodMs <= 0 {
+		cfg.StormQuietPeriodMs = 500
+	}
+
 	patterns := cfg.Exclude
 	if len(patterns) == 0 {
 		patterns = excludes.Builtin
 	}
 
 	return &Watcher{
-		indexer:  idx,
-		fsw:      fsw,
-		config:   cfg,
-		excludes: excludes.New(patterns),
-		events:   make(chan GraphChangeEvent, 64),
-		pending:  make(map[string]*time.Timer),
-		logger:   logger,
-		done:     make(chan struct{}),
-		stopped:  make(chan struct{}),
+		indexer:    idx,
+		fsw:        fsw,
+		config:     cfg,
+		excludes:   excludes.New(patterns),
+		events:     make(chan GraphChangeEvent, 64),
+		pending:    make(map[string]*time.Timer),
+		stormBatch: make(map[string]ChangeKind),
+		logger:     logger,
+		done:       make(chan struct{}),
+		stopped:    make(chan struct{}),
 	}, nil
 }
 
@@ -201,12 +225,6 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		}
 	}
 
-	// Debounce: reset or start timer for this file.
-	w.mu.Lock()
-	if timer, exists := w.pending[path]; exists {
-		timer.Stop()
-	}
-
 	var kind ChangeKind
 	switch {
 	case event.Has(fsnotify.Create):
@@ -218,10 +236,23 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 	case event.Has(fsnotify.Rename):
 		kind = ChangeRenamed
 	default:
-		w.mu.Unlock()
 		return
 	}
 
+	// Storm mode — if more than StormThreshold events arrived within
+	// StormWindowMs, skip the per-file debounced path and accumulate
+	// into a batch. The batch drains once StormQuietPeriodMs has
+	// passed with no further events.
+	if w.shouldEnterStorm() {
+		w.recordInStorm(path, kind)
+		return
+	}
+
+	// Debounce: reset or start timer for this file.
+	w.mu.Lock()
+	if timer, exists := w.pending[path]; exists {
+		timer.Stop()
+	}
 	debounce := time.Duration(w.config.DebounceMs) * time.Millisecond
 	w.pending[path] = time.AfterFunc(debounce, func() {
 		w.patchGraph(path, kind)
@@ -230,6 +261,115 @@ func (w *Watcher) handleEvent(event fsnotify.Event) {
 		w.mu.Unlock()
 	})
 	w.mu.Unlock()
+}
+
+// shouldEnterStorm records the current event in the rate window and
+// reports whether the watcher is over threshold. Returns false when
+// storm mode is disabled (threshold <= 0). The returned-true path
+// guarantees the caller will enqueue to the batch, so any single
+// event that crosses the threshold is captured correctly.
+func (w *Watcher) shouldEnterStorm() bool {
+	if w.config.StormThreshold <= 0 {
+		return false
+	}
+	now := time.Now()
+	window := time.Duration(w.config.StormWindowMs) * time.Millisecond
+	cutoff := now.Add(-window)
+
+	w.stormMu.Lock()
+	defer w.stormMu.Unlock()
+	// Already batching — stay in storm until the drain completes.
+	if w.stormActive {
+		return true
+	}
+	// Drop timestamps older than the window. The slice is append-only
+	// so a linear scan from the front is the minimal thing that
+	// works; the window is O(threshold) bounded in steady state.
+	trimFrom := 0
+	for i, t := range w.eventTimes {
+		if t.After(cutoff) {
+			trimFrom = i
+			break
+		}
+		trimFrom = i + 1
+	}
+	if trimFrom > 0 {
+		w.eventTimes = w.eventTimes[trimFrom:]
+	}
+	w.eventTimes = append(w.eventTimes, now)
+	return len(w.eventTimes) > w.config.StormThreshold
+}
+
+// recordInStorm adds the event to the pending batch and resets the
+// drain timer. Repeated create/modify collapse to a single patch; a
+// later delete of the same path overwrites an earlier create so the
+// drain does the right final thing (treats the path as deleted).
+func (w *Watcher) recordInStorm(path string, kind ChangeKind) {
+	w.stormMu.Lock()
+	defer w.stormMu.Unlock()
+	w.stormActive = true
+	// Cancel any pending per-file timers for this path — storm mode
+	// takes over.
+	w.mu.Lock()
+	if timer, exists := w.pending[path]; exists {
+		timer.Stop()
+		delete(w.pending, path)
+	}
+	w.mu.Unlock()
+	w.stormBatch[path] = kind
+
+	quiet := time.Duration(w.config.StormQuietPeriodMs) * time.Millisecond
+	if w.stormTimer != nil {
+		w.stormTimer.Stop()
+	}
+	w.stormTimer = time.AfterFunc(quiet, w.drainStorm)
+}
+
+// drainStorm processes every path accumulated during the storm as a
+// single batch: per-path evict/index with the resolver stage skipped,
+// then one global ResolveAll at the end. Cuts a 500-file checkout
+// from "resolver runs 500 times" to "resolver runs once."
+func (w *Watcher) drainStorm() {
+	w.stormMu.Lock()
+	batch := w.stormBatch
+	w.stormBatch = make(map[string]ChangeKind)
+	w.eventTimes = nil
+	w.stormActive = false
+	drained := w.stormDrained
+	w.stormMu.Unlock()
+
+	if len(batch) == 0 {
+		return
+	}
+	start := time.Now()
+	w.logger.Info("watcher: storm drain starting", zap.Int("paths", len(batch)))
+
+	for path, kind := range batch {
+		w.patchGraphNoResolve(path, kind)
+	}
+	w.indexer.ResolveAll()
+
+	w.logger.Info("watcher: storm drain complete",
+		zap.Int("paths", len(batch)),
+		zap.Duration("elapsed", time.Since(start)))
+	if drained != nil {
+		drained(len(batch))
+	}
+}
+
+// patchGraphNoResolve is patchGraph for the batched path: same evict
+// / index dispatch, but without per-file resolver work. The caller is
+// responsible for running indexer.ResolveAll() after the batch.
+func (w *Watcher) patchGraphNoResolve(path string, kind ChangeKind) {
+	switch kind {
+	case ChangeCreated, ChangeModified:
+		if err := w.indexer.IndexFileNoResolve(path); err != nil {
+			w.logger.Warn("storm: index file failed",
+				zap.String("path", path), zap.Error(err))
+		}
+	case ChangeDeleted, ChangeRenamed:
+		w.indexer.EvictFile(path)
+	}
 }
 
 func (w *Watcher) patchGraph(path string, kind ChangeKind) {

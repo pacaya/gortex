@@ -403,6 +403,167 @@ func (mi *MultiIndexer) TrackRepoCtx(ctx context.Context, entry config.RepoEntry
 	return result, nil
 }
 
+// ReconcileRepoCtx registers a repo that already has nodes in the graph
+// (typically restored from a daemon snapshot) and brings it back into
+// agreement with the filesystem without a full re-index. priorMtimes
+// carries the mtimes recorded at the time the snapshot was taken;
+// IncrementalReindex uses them to detect files that changed offline
+// (re-indexes) and files that were deleted offline (evicts).
+//
+// Falls back to TrackRepoCtx when the repo is not yet tracked AND no
+// prior mtimes are available — in that case there's nothing to
+// reconcile against and a full index is the correct path.
+func (mi *MultiIndexer) ReconcileRepoCtx(ctx context.Context, entry config.RepoEntry, priorMtimes map[string]int64) (*IndexResult, error) {
+	start := time.Now()
+
+	absPath, err := filepath.Abs(entry.Path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving path %s: %w", entry.Path, err)
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("path does not exist: %s", absPath)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("path is not a directory: %s", absPath)
+	}
+	identity, err := DetectIdentity(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("detecting identity for %s: %w", absPath, err)
+	}
+
+	prefix := config.ResolvePrefix(entry)
+	if prefix == "" || prefix == "." {
+		prefix = identity.RepoPrefix
+	}
+
+	// Already tracked — nothing to do.
+	mi.mu.RLock()
+	_, exists := mi.repos[prefix]
+	mi.mu.RUnlock()
+	if exists {
+		return nil, nil
+	}
+
+	// Fall back to full TrackRepoCtx when we have no prior mtimes:
+	// there's nothing meaningful to reconcile against, and
+	// IncrementalReindex would treat every file as stale, producing
+	// the same duplicate-writes problem we're fixing.
+	if len(priorMtimes) == 0 {
+		return mi.TrackRepoCtx(ctx, entry)
+	}
+
+	totalConfigured := 1
+	if mi.configMgr != nil {
+		totalConfigured = len(mi.configMgr.Global().Repos)
+	}
+	willBeMultiRepo := len(mi.repos)+1 >= 2 || totalConfigured >= 2
+
+	cfg := mi.configMgr.GetRepoConfig(prefix)
+	idx := New(mi.graph, mi.registry, cfg.Index, mi.logger)
+	idx.search = mi.search
+	if mi.embedder != nil {
+		idx.SetEmbedder(mi.embedder)
+	}
+	if willBeMultiRepo {
+		idx.SetRepoPrefix(prefix)
+	}
+	idx.SetRootPath(absPath)
+	idx.SetFileMtimes(priorMtimes)
+
+	result, err := idx.IncrementalReindex(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("reconciling %s: %w", absPath, err)
+	}
+
+	mi.mu.Lock()
+	mi.repos[prefix] = &RepoMetadata{
+		RepoPrefix:    prefix,
+		RootPath:      absPath,
+		Identity:      identity,
+		LastIndexTime: time.Now(),
+		FileCount:     result.FileCount,
+		NodeCount:     result.NodeCount,
+		EdgeCount:     result.EdgeCount,
+		ParseErrors:   result.Errors,
+		FileMtimes:    idx.FileMtimes(),
+	}
+	mi.indexers[prefix] = idx
+	mi.mu.Unlock()
+
+	entry.Path = absPath
+	if err := mi.configMgr.Global().AddRepo(entry); err != nil {
+		mi.logger.Warn("failed to add repo to config", zap.Error(err))
+	}
+
+	mi.ReconcileContractEdges()
+
+	mi.logger.Info("daemon: reconciled repo from snapshot",
+		zap.String("prefix", prefix),
+		zap.Int("stale_files_reindexed", result.FileCount),
+		zap.Duration("elapsed", time.Since(start)))
+
+	return result, nil
+}
+
+// ReconcileAll runs IncrementalReindex on every tracked repo. Used by
+// the daemon's periodic janitor to catch files whose mutations slipped
+// past fsnotify — inotify watch limits, NFS / SMB mounts, kernel event
+// queue overflow, or daemon downtime where edits happened while nobody
+// was listening. Cheap on steady-state repos (one filepath.WalkDir +
+// per-file os.Stat per repo), and correctness is self-healing: whatever
+// was missed gets picked up on the next tick.
+//
+// Returns a map of prefix → IndexResult for logging / metrics. Errors
+// per repo are logged and do not abort the rest of the sweep — a broken
+// permission bit on one repo should not starve reconciliation on the
+// others.
+func (mi *MultiIndexer) ReconcileAll() map[string]*IndexResult {
+	mi.mu.RLock()
+	prefixes := make([]string, 0, len(mi.indexers))
+	for p := range mi.indexers {
+		prefixes = append(prefixes, p)
+	}
+	mi.mu.RUnlock()
+
+	results := make(map[string]*IndexResult, len(prefixes))
+	for _, prefix := range prefixes {
+		mi.mu.RLock()
+		idx, ok := mi.indexers[prefix]
+		meta, metaOK := mi.repos[prefix]
+		mi.mu.RUnlock()
+		if !ok || !metaOK || meta == nil || meta.RootPath == "" {
+			continue
+		}
+		result, err := idx.IncrementalReindex(meta.RootPath)
+		if err != nil {
+			mi.logger.Warn("janitor: reconcile failed",
+				zap.String("prefix", prefix), zap.Error(err))
+			continue
+		}
+		if result != nil && result.FileCount > 0 {
+			mi.logger.Info("janitor: reconciled repo",
+				zap.String("prefix", prefix),
+				zap.Int("stale_files_reindexed", result.FileCount))
+		}
+		results[prefix] = result
+
+		// Keep RepoMetadata.FileMtimes in sync so the next snapshot
+		// picks up the reconciled mtimes.
+		mi.mu.Lock()
+		if m, ok := mi.repos[prefix]; ok && m != nil {
+			m.FileMtimes = idx.FileMtimes()
+			m.LastIndexTime = time.Now()
+		}
+		mi.mu.Unlock()
+	}
+
+	if len(results) > 0 {
+		mi.ReconcileContractEdges()
+	}
+	return results
+}
+
 // UntrackRepo evicts a repo from the graph and removes it from config.
 func (mi *MultiIndexer) UntrackRepo(repoPrefix string) (int, int) {
 	mi.mu.Lock()

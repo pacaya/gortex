@@ -143,6 +143,21 @@ type WatchConfig struct {
 	// Exclude is deprecated — use top-level Config.Exclude instead.
 	// Kept for one release as a fallback merged into the unified list.
 	Exclude []string `mapstructure:"exclude" yaml:"exclude,omitempty"`
+
+	// StormThreshold — when more than this many events arrive within
+	// StormWindowMs, the watcher switches from per-file debounced
+	// patching to a batched reconcile that defers resolver + search
+	// rebuild until a quiet period has passed. Protects against event
+	// floods from bulk operations: `rsync`, `npm install`, branch
+	// checkout, bulk format-on-save, find-and-replace across a repo.
+	// Zero disables storm mode (pure per-file behaviour).
+	StormThreshold int `mapstructure:"storm_threshold" yaml:"storm_threshold,omitempty"`
+	// StormWindowMs is the sliding window over which events are counted
+	// against StormThreshold. Defaults to 500.
+	StormWindowMs int `mapstructure:"storm_window_ms" yaml:"storm_window_ms,omitempty"`
+	// StormQuietPeriodMs is how long the watcher waits for no events
+	// before draining the batch. Defaults to 500.
+	StormQuietPeriodMs int `mapstructure:"storm_quiet_period_ms" yaml:"storm_quiet_period_ms,omitempty"`
 }
 
 type QueryConfig struct {

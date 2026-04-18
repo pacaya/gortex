@@ -279,6 +279,31 @@ projects:
         ref: opensource
 ```
 
+### Daemon tuning (optional)
+
+The daemon's defaults handle typical workflows without configuration. These knobs exist for monorepos, branch-heavy workflows, or filesystems without fsnotify support.
+
+```yaml
+# ~/.config/gortex/config.yaml (or per-repo .gortex.yaml)
+watch:
+  debounce_ms: 150            # per-file patch debounce (default 150)
+
+  # Storm mode — when more than N events land within the window,
+  # switch from per-file debounced patching to a batched reconcile
+  # that defers cross-file resolver + search work until a quiet
+  # period has passed. Amortises the cost of bulk operations
+  # (rsync, npm install, branch checkout, bulk format-on-save,
+  # find-and-replace). Zero = disabled (default).
+  storm_threshold: 0          # 0 disables; try 50 on monorepos
+  storm_window_ms: 500
+  storm_quiet_period_ms: 500
+```
+
+Environment variables:
+
+- `GORTEX_RECONCILE_INTERVAL` — janitor tick that walks every tracked repo and runs `IncrementalReindex` against disk. Insurance against fsnotify gaps on NFS/SMB mounts, inotify watch-limit exhaustion, or daemon downtime where edits happened offline. Default `1h`; `"0"` or `"off"` disables; otherwise any Go duration string (e.g., `15m`).
+- The daemon also watches each tracked repo's `.git/HEAD`, so branch switches and rebases reconcile incrementally (via `git diff --name-status`) rather than by re-indexing every changed file individually — no configuration needed.
+
 ### CLI
 
 ```bash

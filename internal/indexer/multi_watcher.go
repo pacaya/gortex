@@ -13,14 +13,15 @@ import (
 
 // MultiWatcher manages file watchers across multiple repositories.
 type MultiWatcher struct {
-	watchers map[string]*Watcher // repoPrefix → watcher
-	started  map[string]bool     // tracks which watchers have been started
-	multi    *MultiIndexer
-	resolver *resolver.CrossRepoResolver
-	logger   *zap.Logger
-	events   chan GraphChangeEvent
-	done     chan struct{}
-	mu       sync.Mutex
+	watchers    map[string]*Watcher    // repoPrefix → file watcher
+	gitWatchers map[string]*GitWatcher // repoPrefix → .git ref watcher
+	started     map[string]bool        // tracks which watchers have been started
+	multi       *MultiIndexer
+	resolver    *resolver.CrossRepoResolver
+	logger      *zap.Logger
+	events      chan GraphChangeEvent
+	done        chan struct{}
+	mu          sync.Mutex
 }
 
 // NewMultiWatcher creates a MultiWatcher that watches all configured repos.
@@ -31,13 +32,14 @@ func NewMultiWatcher(
 	logger *zap.Logger,
 ) (*MultiWatcher, error) {
 	mw := &MultiWatcher{
-		watchers: make(map[string]*Watcher),
-		started:  make(map[string]bool),
-		multi:    mi,
-		resolver: resolver.NewCrossRepo(mi.Graph()),
-		logger:   logger,
-		events:   make(chan GraphChangeEvent, 128),
-		done:     make(chan struct{}),
+		watchers:    make(map[string]*Watcher),
+		gitWatchers: make(map[string]*GitWatcher),
+		started:     make(map[string]bool),
+		multi:       mi,
+		resolver:    resolver.NewCrossRepo(mi.Graph()),
+		logger:      logger,
+		events:      make(chan GraphChangeEvent, 128),
+		done:        make(chan struct{}),
 	}
 
 	for prefix, cfg := range configs {
@@ -114,6 +116,23 @@ func (mw *MultiWatcher) Start() error {
 
 		mw.started[prefix] = true
 
+		// Start the .git/HEAD watcher alongside the file watcher.
+		// It's best-effort — repos without a .git dir (uninitialised
+		// worktrees, tarball checkouts) simply skip it.
+		if idx := mw.multi.GetIndexer(prefix); idx != nil {
+			gw, err := NewGitWatcher(meta.RootPath, idx, mw.logger.With(zap.String("repo", prefix)))
+			if err != nil {
+				mw.logger.Debug("git-watcher: init failed",
+					zap.String("prefix", prefix), zap.Error(err))
+			} else if err := gw.Start(); err != nil {
+				mw.logger.Debug("git-watcher: start failed",
+					zap.String("prefix", prefix), zap.Error(err))
+				_ = gw.Stop()
+			} else {
+				mw.gitWatchers[prefix] = gw
+			}
+		}
+
 		// Forward events from this watcher and trigger cross-repo resolution.
 		go mw.forwardEvents(prefix, w)
 	}
@@ -175,6 +194,9 @@ func (mw *MultiWatcher) Stop() error {
 				zap.Error(err),
 			)
 		}
+		if gw, ok := mw.gitWatchers[prefix]; ok {
+			_ = gw.Stop()
+		}
 	}
 
 	return firstErr
@@ -214,6 +236,15 @@ func (mw *MultiWatcher) AddRepo(repoPrefix string, cfg config.WatchConfig) error
 	}
 
 	mw.started[repoPrefix] = true
+	if idx := mw.multi.GetIndexer(repoPrefix); idx != nil {
+		if gw, err := NewGitWatcher(meta.RootPath, idx, mw.logger.With(zap.String("repo", repoPrefix))); err == nil {
+			if err := gw.Start(); err == nil {
+				mw.gitWatchers[repoPrefix] = gw
+			} else {
+				_ = gw.Stop()
+			}
+		}
+	}
 	go mw.forwardEvents(repoPrefix, w)
 	return nil
 }
@@ -231,6 +262,10 @@ func (mw *MultiWatcher) RemoveRepo(repoPrefix string) error {
 	var err error
 	if mw.started[repoPrefix] {
 		err = w.Stop()
+	}
+	if gw, ok := mw.gitWatchers[repoPrefix]; ok {
+		_ = gw.Stop()
+		delete(mw.gitWatchers, repoPrefix)
 	}
 	delete(mw.watchers, repoPrefix)
 	delete(mw.started, repoPrefix)

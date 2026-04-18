@@ -18,6 +18,7 @@ import (
 
 	"github.com/zzet/gortex/internal/daemon"
 	"github.com/zzet/gortex/internal/graph"
+	"github.com/zzet/gortex/internal/indexer"
 )
 
 var (
@@ -127,7 +128,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 		if mw != nil {
 			_ = mw.Stop()
 		}
-		saveSnapshot(state.graph, version, logger)
+		saveSnapshot(state.graph, collectSnapshotRepos(state.multiIndexer), version, logger)
 		if state.mcpServer != nil {
 			_ = state.mcpServer.FlushSavings()
 		}
@@ -145,7 +146,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	// most one interval's worth of work, which is acceptable given
 	// snapshot writes are atomic (tmp → rename) and can never leave a
 	// truncated file on disk.
-	stopSnapshotter := startPeriodicSnapshots(state.graph, version, 10*time.Minute, logger)
+	stopSnapshotter := startPeriodicSnapshots(state.graph, state.multiIndexer, version, 10*time.Minute, logger)
 	defer stopSnapshotter()
 
 	// Periodic savings flush — 5 minute interval. Bounds on-crash data
@@ -154,6 +155,16 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	// isn't wired (e.g. cache dir unavailable).
 	stopSavingsFlush := state.mcpServer.StartPeriodicSavingsFlush(5 * time.Minute)
 	defer stopSavingsFlush()
+
+	// Periodic reconciliation — the "janitor". Walks each tracked repo
+	// and runs IncrementalReindex to evict files deleted offline and
+	// re-index files whose mtime changed. Insurance against gaps in
+	// fsnotify coverage (inotify watch limits, NFS mounts, kernel
+	// event-queue overflow). Default interval 1 h; override via
+	// GORTEX_RECONCILE_INTERVAL (a Go duration string, e.g. "15m").
+	// Set to "0" to disable.
+	stopJanitor := startReconcileJanitor(state.multiIndexer, reconcileInterval(), logger)
+	defer stopJanitor()
 
 	if err := srv.Listen(); err != nil {
 		return err
@@ -186,7 +197,52 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 // every tick. Returns a stop function the caller runs at shutdown. The
 // final snapshot on shutdown is handled by onShutdown — this loop only
 // covers the "crash resilience" case (interval loss vs full re-index).
-func startPeriodicSnapshots(g *graph.Graph, version string, interval time.Duration, logger *zap.Logger) func() {
+// reconcileInterval returns the janitor tick interval, defaulting to 1
+// hour. GORTEX_RECONCILE_INTERVAL overrides; "0" or "off" disables the
+// janitor entirely (returns 0, which startReconcileJanitor treats as
+// a no-op). Malformed values fall back to the default with a warning
+// handled by the caller via the zero-return sentinel behaviour.
+func reconcileInterval() time.Duration {
+	raw := os.Getenv("GORTEX_RECONCILE_INTERVAL")
+	if raw == "" {
+		return time.Hour
+	}
+	if raw == "0" || raw == "off" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return time.Hour
+	}
+	return d
+}
+
+// startReconcileJanitor launches a background goroutine that calls
+// MultiIndexer.ReconcileAll on every interval tick. interval=0 is a
+// no-op; the returned stop function can be called unconditionally.
+func startReconcileJanitor(mi *indexer.MultiIndexer, interval time.Duration, logger *zap.Logger) func() {
+	if mi == nil || interval <= 0 {
+		logger.Info("daemon: reconcile janitor disabled")
+		return func() {}
+	}
+	stop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		logger.Info("daemon: reconcile janitor running", zap.Duration("interval", interval))
+		for {
+			select {
+			case <-t.C:
+				mi.ReconcileAll()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+func startPeriodicSnapshots(g *graph.Graph, mi *indexer.MultiIndexer, version string, interval time.Duration, logger *zap.Logger) func() {
 	stop := make(chan struct{})
 	go func() {
 		t := time.NewTicker(interval)
@@ -194,7 +250,7 @@ func startPeriodicSnapshots(g *graph.Graph, version string, interval time.Durati
 		for {
 			select {
 			case <-t.C:
-				saveSnapshot(g, version, logger)
+				saveSnapshot(g, collectSnapshotRepos(mi), version, logger)
 			case <-stop:
 				return
 			}

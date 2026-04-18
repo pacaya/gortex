@@ -580,8 +580,23 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	}, nil
 }
 
-// IndexFile parses a single file and patches the graph (evict then add).
+// IndexFile parses a single file and patches the graph (evict then
+// add), including per-file resolver work for cross-file references.
+// Use in the single-event fsnotify path where each edit is isolated.
 func (idx *Indexer) IndexFile(filePath string) error {
+	return idx.indexFile(filePath, true)
+}
+
+// IndexFileNoResolve is IndexFile minus the per-file resolver call.
+// Callers in batch paths (storm mode, branch-switch reconcile, git
+// diff dispatch) use this when they will run resolver.ResolveAll()
+// once at the end of the batch; otherwise a 500-file checkout pays
+// the per-file resolver cost 500 times instead of once.
+func (idx *Indexer) IndexFileNoResolve(filePath string) error {
+	return idx.indexFile(filePath, false)
+}
+
+func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
 		return err
@@ -639,7 +654,9 @@ func (idx *Indexer) IndexFile(filePath string) error {
 		}
 	}
 
-	idx.resolver.ResolveFile(graphPath)
+	if resolve {
+		idx.resolver.ResolveFile(graphPath)
+	}
 
 	// Update mtime for this file (uses raw relPath for disk-based tracking).
 	if info, err := os.Stat(absPath); err == nil {
@@ -649,6 +666,14 @@ func (idx *Indexer) IndexFile(filePath string) error {
 	}
 
 	return nil
+}
+
+// ResolveAll re-runs the global cross-file reference resolver and
+// interface-implementation inference. Exposed for batch paths that
+// defer per-file resolver work until the end of a batch.
+func (idx *Indexer) ResolveAll() {
+	idx.resolver.ResolveAll()
+	idx.resolver.InferImplements()
 }
 
 // EvictFile removes all nodes and edges belonging to filePath.

@@ -26,12 +26,53 @@ type GraphStats struct {
 // avoid deadlock we always acquire shards in ascending index order.
 const numShards = 16
 
+// edgeKey is the logical identity of an edge — two edges with the same
+// key are considered the same edge and dedup to one entry in the
+// adjacency lists. Line is part of the key because a caller can hold
+// the same target reference at two different call sites and both are
+// real call-graph edges (see `foo(); foo();` in the same function).
+//
+// Both From and To are in the key even though the adjacency lists are
+// keyed by one endpoint each — the other endpoint varies within an
+// inEdges[to] slice (many From → same To) and within an outEdges[from]
+// slice the inverse varies. Without both, property-test graphs with
+// several callers to the same callee and no FilePath/Line distinction
+// would dedup down to one entry and lose cross-caller traversal.
+type edgeKey struct {
+	From     string
+	To       string
+	Kind     EdgeKind
+	FilePath string
+	Line     int
+}
+
+func keyOf(e *Edge) edgeKey {
+	return edgeKey{From: e.From, To: e.To, Kind: e.Kind, FilePath: e.FilePath, Line: e.Line}
+}
+
 // shard is a fragment of the graph's data. Each shard holds the node
 // metadata for the subset of IDs that hash to it, plus the outgoing
 // edges whose source ID is in this shard and the incoming edges whose
 // target ID is in this shard. Secondary indexes (byName, byFile, etc.)
 // inside a shard only contain nodes owned by that shard; aggregate
 // queries iterate every shard and concatenate.
+//
+// Each slice-valued secondary index has a paired "Idx" sidecar that
+// maps an entry's identity to its position in the slice. Two invariants
+// the sidecars enforce:
+//
+//  1. Idempotent writes. AddNode/AddEdge consult the sidecar; duplicate
+//     inserts replace the pointer in place instead of appending.
+//     Without this, restart paths that load a snapshot and then re-run
+//     IndexCtx (which doesn't evict first) silently double every edge
+//     and every secondary-index entry. Fixes bug B1 at the write layer,
+//     regardless of which call site forgets to evict first.
+//  2. O(1) removal via swap-with-last. Removing a node from a
+//     byRepo slice of 50k entries with filterEdge-style scanning was
+//     O(N); now it's O(1) — flip the last element into the removed
+//     slot and shrink the slice by one. Iteration order changes after a
+//     removal, but callers that require stable ordering (snapshot
+//     encoding) sort before emitting anyway.
 type shard struct {
 	mu       sync.RWMutex
 	nodes    map[string]*Node
@@ -41,18 +82,133 @@ type shard struct {
 	byName   map[string][]*Node
 	byQual   map[string]*Node
 	byRepo   map[string][]*Node // repoPrefix → nodes owned by this shard
+
+	// Sidecar position indexes — see comment on shard. Reads are
+	// unchanged (callers still iterate the slices); only writes
+	// consult these maps.
+	byFileIdx  map[string]map[string]int     // filePath   → id  → position
+	byNameIdx  map[string]map[string]int     // name       → id  → position
+	byRepoIdx  map[string]map[string]int     // repoPrefix → id  → position
+	outEdgeIdx map[string]map[edgeKey]int    // fromID     → key → position
+	inEdgeIdx  map[string]map[edgeKey]int    // toID       → key → position
 }
 
 func newShard() *shard {
 	return &shard{
-		nodes:    make(map[string]*Node),
-		outEdges: make(map[string][]*Edge),
-		inEdges:  make(map[string][]*Edge),
-		byFile:   make(map[string][]*Node),
-		byName:   make(map[string][]*Node),
-		byQual:   make(map[string]*Node),
-		byRepo:   make(map[string][]*Node),
+		nodes:      make(map[string]*Node),
+		outEdges:   make(map[string][]*Edge),
+		inEdges:    make(map[string][]*Edge),
+		byFile:     make(map[string][]*Node),
+		byName:     make(map[string][]*Node),
+		byQual:     make(map[string]*Node),
+		byRepo:     make(map[string][]*Node),
+		byFileIdx:  make(map[string]map[string]int),
+		byNameIdx:  make(map[string]map[string]int),
+		byRepoIdx:  make(map[string]map[string]int),
+		outEdgeIdx: make(map[string]map[edgeKey]int),
+		inEdgeIdx:  make(map[string]map[edgeKey]int),
 	}
+}
+
+// addNodeToBucket appends n to bucket[key] unless an entry with that id
+// is already present, in which case the existing slot is overwritten
+// with the new pointer. Returns the position of the entry.
+func addNodeToBucket(bucket map[string][]*Node, idx map[string]map[string]int, key, id string, n *Node) {
+	if inner, ok := idx[key]; ok {
+		if pos, exists := inner[id]; exists {
+			bucket[key][pos] = n
+			return
+		}
+	}
+	pos := len(bucket[key])
+	bucket[key] = append(bucket[key], n)
+	inner, ok := idx[key]
+	if !ok {
+		inner = make(map[string]int)
+		idx[key] = inner
+	}
+	inner[id] = pos
+}
+
+// removeNodeFromBucket swap-removes the entry with id from bucket[key],
+// updating the sidecar position of the swapped-in element. No-op when
+// the entry is absent. Cleans up the bucket + sidecar when the last
+// entry for key leaves.
+func removeNodeFromBucket(bucket map[string][]*Node, idx map[string]map[string]int, key, id string) {
+	inner, ok := idx[key]
+	if !ok {
+		return
+	}
+	pos, exists := inner[id]
+	if !exists {
+		return
+	}
+	slice := bucket[key]
+	last := len(slice) - 1
+	if pos != last {
+		swapped := slice[last]
+		slice[pos] = swapped
+		inner[swapped.ID] = pos
+	}
+	slice = slice[:last]
+	delete(inner, id)
+	if len(inner) == 0 {
+		delete(idx, key)
+		delete(bucket, key)
+	} else {
+		bucket[key] = slice
+	}
+}
+
+// addEdgeToBucket appends e to bucket[key] unless an entry with the
+// same logical identity (edgeKey) is already there, in which case the
+// existing slot is overwritten. Returns whether this was a new insert.
+func addEdgeToBucket(bucket map[string][]*Edge, idx map[string]map[edgeKey]int, key string, e *Edge) bool {
+	k := keyOf(e)
+	if inner, ok := idx[key]; ok {
+		if pos, exists := inner[k]; exists {
+			bucket[key][pos] = e
+			return false
+		}
+	}
+	pos := len(bucket[key])
+	bucket[key] = append(bucket[key], e)
+	inner, ok := idx[key]
+	if !ok {
+		inner = make(map[edgeKey]int)
+		idx[key] = inner
+	}
+	inner[k] = pos
+	return true
+}
+
+// removeEdgeFromBucket removes the entry with key k from bucket[key]
+// using swap-with-last, maintaining the sidecar. No-op when absent.
+func removeEdgeFromBucket(bucket map[string][]*Edge, idx map[string]map[edgeKey]int, key string, k edgeKey) bool {
+	inner, ok := idx[key]
+	if !ok {
+		return false
+	}
+	pos, exists := inner[k]
+	if !exists {
+		return false
+	}
+	slice := bucket[key]
+	last := len(slice) - 1
+	if pos != last {
+		swapped := slice[last]
+		slice[pos] = swapped
+		inner[keyOf(swapped)] = pos
+	}
+	slice = slice[:last]
+	delete(inner, k)
+	if len(inner) == 0 {
+		delete(idx, key)
+		delete(bucket, key)
+	} else {
+		bucket[key] = slice
+	}
+	return true
 }
 
 // Graph is a thread-safe in-memory knowledge graph. Internally sharded
@@ -135,58 +291,102 @@ func (g *Graph) unlockAllRead() {
 	}
 }
 
-// AddNode inserts a node into the graph and all indexes.
+// AddNode inserts or updates a node in the graph and all secondary
+// indexes. Idempotent — a second call with the same ID replaces the
+// existing Node pointer in place instead of appending duplicates to the
+// byFile / byName / byRepo slices. If the new Node's FilePath, Name, or
+// RepoPrefix differs from the stored one, the secondary-index entries
+// are migrated from the old bucket to the new one atomically under the
+// shard lock.
 func (g *Graph) AddNode(n *Node) {
 	s := g.shardFor(n.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	prev, hadPrev := s.nodes[n.ID]
 	s.nodes[n.ID] = n
-	s.byFile[n.FilePath] = append(s.byFile[n.FilePath], n)
-	s.byName[n.Name] = append(s.byName[n.Name], n)
+
+	if hadPrev {
+		if prev.FilePath != n.FilePath {
+			removeNodeFromBucket(s.byFile, s.byFileIdx, prev.FilePath, n.ID)
+		}
+		if prev.Name != n.Name {
+			removeNodeFromBucket(s.byName, s.byNameIdx, prev.Name, n.ID)
+		}
+		if prev.QualName != n.QualName && prev.QualName != "" {
+			// byQual is a 1:1 index, not a slice — only delete when
+			// the stored entry still points at this node ID (a
+			// different node may have since taken the slot).
+			if cur, ok := s.byQual[prev.QualName]; ok && cur.ID == n.ID {
+				delete(s.byQual, prev.QualName)
+			}
+		}
+		if prev.RepoPrefix != n.RepoPrefix && prev.RepoPrefix != "" {
+			removeNodeFromBucket(s.byRepo, s.byRepoIdx, prev.RepoPrefix, n.ID)
+		}
+	}
+
+	addNodeToBucket(s.byFile, s.byFileIdx, n.FilePath, n.ID, n)
+	addNodeToBucket(s.byName, s.byNameIdx, n.Name, n.ID, n)
 	if n.QualName != "" {
 		s.byQual[n.QualName] = n
 	}
 	if n.RepoPrefix != "" {
-		s.byRepo[n.RepoPrefix] = append(s.byRepo[n.RepoPrefix], n)
+		addNodeToBucket(s.byRepo, s.byRepoIdx, n.RepoPrefix, n.ID, n)
 	}
 }
 
-// AddEdge inserts a directed edge into the graph. Locks both the From
-// and To shards (same shard locked once if they collide) so outEdges
-// and inEdges stay consistent.
+// AddEdge inserts or updates a directed edge in the graph. Locks both
+// the From and To shards (same shard locked once if they collide) so
+// outEdges and inEdges stay consistent. Idempotent: a second call with
+// the same (From, To, Kind, FilePath, Line) replaces the stored *Edge
+// pointer in place — newer metadata (Confidence, Origin, etc.) wins,
+// adjacency-list length is unchanged. Drops the double-edge problem
+// that used to surface after daemon restarts (bug B1).
 func (g *Graph) AddEdge(e *Edge) {
 	unlock := g.lockTwoWrite(e.From, e.To)
 	defer unlock()
-	g.shardFor(e.From).outEdges[e.From] = append(g.shardFor(e.From).outEdges[e.From], e)
-	g.shardFor(e.To).inEdges[e.To] = append(g.shardFor(e.To).inEdges[e.To], e)
+	sFrom := g.shardFor(e.From)
+	sTo := g.shardFor(e.To)
+	addEdgeToBucket(sFrom.outEdges, sFrom.outEdgeIdx, e.From, e)
+	addEdgeToBucket(sTo.inEdges, sTo.inEdgeIdx, e.To, e)
 }
 
 // ReindexEdge updates the inEdges index after an edge's To field has
 // been mutated (e.g., by the resolver changing "unresolved::X" to a
 // real target). oldTo is the previous value of e.To before mutation.
+//
+// Three sidecar entries change: the outEdgeIdx key for From (since the
+// edgeKey depends on To), the inEdgeIdx entry on the old target bucket
+// (removed), and the inEdgeIdx entry on the new target bucket (added).
 func (g *Graph) ReindexEdge(e *Edge, oldTo string) {
 	if oldTo == e.To {
 		return
 	}
-	// The outEdges entry doesn't move (source ID is unchanged); only
-	// the inEdges slot shifts from oldTo → e.To.
 	unlock := g.lockTwoWrite(oldTo, e.To)
 	defer unlock()
 
-	sOld := g.shardFor(oldTo)
-	inList := sOld.inEdges[oldTo]
-	for i, ie := range inList {
-		if ie == e {
-			sOld.inEdges[oldTo] = append(inList[:i], inList[i+1:]...)
-			if len(sOld.inEdges[oldTo]) == 0 {
-				delete(sOld.inEdges, oldTo)
-			}
-			break
+	// Old identity uses oldTo; the current edge struct already has the
+	// new To set, so we reconstruct the key before mutation.
+	oldKey := edgeKey{From: e.From, To: oldTo, Kind: e.Kind, FilePath: e.FilePath, Line: e.Line}
+	newKey := keyOf(e)
+
+	sFrom := g.shardFor(e.From)
+	// outEdges slot position doesn't move — only the key under which
+	// the sidecar records it changes. Avoid a churn of slice growth by
+	// swapping the sidecar entry in place.
+	if fromIdx, ok := sFrom.outEdgeIdx[e.From]; ok {
+		if pos, exists := fromIdx[oldKey]; exists {
+			delete(fromIdx, oldKey)
+			fromIdx[newKey] = pos
 		}
 	}
 
+	// Move from the old target's inEdges bucket to the new one.
+	sOld := g.shardFor(oldTo)
+	removeEdgeFromBucket(sOld.inEdges, sOld.inEdgeIdx, oldTo, oldKey)
 	sNew := g.shardFor(e.To)
-	sNew.inEdges[e.To] = append(sNew.inEdges[e.To], e)
+	addEdgeToBucket(sNew.inEdges, sNew.inEdgeIdx, e.To, e)
 }
 
 // GetNode returns a node by ID, or nil if not found.
@@ -284,24 +484,15 @@ func (g *Graph) EvictFile(filePath string) (nodesRemoved, edgesRemoved int) {
 		s := g.shardFor(n.ID)
 		delete(s.nodes, n.ID)
 		if n.QualName != "" {
-			delete(s.byQual, n.QualName)
-		}
-		s.byName[n.Name] = removeNode(s.byName[n.Name], n.ID)
-		if len(s.byName[n.Name]) == 0 {
-			delete(s.byName, n.Name)
-		}
-		if n.RepoPrefix != "" {
-			s.byRepo[n.RepoPrefix] = removeNode(s.byRepo[n.RepoPrefix], n.ID)
-			if len(s.byRepo[n.RepoPrefix]) == 0 {
-				delete(s.byRepo, n.RepoPrefix)
+			if cur, ok := s.byQual[n.QualName]; ok && cur.ID == n.ID {
+				delete(s.byQual, n.QualName)
 			}
 		}
-	}
-	// Clear the file's byFile entry in every shard (only the ones that
-	// contained these nodes will actually have entries, but Go map
-	// delete on a missing key is a no-op).
-	for _, s := range g.shards {
-		delete(s.byFile, filePath)
+		removeNodeFromBucket(s.byName, s.byNameIdx, n.Name, n.ID)
+		removeNodeFromBucket(s.byFile, s.byFileIdx, filePath, n.ID)
+		if n.RepoPrefix != "" {
+			removeNodeFromBucket(s.byRepo, s.byRepoIdx, n.RepoPrefix, n.ID)
+		}
 	}
 	nodesRemoved = len(nodes)
 
@@ -313,8 +504,9 @@ func (g *Graph) EvictFile(filePath string) (nodesRemoved, edgesRemoved int) {
 // and EvictRepo. Callers must hold every shard's write lock.
 //
 // For each evicted node we remove its outEdges and inEdges entries. To
-// clean the reverse index on non-evicted endpoints we flip-look across
-// shards using shardFor.
+// clean the reverse index on non-evicted endpoints we do a swap-with-
+// last removal via sidecar, which is O(1) per edge instead of the
+// O(slice-size) filterEdge scan the older implementation used.
 func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 	removed := 0
 
@@ -326,13 +518,11 @@ func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 		for _, e := range edges {
 			if !evictedIDs[e.To] {
 				sTo := g.shardFor(e.To)
-				sTo.inEdges[e.To] = filterEdge(sTo.inEdges[e.To], e)
-				if len(sTo.inEdges[e.To]) == 0 {
-					delete(sTo.inEdges, e.To)
-				}
+				removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeIdx, e.To, keyOf(e))
 			}
 		}
 		delete(s.outEdges, id)
+		delete(s.outEdgeIdx, id)
 	}
 
 	// Phase 2: remove incoming edges to every evicted node (from
@@ -345,20 +535,20 @@ func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 			if !evictedIDs[e.From] {
 				removed++
 				sFrom := g.shardFor(e.From)
-				sFrom.outEdges[e.From] = filterEdge(sFrom.outEdges[e.From], e)
-				if len(sFrom.outEdges[e.From]) == 0 {
-					delete(sFrom.outEdges, e.From)
-				}
+				removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeIdx, e.From, keyOf(e))
 			}
 		}
 		delete(s.inEdges, id)
+		delete(s.inEdgeIdx, id)
 	}
 
 	return removed
 }
 
 // RemoveEdge removes a specific edge by from, to, and kind. Returns
-// true if the edge was found and removed.
+// true if the edge was found and removed. When multiple edges match
+// (same from/to/kind but different file/line — rare but possible),
+// removes the first one encountered.
 func (g *Graph) RemoveEdge(from, to string, kind EdgeKind) bool {
 	unlock := g.lockTwoWrite(from, to)
 	defer unlock()
@@ -376,28 +566,11 @@ func (g *Graph) RemoveEdge(from, to string, kind EdgeKind) bool {
 		return false
 	}
 
-	sFrom.outEdges[from] = filterEdge(sFrom.outEdges[from], target)
-	if len(sFrom.outEdges[from]) == 0 {
-		delete(sFrom.outEdges, from)
-	}
-
+	k := keyOf(target)
+	removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeIdx, from, k)
 	sTo := g.shardFor(to)
-	sTo.inEdges[to] = filterEdge(sTo.inEdges[to], target)
-	if len(sTo.inEdges[to]) == 0 {
-		delete(sTo.inEdges, to)
-	}
-
+	removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeIdx, to, k)
 	return true
-}
-
-// filterEdge removes a specific edge pointer from a slice.
-func filterEdge(edges []*Edge, target *Edge) []*Edge {
-	for i, e := range edges {
-		if e == target {
-			return append(edges[:i], edges[i+1:]...)
-		}
-	}
-	return edges
 }
 
 // NodeCount returns the total number of nodes.
@@ -526,19 +699,13 @@ func (g *Graph) EvictRepo(repoPrefix string) (nodesRemoved, edgesRemoved int) {
 		s := g.shardFor(n.ID)
 		delete(s.nodes, n.ID)
 		if n.QualName != "" {
-			delete(s.byQual, n.QualName)
+			if cur, ok := s.byQual[n.QualName]; ok && cur.ID == n.ID {
+				delete(s.byQual, n.QualName)
+			}
 		}
-		s.byName[n.Name] = removeNode(s.byName[n.Name], n.ID)
-		if len(s.byName[n.Name]) == 0 {
-			delete(s.byName, n.Name)
-		}
-		s.byFile[n.FilePath] = removeNode(s.byFile[n.FilePath], n.ID)
-		if len(s.byFile[n.FilePath]) == 0 {
-			delete(s.byFile, n.FilePath)
-		}
-	}
-	for _, s := range g.shards {
-		delete(s.byRepo, repoPrefix)
+		removeNodeFromBucket(s.byName, s.byNameIdx, n.Name, n.ID)
+		removeNodeFromBucket(s.byFile, s.byFileIdx, n.FilePath, n.ID)
+		removeNodeFromBucket(s.byRepo, s.byRepoIdx, repoPrefix, n.ID)
 	}
 	nodesRemoved = len(nodes)
 
@@ -736,11 +903,3 @@ func (g *Graph) RepoPrefixes() []string {
 	return prefixes
 }
 
-func removeNode(nodes []*Node, id string) []*Node {
-	for i, n := range nodes {
-		if n.ID == id {
-			return append(nodes[:i], nodes[i+1:]...)
-		}
-	}
-	return nodes
-}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"go.uber.org/zap"
 
@@ -28,6 +29,12 @@ type daemonState struct {
 	multiIndexer  *indexer.MultiIndexer
 	configManager *config.ConfigManager
 	mcpServer     *gortexmcp.Server
+	// snapshotRepos carries per-repo FileMtimes restored from a daemon
+	// snapshot. Populated by buildDaemonState; consumed by
+	// warmupDaemonState to route each configured repo through
+	// ReconcileRepoCtx (incremental) instead of TrackRepoCtx (full
+	// index). nil or missing entries → fall back to full index.
+	snapshotRepos map[string]*snapshotRepo
 	// MultiWatcher is built by warmupDaemonState (after tracked repos
 	// have been re-indexed) and handed to realController via
 	// AttachWatcher — it isn't held on daemonState because no caller
@@ -52,10 +59,16 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	reg := parser.NewRegistry()
 	languages.RegisterAll(reg)
 
-	// Warm-start from snapshot when one exists. Subsequent TrackRepo
-	// calls re-index only the files that changed since the snapshot was
-	// written, so restart cost is near-zero on steady-state repos.
-	if _, err := loadSnapshot(g, logger); err != nil {
+	// Warm-start from snapshot when one exists. Subsequent
+	// ReconcileRepoCtx calls re-index only the files that changed since
+	// the snapshot was written, so restart cost is near-zero on
+	// steady-state repos. The returned per-repo FileMtimes are what
+	// make that incremental path viable — without them, warmup would
+	// have no signal to distinguish "indexed and unchanged" from "new
+	// on disk", treat everything as stale, and produce duplicate
+	// nodes/edges on every restart (bug B1).
+	loadResult, err := loadSnapshot(g, logger)
+	if err != nil {
 		logger.Warn("daemon: snapshot load failed", zap.Error(err))
 	}
 
@@ -133,6 +146,7 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 		multiIndexer:  mi,
 		configManager: cm,
 		mcpServer:     srv,
+		snapshotRepos: loadResult.Repos,
 	}, nil
 }
 
@@ -148,6 +162,22 @@ func warmupDaemonState(state *daemonState, logger *zap.Logger) *indexer.MultiWat
 
 	ctx := progress.WithReporter(context.Background(), progress.Nop{})
 	for _, entry := range state.configManager.Global().Repos {
+		// Route repos whose nodes came from the snapshot through
+		// ReconcileRepoCtx — it calls IncrementalReindex, which
+		// evicts files deleted while the daemon was down and
+		// re-indexes only files whose mtime changed. Repos not in
+		// the snapshot (newly tracked, or first startup after a
+		// schema bump) fall back to TrackRepoCtx, which does a full
+		// walk. Both paths end with the repo registered on the
+		// MultiIndexer and its contract edges reconciled.
+		priorMtimes := priorMtimesForEntry(state.snapshotRepos, entry)
+		if priorMtimes != nil {
+			if _, err := state.multiIndexer.ReconcileRepoCtx(ctx, entry, priorMtimes); err != nil {
+				logger.Warn("daemon: startup reconcile failed",
+					zap.String("path", entry.Path), zap.Error(err))
+			}
+			continue
+		}
 		if _, err := state.multiIndexer.TrackRepoCtx(ctx, entry); err != nil {
 			logger.Warn("daemon: startup track failed",
 				zap.String("path", entry.Path), zap.Error(err))
@@ -169,4 +199,66 @@ func warmupDaemonState(state *daemonState, logger *zap.Logger) *indexer.MultiWat
 	}
 	logger.Info("daemon: watching", zap.Int("repos", len(watchCfgs)))
 	return mw
+}
+
+// priorMtimesForEntry finds the snapshotted FileMtimes map for a
+// configured repo entry, matching on absolute RootPath. Falls back to
+// prefix-based lookup when no path match is found — useful if the
+// user's config moved but the prefix is stable. Returns nil when no
+// match exists (first startup, schema bump, or newly-added repo).
+func priorMtimesForEntry(repos map[string]*snapshotRepo, entry config.RepoEntry) map[string]int64 {
+	if len(repos) == 0 {
+		return nil
+	}
+	absPath, err := filepath.Abs(entry.Path)
+	if err != nil {
+		absPath = entry.Path
+	}
+	for _, r := range repos {
+		if r == nil {
+			continue
+		}
+		if r.RootPath == absPath {
+			return r.FileMtimes
+		}
+	}
+	if prefix := config.ResolvePrefix(entry); prefix != "" && prefix != "." {
+		if r := repos[prefix]; r != nil {
+			return r.FileMtimes
+		}
+	}
+	return nil
+}
+
+// collectSnapshotRepos snapshots the per-repo metadata needed to
+// reconcile the next startup: RepoPrefix, RootPath, and FileMtimes.
+// Called from the shutdown and periodic-snapshot paths so restart
+// warmups can run IncrementalReindex instead of a full walk.
+func collectSnapshotRepos(mi *indexer.MultiIndexer) []snapshotRepo {
+	if mi == nil {
+		return nil
+	}
+	meta := mi.AllMetadata()
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make([]snapshotRepo, 0, len(meta))
+	for prefix, m := range meta {
+		if m == nil {
+			continue
+		}
+		// Copy the mtimes map — saveSnapshot encodes asynchronously
+		// on shutdown and we don't want a late watcher event mutating
+		// the live map mid-encode.
+		mtimes := make(map[string]int64, len(m.FileMtimes))
+		for k, v := range m.FileMtimes {
+			mtimes[k] = v
+		}
+		out = append(out, snapshotRepo{
+			RepoPrefix: prefix,
+			RootPath:   m.RootPath,
+			FileMtimes: mtimes,
+		})
+	}
+	return out
 }

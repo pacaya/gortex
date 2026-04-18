@@ -27,12 +27,12 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	orig.AddNode(&graph.Node{ID: "b.go::Bar", Name: "Bar", Kind: graph.KindMethod, FilePath: "b.go"})
 	orig.AddEdge(&graph.Edge{From: "b.go::Bar", To: "a.go::Foo", Kind: graph.EdgeCalls, FilePath: "b.go", Line: 12})
 
-	saveSnapshot(orig, "v-test", zap.NewNop())
+	saveSnapshot(orig, nil, "v-test", zap.NewNop())
 
 	restored := graph.New()
-	loaded, err := loadSnapshot(restored, zap.NewNop())
+	result, err := loadSnapshot(restored, zap.NewNop())
 	require.NoError(t, err)
-	require.True(t, loaded, "loadSnapshot must succeed for a freshly-written file")
+	require.True(t, result.Loaded, "loadSnapshot must succeed for a freshly-written file")
 
 	assert.Equal(t, orig.NodeCount(), restored.NodeCount(),
 		"node count must round-trip")
@@ -87,12 +87,12 @@ func TestLoadSnapshot_DropsStaleAbsPathNodes(t *testing.T) {
 		Kind: graph.EdgeCalls,
 	})
 
-	saveSnapshot(orig, "v-test", zap.NewNop())
+	saveSnapshot(orig, nil, "v-test", zap.NewNop())
 
 	restored := graph.New()
-	loaded, err := loadSnapshot(restored, zap.NewNop())
+	result, err := loadSnapshot(restored, zap.NewNop())
 	require.NoError(t, err)
-	require.True(t, loaded)
+	require.True(t, result.Loaded)
 
 	assert.NotNil(t, restored.GetNode("core-api/api/handler.go::Handler.CreateTuck"),
 		"clean prefixed node must be restored")
@@ -112,9 +112,9 @@ func TestLoadSnapshot_MissingFile_NotAnError(t *testing.T) {
 	t.Setenv("GORTEX_DAEMON_SNAPSHOT", filepath.Join(dir, "nope.gob.gz"))
 
 	g := graph.New()
-	loaded, err := loadSnapshot(g, zap.NewNop())
+	result, err := loadSnapshot(g, zap.NewNop())
 	require.NoError(t, err, "missing snapshot must not surface as an error — first-run path")
-	assert.False(t, loaded, "no snapshot means loaded=false")
+	assert.False(t, result.Loaded, "no snapshot means loaded=false")
 	assert.Equal(t, 0, g.NodeCount())
 }
 
@@ -125,9 +125,9 @@ func TestLoadSnapshot_CorruptFile_ReportsError(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("not a gzip stream"), 0o600))
 
 	g := graph.New()
-	loaded, err := loadSnapshot(g, zap.NewNop())
+	result, err := loadSnapshot(g, zap.NewNop())
 	assert.Error(t, err, "corrupt snapshot must not be silently swallowed")
-	assert.False(t, loaded)
+	assert.False(t, result.Loaded)
 	assert.Equal(t, 0, g.NodeCount())
 }
 
@@ -145,7 +145,7 @@ func TestStartPeriodicSnapshots_WritesOnTick(t *testing.T) {
 
 	// 30ms interval — fast enough to observe two or three ticks within
 	// a reasonable test budget, slow enough to survive scheduler jitter.
-	stop := startPeriodicSnapshots(g, "t", 30*time.Millisecond, zap.NewNop())
+	stop := startPeriodicSnapshots(g, nil, "t", 30*time.Millisecond, zap.NewNop())
 	t.Cleanup(stop)
 
 	require.Eventually(t, func() bool {
