@@ -1,0 +1,118 @@
+# Smoke-test gortex init's adapter pipeline on PRs that touch it.
+# The job runs `gortex init --dry-run --json` against a synthetic
+# HOME with each agent's detection sentinel pre-created, then
+# parses the JSON report and asserts each adapter reports itself
+# configured. A schema change that breaks an adapter fails here
+# before the PR merges.
+name: init-smoke
+
+on:
+  pull_request:
+    paths:
+      - "cmd/gortex/init*.go"
+      - "internal/agents/**"
+      - ".github/workflows/init-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cmd/gortex/init*.go"
+      - "internal/agents/**"
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build gortex
+        run: go build -o /tmp/gortex ./cmd/gortex
+
+      - name: Prepare synthetic HOME with every agent's detection sentinel
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/home"
+          # Claude Code — no sentinel needed, always detected
+          mkdir -p "$RUNNER_TEMP/home/.claude"
+          # Cursor
+          mkdir -p "$RUNNER_TEMP/home/.cursor"
+          mkdir -p "$RUNNER_TEMP/repo/.cursor"
+          # VS Code
+          mkdir -p "$RUNNER_TEMP/repo/.vscode"
+          # Continue
+          mkdir -p "$RUNNER_TEMP/repo/.continue"
+          # Kiro
+          mkdir -p "$RUNNER_TEMP/repo/.kiro"
+          # OpenCode
+          mkdir -p "$RUNNER_TEMP/repo/.opencode"
+          # Windsurf
+          mkdir -p "$RUNNER_TEMP/home/.codeium"
+          # Cline — per-editor globalStorage
+          mkdir -p "$RUNNER_TEMP/home/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings"
+          # Kilo Code
+          mkdir -p "$RUNNER_TEMP/home/.config/Code/User/globalStorage/kilocode.kilo/settings"
+          # Codex
+          mkdir -p "$RUNNER_TEMP/home/.codex"
+          # Gemini
+          mkdir -p "$RUNNER_TEMP/home/.gemini"
+          touch "$RUNNER_TEMP/home/.gemini/settings.json"
+          # Zed (Linux path)
+          mkdir -p "$RUNNER_TEMP/home/.config/zed"
+          # Aider
+          touch "$RUNNER_TEMP/repo/.aider.conf.yml"
+          # OpenClaw
+          mkdir -p "$RUNNER_TEMP/home/.openclaw"
+
+      - name: Run gortex init --dry-run --json
+        id: run
+        run: |
+          set -euxo pipefail
+          cd "$RUNNER_TEMP/repo"
+          git init -q
+          HOME="$RUNNER_TEMP/home" /tmp/gortex init --yes --dry-run --json > "$RUNNER_TEMP/report.json"
+          cat "$RUNNER_TEMP/report.json"
+
+      - name: Assert every expected adapter reported detected=true
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import json, sys
+          with open("${RUNNER_TEMP}/report.json".replace("${RUNNER_TEMP}", __import__("os").environ["RUNNER_TEMP"])) as f:
+              data = json.load(f)
+          agents = {a["name"]: a for a in data["agents"]}
+          expected = [
+              "claude-code", "aider", "cline", "codex", "continue",
+              "cursor", "gemini", "kilocode", "kiro", "opencode",
+              "openclaw", "vscode", "windsurf", "zed",
+              # "antigravity" always true when HOME is set; not a detection test.
+          ]
+          failed = []
+          for name in expected:
+              a = agents.get(name)
+              if not a:
+                  failed.append(f"{name}: missing from report")
+                  continue
+              if not a.get("detected"):
+                  failed.append(f"{name}: detected=false despite sentinel")
+          if failed:
+              print("\n".join(failed))
+              sys.exit(1)
+          print(f"all {len(expected)} adapters detected")
+          PY
+
+      - name: Assert dry-run left no files behind
+        run: |
+          # Dry-run must not touch disk. Allow only the sentinel
+          # directories we created in the "Prepare" step.
+          set -euxo pipefail
+          unexpected="$(find "$RUNNER_TEMP/home" -type f 2>/dev/null | grep -v '.gemini/settings.json$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "ERROR: dry-run wrote files:"
+            echo "$unexpected"
+            exit 1
+          fi
+          echo "OK — dry-run produced no writes under HOME"

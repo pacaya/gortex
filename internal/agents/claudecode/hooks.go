@@ -1,0 +1,386 @@
+package claudecode
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/zzet/gortex/internal/agents"
+)
+
+// CurrentPreToolUseMatcher is the canonical matcher pattern we bake
+// into Claude Code's PreToolUse hook. Older versions used
+// "Read|Grep" or "Read|Grep|Glob"; upgradeGortexMatcher rewrites
+// those in place.
+const CurrentPreToolUseMatcher = "Read|Grep|Glob|Task"
+
+// ResolveHookCommand returns the shell command to bake into Claude
+// Code's hook config. It prefers the `gortex` binary on PATH so
+// installers (brew, `go install`) get a stable absolute path; falls
+// back to bare "gortex hook" when no installed binary is found.
+//
+// A warning is written to w because the fallback relies on PATH
+// resolution at hook-fire time — fragile when the user's shell
+// environment differs between Claude Code and a terminal.
+func ResolveHookCommand(w io.Writer) string {
+	if path, err := exec.LookPath("gortex"); err == nil {
+		return path + " hook"
+	}
+	if w != nil {
+		_, _ = fmt.Fprintln(w,
+			"[gortex init] warning: `gortex` not found on PATH; "+
+				"writing bare \"gortex hook\" into settings — install gortex to PATH for a stable hook command")
+	}
+	return "gortex hook"
+}
+
+// HookCommandPathIsEphemeral reports whether cmd's binary path lives
+// in a location that is wiped between sessions (system tmpdirs, the
+// macOS go-build cache) or no longer exists on disk. Used by
+// healStaleHookCommands to detect settings.json entries that
+// outlived their backing binary.
+func HookCommandPathIsEphemeral(cmd string) bool {
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return false
+	}
+	bin := fields[0]
+	ephemeralPrefixes := []string{"/tmp/", "/var/folders/", "/private/tmp/", "/private/var/folders/"}
+	for _, p := range ephemeralPrefixes {
+		if strings.HasPrefix(bin, p) {
+			return true
+		}
+	}
+	// An absolute path that no longer resolves to a file is also stale.
+	if filepath.IsAbs(bin) {
+		if _, err := os.Stat(bin); err != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// healStaleHookCommands rewrites Gortex hook entries whose command
+// points at an ephemeral or missing binary path. Returns the number
+// of entries rewritten. Non-Gortex entries are left alone; Gortex
+// entries whose path is healthy are also left alone.
+func healStaleHookCommands(hooks map[string]any, newCommand string) int {
+	healed := 0
+	for _, event := range []string{"PreToolUse", "PreCompact", "Stop", "SessionStart"} {
+		list, ok := hooks[event].([]any)
+		if !ok {
+			continue
+		}
+		for _, h := range list {
+			hm, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			inner, ok := hm["hooks"].([]any)
+			if !ok {
+				continue
+			}
+			for _, e := range inner {
+				em, ok := e.(map[string]any)
+				if !ok {
+					continue
+				}
+				cmd, _ := em["command"].(string)
+				if !commandInvokesGortexHook(cmd) {
+					continue
+				}
+				if !HookCommandPathIsEphemeral(cmd) {
+					continue
+				}
+				em["command"] = newCommand
+				healed++
+			}
+		}
+	}
+	return healed
+}
+
+func appendHookEntry(hooks map[string]any, event string, entry map[string]any) {
+	if _, ok := hooks[event]; !ok {
+		hooks[event] = []any{}
+	}
+	list := hooks[event].([]any)
+	hooks[event] = append(list, entry)
+}
+
+// upgradeGortexMatcher rewrites older PreToolUse matchers to the
+// current "Read|Grep|Glob|Task". Returns true when a change was
+// made. Handles the two historical matchers we've shipped
+// ("Read|Grep" and "Read|Grep|Glob"); anything else is left alone.
+func upgradeGortexMatcher(hooks map[string]any) bool {
+	pre, ok := hooks["PreToolUse"].([]any)
+	if !ok {
+		return false
+	}
+	upgraded := false
+	for _, h := range pre {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		matcher, _ := hm["matcher"].(string)
+		if matcher != "Read|Grep" && matcher != "Read|Grep|Glob" {
+			continue
+		}
+		if !entryInvokesGortexHook(hm) {
+			continue
+		}
+		hm["matcher"] = CurrentPreToolUseMatcher
+		upgraded = true
+	}
+	return upgraded
+}
+
+// entryInvokesGortexHook returns true when any hooks[*].command
+// looks like a Gortex hook invocation.
+func entryInvokesGortexHook(entry map[string]any) bool {
+	inner, ok := entry["hooks"].([]any)
+	if !ok {
+		return false
+	}
+	for _, e := range inner {
+		em, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := em["command"].(string)
+		if commandInvokesGortexHook(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupGortexEntries collapses duplicate Gortex hook entries inside
+// hooks[event] down to the first one. Non-Gortex entries are
+// preserved in order. Returns the number of duplicates removed.
+func dedupGortexEntries(hooks map[string]any, event string) int {
+	list, ok := hooks[event].([]any)
+	if !ok {
+		return 0
+	}
+	seenGortex := false
+	kept := make([]any, 0, len(list))
+	removed := 0
+	for _, h := range list {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			kept = append(kept, h)
+			continue
+		}
+		if !entryInvokesGortexHook(hm) {
+			kept = append(kept, h)
+			continue
+		}
+		if seenGortex {
+			removed++
+			continue
+		}
+		seenGortex = true
+		kept = append(kept, h)
+	}
+	if removed > 0 {
+		hooks[event] = kept
+	}
+	return removed
+}
+
+// commandInvokesGortexHook returns true when cmd is a Gortex hook
+// invocation. Splits on whitespace and checks that "hook" is a
+// standalone token and that "gortex" appears in the binary path
+// component.
+func commandInvokesGortexHook(cmd string) bool {
+	fields := strings.Fields(cmd)
+	if len(fields) < 2 {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(fields[0]), "gortex") {
+		return false
+	}
+	return slices.Contains(fields[1:], "hook")
+}
+
+// hasGortexHookEntry returns true when the given event already has a
+// hook entry that invokes `gortex hook`.
+func hasGortexHookEntry(hooks map[string]any, event string) bool {
+	existing, ok := hooks[event].([]any)
+	if !ok {
+		return false
+	}
+	for _, h := range existing {
+		hm, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entryInvokesGortexHook(hm) {
+			return true
+		}
+	}
+	return false
+}
+
+// InstallHook is the top-level "make settings.local.json hooks
+// match the current Gortex config" operation. It reads the file,
+// heals stale commands, upgrades old matchers, dedupes repeat
+// entries, then installs any missing Gortex hooks (PreToolUse,
+// PreCompact, Stop). Writes back atomically via the shared helper.
+//
+// This function intentionally accepts a plain filesystem path
+// rather than an Env — the same helper is used for project-level
+// (.claude/settings.local.json) and user-level (~/.claude/…) files.
+func InstallHook(w io.Writer, settingsPath string, opts agents.ApplyOpts) (agents.FileAction, error) {
+	var settings map[string]any
+	existed := false
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		existed = true
+		if err := json.Unmarshal(data, &settings); err != nil {
+			settings = make(map[string]any)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return agents.FileAction{}, fmt.Errorf("read %s: %w", settingsPath, err)
+	} else {
+		settings = make(map[string]any)
+	}
+
+	hookCommand := ResolveHookCommand(w)
+
+	if _, ok := settings["hooks"]; !ok {
+		settings["hooks"] = make(map[string]any)
+	}
+	hooks := settings["hooks"].(map[string]any)
+
+	healedCount := healStaleHookCommands(hooks, hookCommand)
+	matcherUpgraded := upgradeGortexMatcher(hooks)
+	dedupedCount := dedupGortexEntries(hooks, "PreToolUse") +
+		dedupGortexEntries(hooks, "PreCompact") +
+		dedupGortexEntries(hooks, "Stop") +
+		dedupGortexEntries(hooks, "SessionStart")
+
+	preToolUseInstalled := hasGortexHookEntry(hooks, "PreToolUse")
+	preCompactInstalled := hasGortexHookEntry(hooks, "PreCompact")
+	stopInstalled := hasGortexHookEntry(hooks, "Stop")
+	sessionStartInstalled := hasGortexHookEntry(hooks, "SessionStart")
+
+	if !preToolUseInstalled {
+		appendHookEntry(hooks, "PreToolUse", map[string]any{
+			"matcher": CurrentPreToolUseMatcher,
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       3000,
+					"statusMessage": "Enriching with Gortex graph context...",
+				},
+			},
+		})
+	}
+	if !preCompactInstalled {
+		appendHookEntry(hooks, "PreCompact", map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       3000,
+					"statusMessage": "Injecting Gortex orientation snapshot...",
+				},
+			},
+		})
+	}
+	if !stopInstalled {
+		appendHookEntry(hooks, "Stop", map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       5000,
+					"statusMessage": "Running Gortex post-task diagnostics...",
+				},
+			},
+		})
+	}
+	if !sessionStartInstalled {
+		// SessionStart fires at the start of a new or resumed session
+		// — a perfect moment to inject the Gortex orientation snapshot
+		// so the first turn doesn't have to call graph_stats. It
+		// complements PreCompact (which fires on summary boundaries).
+		appendHookEntry(hooks, "SessionStart", map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":          "command",
+					"command":       hookCommand,
+					"timeout":       3000,
+					"statusMessage": "Loading Gortex graph orientation...",
+				},
+			},
+		})
+	}
+
+	allPresent := preToolUseInstalled && preCompactInstalled && stopInstalled && sessionStartInstalled
+	noChanges := allPresent && !matcherUpgraded && dedupedCount == 0 && healedCount == 0
+	if noChanges {
+		if w != nil {
+			_, _ = fmt.Fprintf(w, "[gortex init] all hooks already present in %s\n", settingsPath)
+		}
+		return agents.FileAction{Path: settingsPath, Action: agents.ActionSkip, Reason: "already-configured"}, nil
+	}
+
+	if opts.DryRun {
+		action := agents.ActionWouldCreate
+		if existed {
+			action = agents.ActionWouldMerge
+		}
+		return agents.FileAction{Path: settingsPath, Action: action, Keys: []string{"hooks"}}, nil
+	}
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return agents.FileAction{}, err
+	}
+	if err := agents.AtomicWriteFile(settingsPath, data, 0o644); err != nil {
+		return agents.FileAction{}, err
+	}
+
+	// Report exactly what changed — helpful for the doctor subcommand
+	// and for reassuring users during `gortex init` re-runs.
+	var changes []string
+	if matcherUpgraded {
+		changes = append(changes, "upgraded PreToolUse matcher")
+	}
+	if dedupedCount > 0 {
+		changes = append(changes, fmt.Sprintf("removed %d duplicate entries", dedupedCount))
+	}
+	if healedCount > 0 {
+		changes = append(changes, fmt.Sprintf("rewrote %d stale hook path(s)", healedCount))
+	}
+	if !preToolUseInstalled {
+		changes = append(changes, "installed PreToolUse")
+	}
+	if !preCompactInstalled {
+		changes = append(changes, "installed PreCompact")
+	}
+	if !stopInstalled {
+		changes = append(changes, "installed Stop")
+	}
+	if !sessionStartInstalled {
+		changes = append(changes, "installed SessionStart")
+	}
+	if w != nil {
+		_, _ = fmt.Fprintf(w, "[gortex init] %s in %s\n", strings.Join(changes, ", "), settingsPath)
+	}
+	action := agents.ActionCreate
+	if existed {
+		action = agents.ActionMerge
+	}
+	return agents.FileAction{Path: settingsPath, Action: action, Keys: []string{"hooks"}}, nil
+}

@@ -1,0 +1,150 @@
+// Package agents defines the contract Gortex uses to wire itself into
+// external AI coding assistants (Claude Code, Cursor, Kiro, Continue.dev,
+// Cline, Windsurf, OpenCode, VS Code / Copilot, Antigravity, …).
+//
+// Each integration lives in its own sub-package and implements Adapter.
+// `gortex init` iterates over a Registry of adapters and for each one
+// calls Detect → Plan → Apply. The split lets CI exercise planning
+// without touching disk (Plan + --dry-run) and makes every writer
+// funnel through a single code path (writer.go), so atomic-rename,
+// dry-run reporting, and golden-fixture testing stay uniform across
+// agents.
+package agents
+
+import "io"
+
+// Adapter is the contract every agent integration implements.
+//
+// Semantics:
+//   - Name is stable across releases; users reference it via
+//     --agents=<csv>. Lowercase kebab-case.
+//   - DocsURL points to the agent's *own* MCP/hook documentation
+//     (not Gortex docs) so --json consumers can trace what schema
+//     we're targeting.
+//   - Detect never modifies disk. False means "skip" — not an error.
+//   - Plan is pure: it returns what Apply *would* do for a given
+//     Env, without writing. Callers use it to power --dry-run and
+//     `gortex init doctor`.
+//   - Apply executes the plan. It must respect ApplyOpts.DryRun
+//     (return planned actions without writing) and ApplyOpts.Force
+//     (overwrite merge-preserved keys).
+type Adapter interface {
+	Name() string
+	DocsURL() string
+	Detect(env Env) (bool, error)
+	Plan(env Env) (*Plan, error)
+	Apply(env Env, opts ApplyOpts) (*Result, error)
+}
+
+// Mode selects between per-repo and user-level installation.
+// Today only the Claude Code adapter distinguishes the two; other
+// adapters ignore it. Adding the dimension now keeps the interface
+// stable as we audit each agent for user-level MCP support.
+type Mode int
+
+const (
+	// ModeProject writes project-local files (.mcp.json, .cursor/mcp.json, …).
+	// This is the default for `gortex init`.
+	ModeProject Mode = iota
+
+	// ModeGlobal writes user-level files (~/.claude.json, ~/.gemini/settings.json, …).
+	// Set by `gortex init --global`.
+	ModeGlobal
+)
+
+// Env bundles the inputs every adapter needs: where to write, which
+// binary to reference in hook commands, user home for home-rooted
+// integrations, and a stderr-like writer for progress messages. Test
+// code swaps Stderr for a buffer to assert on messages without
+// capturing process stderr.
+type Env struct {
+	// Root is the absolute path to the repository. Adapters join
+	// relative paths under this.
+	Root string
+
+	// Home is the user's home directory, resolved once by the caller
+	// so adapters don't each call os.UserHomeDir().
+	Home string
+
+	// HookCommand is the shell command to bake into agent hook
+	// config (e.g. "/usr/local/bin/gortex hook"). Resolved once by
+	// the caller so every adapter writes the same string.
+	HookCommand string
+
+	// Mode is per-repo vs user-level. See ModeProject / ModeGlobal.
+	Mode Mode
+
+	// InstallHooks is false when the user passed --no-hooks or
+	// answered "no" to the wizard. Only the Claude Code adapter
+	// currently honours it.
+	InstallHooks bool
+
+	// AnalyzeRepo is true when the caller wants a dynamic CLAUDE.md
+	// preamble built from a fresh index. Only Claude Code uses it.
+	AnalyzeRepo bool
+
+	// AnalyzedOverview, if non-empty, is a pre-built dynamic
+	// CLAUDE.md preamble the Claude Code adapter will prepend to
+	// its static block. Indexing is driven by the caller to keep
+	// the agents package free of the indexer dependency.
+	AnalyzedOverview string
+
+	// Stderr receives progress messages. nil means discard.
+	Stderr io.Writer
+}
+
+// ApplyOpts controls Apply's runtime behaviour. Plan doesn't take
+// these — plans are observational.
+type ApplyOpts struct {
+	// DryRun reports what Apply *would* do without writing.
+	// Actions in the returned Result use Would* variants.
+	DryRun bool
+
+	// Force overwrites keys we would otherwise preserve during a
+	// merge (e.g. a custom autoApprove list the user edited). Does
+	// not bypass the "skip if already configured" fast path.
+	Force bool
+}
+
+// ActionKind tags what happened (or would happen) for a single file.
+// "would-*" variants are emitted under DryRun; plain "create" /
+// "merge" / "skip" are emitted by Apply when it actually wrote.
+type ActionKind string
+
+const (
+	ActionCreate      ActionKind = "create"
+	ActionMerge       ActionKind = "merge"
+	ActionSkip        ActionKind = "skip"
+	ActionWouldCreate ActionKind = "would-create"
+	ActionWouldMerge  ActionKind = "would-merge"
+)
+
+// FileAction describes one file write (real or planned). Keys is the
+// set of top-level JSON/YAML/TOML keys touched during a merge — used
+// by the doctor subcommand to diff intended vs actual state.
+type FileAction struct {
+	Path   string     `json:"path"`
+	Action ActionKind `json:"action"`
+	Keys   []string   `json:"keys,omitempty"`
+	Reason string     `json:"reason,omitempty"`
+}
+
+// Plan is the declarative output of Adapter.Plan. Every file the
+// adapter *would* touch is listed with a predicted Action. For
+// never-overwrite files the prediction is ActionWouldCreate when the
+// file is absent and ActionSkip when it already exists.
+type Plan struct {
+	Files []FileAction `json:"files,omitempty"`
+}
+
+// Result is what Apply returned. Detected mirrors what Detect
+// returned (captured on the result so callers don't need to
+// re-invoke detection). Configured is true when at least one write
+// succeeded (or would succeed under DryRun).
+type Result struct {
+	Name       string       `json:"name"`
+	Detected   bool         `json:"detected"`
+	Configured bool         `json:"configured"`
+	Files      []FileAction `json:"files,omitempty"`
+	DocsURL    string       `json:"docs_url,omitempty"`
+}

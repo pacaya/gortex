@@ -1,0 +1,461 @@
+// Package claudecode implements the Gortex init integration for
+// Anthropic's Claude Code CLI. It manages six on-disk artifacts:
+//
+//   - .mcp.json                   (project-level MCP stanza, shared)
+//   - .claude/commands/gortex-*.md (slash commands)
+//   - .claude/settings.json        (MCP tool permissions, shared)
+//   - .claude/settings.local.json  (PreToolUse/PreCompact/Stop hooks)
+//   - CLAUDE.md                    (appended instructions block)
+//   - ~/.claude/skills/gortex-*    (user-level skills)
+//
+// Global mode additionally writes ~/.claude.json (user-level MCP
+// stanza) and ~/.claude/settings.local.json (user-level hooks).
+//
+// The bulky content blocks (CLAUDE.md instructions, slash-command
+// markdown, skill frontmatter) live in this file so the adapter
+// logic in adapter.go stays readable. Content is kept as Go string
+// constants rather than embedded files so byte-for-byte reproduction
+// of the pre-refactor behaviour is trivially verifiable.
+package claudecode
+
+// ProjectMCPJSON is the starter content for a project's .mcp.json
+// when no file exists yet. The --web flag is intentional: it turns
+// on the HTTP status page so users can peek at the index without
+// wiring anything else up.
+const ProjectMCPJSON = `{
+  "mcpServers": {
+    "gortex": {
+      "command": "gortex",
+      "args": [
+        "serve",
+        "--index", ".",
+        "--watch",
+        "--web"
+      ],
+      "env": {
+        "GORTEX_INDEX_WORKERS": "${GORTEX_WORKERS:-8}"
+      }
+    }
+  }
+}
+`
+
+// ClaudeMdBlock is the canonical "use Gortex tools instead of
+// Read/Grep" instructions appended to a project's CLAUDE.md. The
+// byte sequence here must match what the previous implementation
+// wrote, or the idempotency check (contains "## MANDATORY: Use
+// Gortex MCP tools") would misfire on re-runs.
+const ClaudeMdBlock = `## MANDATORY: Use Gortex MCP tools instead of Read/Grep
+
+Gortex is running as an MCP server. You MUST use graph queries instead of file reads whenever possible. This saves thousands of tokens per task.
+
+### Navigation and Reading
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| ` + "`Read`" + ` a whole file for one function  | ` + "`get_symbol_source`" + ` (80% fewer tokens)   |
+| ` + "`Read`" + ` to find a function             | ` + "`get_symbol`" + ` or ` + "`get_editing_context`" + `    |
+| Multiple ` + "`get_symbol`" + ` calls           | ` + "`batch_symbols`" + ` (one call for N symbols) |
+| ` + "`Grep`" + ` for references                 | ` + "`find_usages`" + ` (zero false positives)     |
+| ` + "`Grep`" + ` to find a symbol by name       | ` + "`search_symbols`" + ` (BM25 + camelCase-aware)|
+| ` + "`Read`" + ` to understand a file           | ` + "`get_file_summary`" + ` or ` + "`get_editing_context`" + ` |
+| ` + "`Read`" + ` multiple files to trace calls  | ` + "`get_call_chain`" + ` / ` + "`get_callers`" + `         |
+| Guessing an import path               | ` + "`find_import_path`" + `                       |
+| ` + "`Read`" + ` to check a function signature  | ` + "`get_symbol`" + ` (signature is in ` + "`meta.signature`" + `) |
+| 5-10 calls to explore for a task      | ` + "`smart_context`" + ` (one call)               |
+
+### Impact Analysis and Safety
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Reading files to assess change scope  | ` + "`explain_change_impact`" + ` (includes cross-community warnings) |
+| Guessing which tests to run           | ` + "`get_test_targets`" + `                       |
+| Manual dependency ordering            | ` + "`get_edit_plan`" + `                          |
+| Hoping signature changes are safe     | ` + "`verify_change`" + ` — checks callers and interface implementors |
+| Manually checking team conventions    | ` + "`check_guards`" + ` — evaluates guard rules from .gortex.yaml |
+| Wondering if a new dep creates a cycle| ` + "`analyze`" + ` with ` + "`kind: \"would_create_cycle\"`" + ` — checks before you add it |
+
+### Code Quality and Analysis
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Manually hunting unused code          | ` + "`analyze`" + ` with ` + "`kind: \"dead_code\"`" + ` — zero incoming edges (excludes entry points, tests, exports) |
+| Guessing which symbols are over-coupled| ` + "`analyze`" + ` with ` + "`kind: \"hotspots\"`" + ` — ranks by fan-in, fan-out, community crossings |
+| Manually scanning for circular deps   | ` + "`analyze`" + ` with ` + "`kind: \"cycles\"`" + ` — Tarjan's SCC with severity classification |
+| Checking if the index is stale        | ` + "`index_health`" + ` — health score, parse failures, stale files |
+| Wondering what changed this session   | ` + "`get_symbol_history`" + ` — modification counts, flags churning (3+ edits) |
+
+### Code Generation and Editing
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Reading files to learn a pattern      | ` + "`suggest_pattern`" + `                        |
+| Manually scaffolding from a pattern   | ` + "`scaffold`" + ` — generates code, wiring, and test stubs from an example |
+| Read→Edit roundtrip for one symbol    | ` + "`edit_symbol`" + ` — edit source by ID, no Read needed |
+| Manual find-and-replace for renames   | ` + "`rename_symbol`" + ` — coordinated rename across all references |
+| Sequencing multi-file edits yourself  | ` + "`batch_edit`" + ` — applies edits in dependency order, re-indexes between steps |
+| Reading a diff without graph context  | ` + "`diff_context`" + ` — enriches git diff with callers, callees, community, risk |
+| Guessing what context you need next   | ` + "`prefetch_context`" + ` — predicts needed symbols from task + recent activity |
+
+### API Contracts
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Manually tracking API routes/services | ` + "`contracts`" + ` (default ` + "`action: \"list\"`" + `) — lists HTTP, gRPC, GraphQL, topic, WebSocket, env, OpenAPI |
+| Guessing if APIs match across repos   | ` + "`contracts`" + ` with ` + "`action: \"check\"`" + ` — detects orphan providers/consumers and mismatches |
+
+### Multi-Repo Management
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Manually adding a repo to config      | ` + "`track_repository`" + ` — indexes immediately, persists to config |
+| Manually removing a repo from config  | ` + "`untrack_repository`" + ` — evicts nodes/edges, persists to config |
+| Wondering which project is active     | ` + "`get_active_project`" + ` — returns project name and repo list |
+| Switching project context             | ` + "`set_active_project`" + ` — re-scopes all subsequent queries |
+| Scoping a query to one repo           | Pass ` + "`repo`" + ` param to ` + "`search_symbols`" + `, ` + "`find_usages`" + `, etc. |
+| Scoping a query to a project          | Pass ` + "`project`" + ` param to any query tool |
+| Filtering by reference tag            | Pass ` + "`ref`" + ` param to any query tool |
+
+## Session start (Gortex)
+
+1. Call ` + "`graph_stats`" + ` to confirm Gortex is running and get repo orientation.
+2. If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with path ` + "`\".\"`" + `.
+3. In multi-repo mode, call ` + "`get_active_project`" + ` to check scope. Use ` + "`set_active_project`" + ` to switch if needed.
+4. For a new task, call ` + "`smart_context`" + ` with the task description.
+5. For every file you are about to edit, call ` + "`get_editing_context`" + ` first.
+6. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations — checks callers across all repos.
+7. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
+8. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run (includes cross-repo test files).
+9. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
+
+## Gortex slash commands
+
+Use these for guided workflows: ` + "`/gortex-guide`" + `, ` + "`/gortex-explore`" + `, ` + "`/gortex-debug`" + `, ` + "`/gortex-impact`" + `, ` + "`/gortex-refactor`" + `
+`
+
+// ClaudeMdSentinel is the substring used to detect whether
+// ClaudeMdBlock has already been appended to a project's
+// CLAUDE.md. Kept as a named constant so the doctor subcommand can
+// query it without pulling in the entire block.
+const ClaudeMdSentinel = "## MANDATORY: Use Gortex MCP tools"
+
+// SlashCommands maps the filename under .claude/commands/ to its
+// markdown content. Each file is a slash command Claude Code
+// auto-discovers.
+var SlashCommands = map[string]string{
+	"gortex-guide.md":    commandGuide,
+	"gortex-explore.md":  commandExplore,
+	"gortex-debug.md":    commandDebug,
+	"gortex-impact.md":   commandImpact,
+	"gortex-refactor.md": commandRefactor,
+}
+
+// GlobalSkills maps the directory name under ~/.claude/skills/ to
+// the SKILL.md body. Skill files get YAML frontmatter so Claude Code
+// can show them in its skill picker.
+var GlobalSkills = map[string]string{
+	"gortex-guide": `---
+name: gortex-guide
+description: "Use when the user asks about Gortex — available tools, graph schema, or workflow reference. Examples: \"What Gortex tools are available?\", \"How do I use Gortex?\""
+---
+` + commandGuide,
+
+	"gortex-explore": `---
+name: gortex-explore
+description: "Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: \"How does X work?\", \"What calls this function?\", \"Show me the auth flow\""
+---
+` + commandExplore,
+
+	"gortex-debug": `---
+name: gortex-debug
+description: "Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: \"Why is X failing?\", \"Where does this error come from?\", \"Trace this bug\""
+---
+` + commandDebug,
+
+	"gortex-impact": `---
+name: gortex-impact
+description: "Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: \"Is it safe to change X?\", \"What depends on this?\", \"What will break?\""
+---
+` + commandImpact,
+
+	"gortex-refactor": `---
+name: gortex-refactor
+description: "Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: \"Rename this function\", \"Extract this into a module\", \"Refactor this class\""
+---
+` + commandRefactor,
+}
+
+const commandGuide = `# Gortex Guide
+
+Quick reference for all Gortex MCP tools and the knowledge graph schema.
+
+## Always Start Here
+
+1. **Call ` + "`graph_stats`" + `** — confirm Gortex is running, get node/edge counts
+2. **Match your task to a command below**
+3. **Follow the command's workflow**
+
+> If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with ` + "`path: \".\"`" + ` first.
+
+## Commands
+
+| Task                                         | Command                  |
+| -------------------------------------------- | ------------------------ |
+| Understand architecture / "How does X work?" | /gortex-explore          |
+| Blast radius / "What breaks if I change X?"  | /gortex-impact           |
+| Trace bugs / "Why is X failing?"             | /gortex-debug            |
+| Rename / extract / split / refactor          | /gortex-refactor         |
+| Tools, schema reference                      | /gortex-guide (this)     |
+
+## Tools Reference
+
+### Core Navigation
+| Tool | What it gives you |
+|------|-------------------|
+| graph_stats | Node/edge counts by kind and language — session start orientation |
+| search_symbols | Find symbols by keyword (BM25 + camelCase-aware). Use instead of Grep |
+| get_symbol | Single symbol: location, signature, edges. Use instead of Read |
+| get_file_summary | All symbols + imports in a file. Use instead of Read |
+| get_editing_context | **Primary pre-edit tool.** Symbols, signatures, callers, callees for a file |
+
+### Graph Traversal
+| Tool | What it gives you |
+|------|-------------------|
+| get_dependencies | What a symbol depends on (forward: imports, calls, refs) |
+| get_dependents | What depends on a symbol (backward: blast radius) |
+| get_call_chain | Forward call graph from a function |
+| get_callers | Reverse call graph to a function |
+| find_usages | Every reference to a symbol. Use instead of Grep |
+| find_implementations | All types implementing an interface |
+| get_cluster | Bidirectional neighborhood around a node |
+
+### Coding Workflow
+| Tool | What it gives you |
+|------|-------------------|
+| get_symbol_source | Source code of a single symbol — use instead of Read. Pass ` + "`if_none_match`" + ` with previous ` + "`etag`" + ` to get ` + "`not_modified`" + ` (skip re-reading unchanged source) |
+| batch_symbols | Multiple symbols with source/callers/callees in one call |
+| find_import_path | Correct import path for a symbol in a target file |
+| explain_change_impact | Risk-tiered blast radius with affected processes/communities |
+| edit_symbol | Edit symbol source by ID — no Read needed, resolves file + lines |
+| rename_symbol | Coordinated rename: generates edits for definition + all references |
+| get_recent_changes | Files/symbols changed since timestamp (watch mode) |
+
+### Agent-Optimized (token efficiency)
+| Tool | What it gives you |
+|------|-------------------|
+| smart_context | Task-aware minimal context bundle — replaces 5-10 exploration calls |
+| plan_turn | Suggested next tool calls for the current task — orchestrator for one turn |
+| prefetch_context | Predicts needed symbols from task description + recent activity |
+| get_edit_plan | Dependency-ordered edit sequence for multi-file refactors |
+| get_test_targets | Maps changed symbols to test files and run commands |
+| get_untested_symbols | Lists symbols with no covering test — candidates for new tests |
+| suggest_pattern | Extracts code pattern from an example — source, registration, tests |
+| export_context | Portable markdown/JSON briefing — share context outside MCP (Slack, PRs, docs) |
+
+### Analysis
+| Tool | What it gives you |
+|------|-------------------|
+| get_communities | Functional clusters via Louvain community detection (with id: returns single community details) |
+| get_processes | Discovered execution flows (with id: returns single process step-by-step trace) |
+| detect_changes | Git diff -> affected symbols -> blast radius |
+
+### Proactive Safety
+| Tool | What it gives you |
+|------|-------------------|
+| verify_change | Checks proposed signature changes against all callers and interface implementors |
+| check_guards | Evaluates project guard rules (.gortex.yaml) against changed symbols |
+
+### Code Quality
+| Tool | What it gives you |
+|------|-------------------|
+| analyze | Unified graph analysis. kind=dead_code, hotspots, cycles, or would_create_cycle |
+| index_health | Health score, parse failures, stale files, language coverage |
+| get_symbol_history | Symbols modified this session with counts; flags churning (3+ edits) |
+
+### Code Generation
+| Tool | What it gives you |
+|------|-------------------|
+| scaffold | Generates code, registration wiring, and test stubs from an example symbol |
+| batch_edit | Applies multiple edits in dependency order, re-indexes between steps |
+| diff_context | Git diff enriched with callers, callees, community, processes, per-file risk |
+
+### API Contracts
+| Tool | What it gives you |
+|------|-------------------|
+| contracts | API contracts: action=list (default) lists detected contracts; action=check matches providers/consumers and reports orphans across repos |
+
+### Config Hygiene
+| Tool | What it gives you |
+|------|-------------------|
+| audit_agent_config | Graph-validates backticked symbols in CLAUDE.md / AGENTS.md / ` + "`.cursor/rules`" + ` / Copilot / Windsurf / Antigravity configs — flags stale refs, dead paths, bloat |
+
+### Agent Learning
+| Tool | What it gives you |
+|------|-------------------|
+| feedback (action=record) | Report which symbols from ` + "`smart_context`" + ` were useful / not_needed / missing after a task — improves future bundles |
+| feedback (action=query) | Aggregated stats: most useful, most missed, context accuracy over time |
+
+### Multi-Repo
+| Tool | What it gives you |
+|------|-------------------|
+| index_repository | Index a repository path into the graph |
+| track_repository | Add a repo to the workspace, index immediately, persist to config |
+| untrack_repository | Remove a repo, evict its nodes/edges, persist to config |
+| get_active_project | Current project name and member repository list |
+| set_active_project | Switch project scope — re-scopes all subsequent queries |
+
+## Graph Schema
+
+**Node kinds:** file, function, method, type, interface, variable, import, package, contract
+**Edge kinds:** calls, imports, defines, implements, extends, references, member_of, instantiates, provides, consumes
+`
+
+const commandExplore = `# Exploring Codebases with Gortex
+
+## Workflow
+
+` + "```" + `
+1. graph_stats                                  -> Confirm index, get node/edge counts
+2. smart_context({task: "<what you want to understand>"}) -> One-call exploration bundle (start here)
+3. get_communities                              -> See functional clusters (architecture overview)
+4. search_symbols({query: "<concept>"})         -> Find symbols related to a concept
+5. get_processes                                -> Discover execution flows
+6. get_processes({id: "<process-id>"})          -> Trace a specific flow step by step
+7. get_file_summary({path: "<file>"})           -> Symbols + imports for one file
+8. get_editing_context({path: "<file>"})        -> Deep dive on a file (callers + callees)
+9. export_context({...})                        -> Share findings as markdown/JSON (PRs, Slack, docs)
+` + "```" + `
+
+## Checklist
+
+- Call graph_stats to confirm Gortex is running
+- Call smart_context first — one call replaces 5-10 exploration calls
+- Call get_communities for architecture overview when smart_context is not enough
+- Call search_symbols for the concept you want to understand
+- Call get_processes to discover execution flows
+- Call get_processes with id on relevant flows for step-by-step traces
+- Call get_editing_context on key files for full symbol context
+- Call export_context to hand a findings packet outside the session
+- Read source files only for implementation details you actually need to edit
+`
+
+const commandDebug = `# Debugging with Gortex
+
+## Workflow
+
+` + "```" + `
+1. search_symbols({query: "<error or suspect>"})          -> Find related symbols
+2. get_callers({id: "<suspect>"})                         -> Who calls it?
+3. get_call_chain({id: "<suspect>"})                      -> What does it call?
+4. get_editing_context({path: "<file>"})                  -> Full file context
+5. get_processes({id: "<process>"})                       -> Trace execution flow
+6. get_symbol_history                                     -> Symbols churning this session (regression hotspot)
+7. explain_change_impact({ids: "<fix target>"})           -> Who else will feel the fix
+` + "```" + `
+
+## Debugging Patterns
+
+| Symptom              | Gortex Approach |
+| -------------------- | --------------- |
+| Error message        | search_symbols for error-related names -> get_callers on throw sites |
+| Wrong return value   | get_call_chain on the function -> trace callees for data flow |
+| Intermittent failure | get_editing_context -> look for external calls, async deps |
+| Performance issue    | find_usages -> find symbols with many callers (hot paths) |
+| Recent regression    | detect_changes -> see what your changes affect. get_symbol_history flags symbols edited 3+ times this session |
+| Flaky test           | get_untested_symbols near the suspect -> find coverage gaps the flake may hide |
+| Stale index suspect  | index_health -> parse failures and stale files can mask the real bug |
+`
+
+const commandImpact = `# Impact Analysis with Gortex
+
+## Workflow
+
+` + "```" + `
+1. search_symbols({query: "X"})                                     -> Find the symbol ID
+2. explain_change_impact({ids: "<id1>, <id2>"})                     -> Risk-tiered blast radius
+3. get_dependents({id: "<symbol-id>", depth: 3})                    -> Detailed dependent tree
+4. verify_change({id: "<id>", new_signature: "..."})                -> Check callers + interface implementors for signature-level breaks
+5. contracts({action: "check"})                                     -> Cross-repo API breakage (HTTP/gRPC/GraphQL/topics)
+6. analyze({kind: "would_create_cycle", from: "<a>", to: "<b>"})    -> Before adding a new dep
+7. get_test_targets({ids: ["<id1>", "<id2>"]})                      -> Tests to re-run (includes cross-repo)
+8. check_guards({ids: ["<id1>"]})                                   -> Project guard rules from .gortex.yaml
+9. detect_changes({scope: "staged"})                                -> Pre-commit scope check
+10. diff_context({scope: "staged"})                                 -> Graph-enriched diff for review
+` + "```" + `
+
+## Understanding Output
+
+| Depth | Risk Level       | Meaning                  |
+| ----- | ---------------- | ------------------------ |
+| d=1   | **WILL BREAK**   | Direct callers/importers |
+| d=2   | LIKELY AFFECTED  | Indirect dependencies    |
+| d=3   | MAY NEED TESTING | Transitive effects       |
+
+## Checklist
+
+- search_symbols to find exact symbol IDs
+- explain_change_impact with all symbols you plan to change
+- Review risk level (LOW/MEDIUM/HIGH/CRITICAL)
+- Check by_depth: d=1 items WILL BREAK
+- Note affected_processes and affected_communities
+- verify_change for every signature change (catches contract violations across repos)
+- contracts action=check when changing HTTP routes, gRPC methods, topics, env contracts
+- check_guards so team conventions from .gortex.yaml block bad changes early
+- get_test_targets to see which test files need re-running
+- Before commit: detect_changes to verify scope, diff_context for graph-enriched review
+`
+
+const commandRefactor = `# Refactoring with Gortex
+
+## Workflow
+
+` + "```" + `
+1. search_symbols({query: "X"})                                     -> Find the symbol ID
+2. explain_change_impact({ids: "<id>"})                             -> Map blast radius
+3. verify_change({id: "<id>", new_signature: "..."})                -> Catch contract violations in callers + implementors
+4. get_editing_context({path: "<file>"})                            -> See all symbols and relationships
+5. find_usages({id: "<id>"})                                        -> Every reference to change
+6. get_edit_plan({ids: ["<id1>", "<id2>"]})                         -> Dependency-ordered file list
+7. batch_edit({edits: [...]})                                       -> Apply edits in order, re-indexing between steps
+8. check_guards({ids: [...]})                                       -> Post-edit: team conventions from .gortex.yaml
+9. get_test_targets({ids: [...]})                                   -> Tests to re-run (cross-repo aware)
+10. detect_changes({scope: "all"})                                  -> Verify scope; diff_context for review
+` + "```" + `
+
+## Rename Symbol
+
+- search_symbols to find the symbol ID
+- explain_change_impact to assess blast radius
+- verify_change before signature-changing renames — fails fast on interface breaks
+- rename_symbol({id: "<id>", new_name: "<name>"}) — generates edits for definition + all references
+- Review the generated edits, apply via batch_edit or edit_symbol (no Read→Edit roundtrip)
+- check_guards, then detect_changes to verify only expected files changed
+
+## Extract Module
+
+- get_editing_context on the source file — see all symbols
+- get_dependents on symbols to extract — find external callers
+- explain_change_impact on symbols being moved
+- analyze({kind: "would_create_cycle", from: "<new module>", to: "<old module>"}) before wiring imports
+- suggest_pattern + scaffold from a comparable existing module — generates code, wiring, test stubs
+- Extract code, update imports (find_import_path for correct paths)
+- get_edit_plan + batch_edit for dependency-ordered atomic application
+- check_guards, detect_changes to verify affected scope
+
+## Split Function/Service
+
+- get_call_chain on the function — understand all callees
+- Group callees by responsibility
+- get_callers to map all call sites that need updating
+- find_implementations when splitting along an interface
+- explain_change_impact for full blast radius
+- Create new functions/services (scaffold from a similar example)
+- Update callers (find_usages for precise locations, batch_edit to apply in order)
+- check_guards, detect_changes to verify affected scope
+
+## API Contract Changes
+
+- Before changing an HTTP route, gRPC method, topic, env, or OpenAPI contract: contracts({action: "check"}) to find cross-repo consumers
+- verify_change on the provider signature
+- Coordinate consumer-side edits in the same batch_edit when repos are tracked together
+`

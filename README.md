@@ -13,7 +13,9 @@
 
 Code intelligence engine that indexes repositories into an in-memory knowledge graph and exposes it via CLI, MCP Server, and web UI.
 
-Built for AI coding agents (Claude Code, Kiro, Cursor, Windsurf, Copilot, Continue.dev, Cline, OpenCode, Antigravity) — one `smart_context` call replaces 5-10 file reads, cutting token usage by ~94%.
+Built for 15 AI coding agents (Claude Code, Kiro, Cursor, Windsurf, VS Code / Copilot, Continue.dev, Cline, OpenCode, Antigravity, Codex CLI, Gemini CLI, Zed, Aider, Kilo Code, OpenClaw) — one `smart_context` call replaces 5-10 file reads, cutting token usage by ~94%.
+
+See [docs/agents.md](docs/agents.md) for the adapter matrix, per-agent schema notes, and the `gortex init --agents=<csv>` CLI contract.
 
 ![Gortex Web UI — force-directed knowledge graph visualization](assets/graph.png)
 

@@ -1,6 +1,7 @@
-package main
+package claudecode
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,20 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestHookCommandPathIsEphemeral covers every branch of the
+// ephemeral-path detector because this function's output directly
+// decides whether a user's settings.local.json gets rewritten on
+// re-run. A false positive here would thrash the user's hook
+// config; a false negative leaves them with stale /tmp paths.
 func TestHookCommandPathIsEphemeral(t *testing.T) {
-	// /bin/sh is a stable POSIX path that exists on macOS and Linux and is
-	// not under any of the ephemeral roots — the right fixture for the
-	// "healthy absolute path" case. (`os.Executable()` would land in
-	// /private/var/folders/ under `go test`, which is itself ephemeral.)
+	// /bin/sh is a stable POSIX path, not under any ephemeral root.
+	// os.Executable() would land in /private/var/folders under go
+	// test, which is itself ephemeral — hence hard-coding.
 	const existing = "/bin/sh"
 	if _, err := os.Stat(existing); err != nil {
 		t.Skipf("test fixture %s not present: %v", existing, err)
 	}
 
-	// An absolute path under a temp dir that we never create, so the
-	// "missing absolute path" branch fires deterministically. We point at
-	// /tmp directly (not t.TempDir()) so the prefix check doesn't shortcut
-	// the missing-file check we want to exercise.
 	missing := filepath.Join("/nonexistent-root-for-gortex-test", "ghost-binary")
 
 	cases := []struct {
@@ -43,7 +44,7 @@ func TestHookCommandPathIsEphemeral(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := hookCommandPathIsEphemeral(tc.cmd)
+			got := HookCommandPathIsEphemeral(tc.cmd)
 			assert.Equal(t, tc.want, got, tc.comment)
 		})
 	}
@@ -66,7 +67,6 @@ func TestHealStaleHookCommands(t *testing.T) {
 		}
 		got := healStaleHookCommands(hooks, newCmd)
 		assert.Equal(t, 0, got)
-		// Untouched.
 		entries := hooks["PreToolUse"].([]any)
 		inner := entries[0].(map[string]any)["hooks"].([]any)
 		cmd := inner[0].(map[string]any)["command"].(string)
@@ -94,11 +94,11 @@ func TestHealStaleHookCommands(t *testing.T) {
 	t.Run("multipleEventsAndMixed", func(t *testing.T) {
 		hooks := map[string]any{
 			"PreToolUse": []any{
-				makeHookEntry("Read", "./gortex hook"),                 // healthy gortex — leave
-				makeHookEntry("Read", "/usr/local/bin/lint --strict"),  // non-gortex — leave
+				makeHookEntry("Read", "./gortex hook"),
+				makeHookEntry("Read", "/usr/local/bin/lint --strict"),
 			},
-			"PreCompact": []any{makeHookEntry("", "/tmp/gortex-hook-fix hook")}, // heal
-			"Stop":       []any{makeHookEntry("", "/tmp/gortex-hook-fix hook")}, // heal
+			"PreCompact": []any{makeHookEntry("", "/tmp/gortex-hook-fix hook")},
+			"Stop":       []any{makeHookEntry("", "/tmp/gortex-hook-fix hook")},
 		}
 		got := healStaleHookCommands(hooks, newCmd)
 		assert.Equal(t, 2, got)
@@ -116,21 +116,17 @@ func TestResolveHookCommand(t *testing.T) {
 		require.NoError(t, os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755))
 		t.Setenv("PATH", dir)
 
-		got := resolveHookCommand()
+		got := ResolveHookCommand(io.Discard)
 		assert.Equal(t, fake+" hook", got, "should resolve to absolute path on PATH")
 	})
 
 	t.Run("notFoundFallsBackToBare", func(t *testing.T) {
-		// Empty PATH means LookPath cannot resolve "gortex" anywhere.
 		t.Setenv("PATH", t.TempDir())
-
-		got := resolveHookCommand()
+		got := ResolveHookCommand(io.Discard)
 		assert.Equal(t, "gortex hook", got, "fallback to bare name keeps init working in sandboxes")
 	})
 }
 
-// makeHookEntry builds a single Claude Code hook entry shaped like what
-// installHook writes: `{matcher?, hooks: [{type, command, ...}]}`.
 func makeHookEntry(matcher, command string) map[string]any {
 	entry := map[string]any{
 		"hooks": []any{

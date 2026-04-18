@@ -10,6 +10,7 @@ require (
 	github.com/jedib0t/go-pretty/v6 v6.7.9
 	github.com/knights-analytics/hugot v0.7.0
 	github.com/mark3labs/mcp-go v0.48.0
+	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/pkoukk/tiktoken-go-loader v0.0.2
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
@@ -68,7 +69,6 @@ require (
 	github.com/knights-analytics/ortgenai v0.2.0 // indirect
 	github.com/mattn/go-runewidth v0.0.21 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
-	github.com/pelletier/go-toml/v2 v2.3.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
