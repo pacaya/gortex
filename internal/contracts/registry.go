@@ -44,6 +44,36 @@ func (r *Registry) AddAll(contracts []Contract, repoPrefix string) {
 	}
 }
 
+// ReplaceByID swaps the full list of contracts recorded for an ID.
+// Used by post-passes that mutate a contract's meta in place (e.g.
+// cross-file handler resolution re-running schema enrichment). The
+// per-repo / per-symbol / per-file indexes are rebuilt for the
+// affected entries so subsequent lookups stay consistent.
+func (r *Registry) ReplaceByID(id string, list []Contract) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Remove every old entry for this ID from the secondary indexes.
+	for _, old := range r.byID[id] {
+		r.byRepo[old.RepoPrefix] = removeContract(r.byRepo[old.RepoPrefix], old)
+		if old.SymbolID != "" {
+			r.bySymbol[old.SymbolID] = removeContract(r.bySymbol[old.SymbolID], old)
+		}
+		r.byFilePath[old.FilePath] = removeContract(r.byFilePath[old.FilePath], old)
+	}
+	r.byID[id] = nil
+
+	// Re-insert.
+	for _, c := range list {
+		r.byID[id] = append(r.byID[id], c)
+		r.byRepo[c.RepoPrefix] = append(r.byRepo[c.RepoPrefix], c)
+		if c.SymbolID != "" {
+			r.bySymbol[c.SymbolID] = append(r.bySymbol[c.SymbolID], c)
+		}
+		r.byFilePath[c.FilePath] = append(r.byFilePath[c.FilePath], c)
+	}
+}
+
 // TypeLookup resolves a bare type name to the symbol ID of its
 // definition. The optional repoHint lets callers prefer definitions
 // from the same repo as the contract itself when multiple repos

@@ -45,10 +45,15 @@ var (
 	goGRPCNewClientRe = regexp.MustCompile(`(?:[\w.]+\.)?New(\w+)Client\s*\(`)
 
 	// TypeScript consumers
-	tsGRPCNewClientRe = regexp.MustCompile(`new\s+(\w+)Client\(`)
+	tsGRPCNewClientRe       = regexp.MustCompile(`new\s+(\w+)Client\(`)
+	tsGRPCNewClientAssignRe = regexp.MustCompile(`(?m)(?:const|let|var)\s+(\w+)\s*(?::\s*\w+\s*)?=\s*new\s+(\w+)Client\(`)
+	// stub.methodName( — camelCase per the TS proto generator.
+	tsGRPCCallRe = regexp.MustCompile(`(\w+)\s*\.\s*(\w+)\s*\(`)
 
 	// Python consumers
-	pyGRPCStubRe = regexp.MustCompile(`(\w+)Stub\(channel`)
+	pyGRPCStubRe       = regexp.MustCompile(`(\w+)Stub\(channel`)
+	pyGRPCStubAssignRe = regexp.MustCompile(`(\w+)\s*=\s*\w*\.(\w+)Stub\(`)
+	pyGRPCCallRe       = regexp.MustCompile(`(\w+)\s*\.\s*(\w+)\s*\(`)
 )
 
 func (e *GRPCExtractor) SupportedLanguages() []string {
@@ -241,8 +246,58 @@ func (e *GRPCExtractor) extractConsumers(filePath string, src []byte, fileNodes 
 	}
 
 	// TS: new ServiceNameClient() — service-level only in v1.
+	// Also walk the rest of the file for per-method calls and emit
+	// method-level contracts when we find them, carrying the
+	// request type from the inline message literal.
+	tsVarToService := make(map[string]string)
+	for _, m := range tsGRPCNewClientAssignRe.FindAllStringSubmatch(text, -1) {
+		tsVarToService[m[1]] = m[2]
+	}
+	tsSeen := make(map[string]struct{})
+	for _, m := range tsGRPCCallRe.FindAllStringSubmatchIndex(text, -1) {
+		recv := text[m[2]:m[3]]
+		method := text[m[4]:m[5]]
+		svc, ok := tsVarToService[recv]
+		if !ok {
+			continue
+		}
+		ln := lineNumber(lines, m[0])
+		key := fmt.Sprintf("%s::%s::%d", svc, method, ln)
+		if _, dup := tsSeen[key]; dup {
+			continue
+		}
+		tsSeen[key] = struct{}{}
+		meta := map[string]any{"service": svc, "method": method, "lang": "typescript"}
+		if rt := detectTSGRPCRequestType(text, m[1]); rt != "" {
+			meta["request_type"] = rt
+			meta["schema_source"] = "extracted"
+		} else {
+			meta["schema_source"] = "partial"
+		}
+		contracts = append(contracts, Contract{
+			ID:         fmt.Sprintf("grpc::%s::%s", svc, method),
+			Type:       ContractGRPC,
+			Role:       RoleConsumer,
+			SymbolID:   findEnclosingSymbol(fileNodes, ln),
+			FilePath:   filePath,
+			Line:       ln,
+			Meta:       meta,
+			Confidence: 0.9,
+		})
+	}
+	// Fallback service-level contracts for TS clients that don't
+	// have resolvable method calls.
+	tsEmitted := make(map[string]struct{})
+	for _, c := range contracts {
+		if s, _ := c.Meta["service"].(string); s != "" && c.Meta["lang"] == "typescript" {
+			tsEmitted[s] = struct{}{}
+		}
+	}
 	for _, m := range tsGRPCNewClientRe.FindAllStringSubmatchIndex(text, -1) {
 		svc := text[m[2]:m[3]]
+		if _, already := tsEmitted[svc]; already {
+			continue
+		}
 		ln := lineNumber(lines, m[0])
 		contracts = append(contracts, Contract{
 			ID:         fmt.Sprintf("grpc::%s", svc),
@@ -256,9 +311,55 @@ func (e *GRPCExtractor) extractConsumers(filePath string, src []byte, fileNodes 
 		})
 	}
 
-	// Python: ServiceNameStub(channel) — service-level only in v1.
+	// Python: ServiceNameStub(channel) — service-level + method-level
+	// when stub.GetUser(request_pb2.GetUserRequest(...)) shows up.
+	pyVarToService := make(map[string]string)
+	for _, m := range pyGRPCStubAssignRe.FindAllStringSubmatch(text, -1) {
+		pyVarToService[m[1]] = m[2]
+	}
+	pySeen := make(map[string]struct{})
+	for _, m := range pyGRPCCallRe.FindAllStringSubmatchIndex(text, -1) {
+		recv := text[m[2]:m[3]]
+		method := text[m[4]:m[5]]
+		svc, ok := pyVarToService[recv]
+		if !ok {
+			continue
+		}
+		ln := lineNumber(lines, m[0])
+		key := fmt.Sprintf("%s::%s::%d", svc, method, ln)
+		if _, dup := pySeen[key]; dup {
+			continue
+		}
+		pySeen[key] = struct{}{}
+		meta := map[string]any{"service": svc, "method": method, "lang": "python"}
+		if rt := detectPyGRPCRequestType(text, m[1]); rt != "" {
+			meta["request_type"] = rt
+			meta["schema_source"] = "extracted"
+		} else {
+			meta["schema_source"] = "partial"
+		}
+		contracts = append(contracts, Contract{
+			ID:         fmt.Sprintf("grpc::%s::%s", svc, method),
+			Type:       ContractGRPC,
+			Role:       RoleConsumer,
+			SymbolID:   findEnclosingSymbol(fileNodes, ln),
+			FilePath:   filePath,
+			Line:       ln,
+			Meta:       meta,
+			Confidence: 0.9,
+		})
+	}
+	pyEmitted := make(map[string]struct{})
+	for _, c := range contracts {
+		if s, _ := c.Meta["service"].(string); s != "" && c.Meta["lang"] == "python" {
+			pyEmitted[s] = struct{}{}
+		}
+	}
 	for _, m := range pyGRPCStubRe.FindAllStringSubmatchIndex(text, -1) {
 		svc := text[m[2]:m[3]]
+		if _, already := pyEmitted[svc]; already {
+			continue
+		}
 		ln := lineNumber(lines, m[0])
 		contracts = append(contracts, Contract{
 			ID:         fmt.Sprintf("grpc::%s", svc),
@@ -273,6 +374,74 @@ func (e *GRPCExtractor) extractConsumers(filePath string, src []byte, fileNodes 
 	}
 
 	return contracts
+}
+
+// detectTSGRPCRequestType picks out the request message type from
+// `stub.getUser(new GetUserRequest({...}))` or `stub.getUser(req)`
+// where `req: GetUserRequest` is declared nearby.
+func detectTSGRPCRequestType(text string, callEnd int) string {
+	slice := grpcCallArgSlice(text, callEnd)
+	if slice == "" {
+		return ""
+	}
+	args := splitTopLevelArgs(slice)
+	if len(args) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(args[0])
+	// `new TypeName(...)` or `new pkg.TypeName(...)`.
+	if strings.HasPrefix(first, "new ") {
+		rest := strings.TrimSpace(strings.TrimPrefix(first, "new"))
+		if i := strings.IndexAny(rest, "("); i > 0 {
+			return strings.TrimSpace(rest[:i])
+		}
+	}
+	return ""
+}
+
+// detectPyGRPCRequestType picks out the request type from
+// `stub.GetUser(users_pb2.GetUserRequest(id="x"))`.
+func detectPyGRPCRequestType(text string, callEnd int) string {
+	slice := grpcCallArgSlice(text, callEnd)
+	if slice == "" {
+		return ""
+	}
+	args := splitTopLevelArgs(slice)
+	if len(args) == 0 {
+		return ""
+	}
+	first := strings.TrimSpace(args[0])
+	// `mod.TypeName(...)` — Python convention.
+	if i := strings.Index(first, "("); i > 0 {
+		// Strip package prefix so the bare name remains.
+		head := strings.TrimSpace(first[:i])
+		if dot := strings.LastIndex(head, "."); dot >= 0 {
+			head = head[dot+1:]
+		}
+		return head
+	}
+	return ""
+}
+
+// grpcCallArgSlice returns the text between the `(` at callEnd-1 and
+// its matching `)`, without the outer parens.
+func grpcCallArgSlice(text string, callEnd int) string {
+	if callEnd <= 0 || callEnd > len(text) {
+		return ""
+	}
+	depth := 1
+	for i := callEnd; i < len(text); i++ {
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return text[callEnd:i]
+			}
+		}
+	}
+	return ""
 }
 
 // detectGoGRPCRequestType picks the request message type out of a Go

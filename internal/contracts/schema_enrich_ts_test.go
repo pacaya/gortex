@@ -103,6 +103,87 @@ export async function createUser(payload: UserReq): Promise<UserResp> {
 }
 
 // -----------------------------------------------------------------------------
+// Custom request<T>() wrapper
+// -----------------------------------------------------------------------------
+
+// The wrapper pattern real web clients use: `request<UserResp>(path, token, opts)`.
+// The enricher should pick the generic type argument as the response
+// and the body argument as the request.
+func TestHTTPEnrich_TS_WrapperGeneric_ResponseType(t *testing.T) {
+	src := []byte(`import type { EmailSource, UpdateReq } from './types'
+
+export async function blockEmailSource(token: string, id: string): Promise<EmailSource> {
+  return request<EmailSource>('/v1/email-sources/' + id + '/block', token, {
+    method: 'POST',
+  })
+}
+
+export async function updateSource(token: string, id: string, payload: UpdateReq): Promise<EmailSource> {
+  return request<EmailSource>('/v1/email-sources/' + id, token, {
+    method: 'PUT',
+    body: payload,
+  })
+}
+`)
+	nodes := []*graph.Node{
+		{ID: "pkg/api.ts::blockEmailSource", Name: "blockEmailSource", Kind: graph.KindFunction, FilePath: "pkg/api.ts", StartLine: 3, EndLine: 7},
+		{ID: "pkg/api.ts::updateSource", Name: "updateSource", Kind: graph.KindFunction, FilePath: "pkg/api.ts", StartLine: 9, EndLine: 14},
+		{ID: "pkg/api.ts::EmailSource", Name: "EmailSource", Kind: graph.KindType, FilePath: "pkg/api.ts", StartLine: 1, EndLine: 1},
+		{ID: "pkg/api.ts::UpdateReq", Name: "UpdateReq", Kind: graph.KindType, FilePath: "pkg/api.ts", StartLine: 1, EndLine: 1},
+	}
+	// Use a fetch pattern so httpPatterns picks it up; the wrapper
+	// enricher doesn't register a new route pattern, it just
+	// enriches existing consumer contracts. For this test we
+	// synthesize a Contract and run enrichment directly.
+	// Easier: use fetch-visible pattern on the path, so we have a
+	// contract to enrich. But the wrapper detector runs on whatever
+	// contract exists.
+	// Shortcut: craft a consumer contract directly and call the
+	// exported enricher.
+	for _, tc := range []struct {
+		id      string
+		startFn int
+		wantReq string
+	}{
+		{id: "http::POST::/v1/email-sources/{p1}/block", startFn: 3, wantReq: ""},
+		{id: "http::PUT::/v1/email-sources/{p1}", startFn: 9, wantReq: "pkg/api.ts::UpdateReq"},
+	} {
+		c := Contract{
+			ID:       tc.id,
+			Type:     ContractHTTP,
+			Role:     RoleConsumer,
+			SymbolID: "pkg/api.ts::" + nodes[len(nodes)-4+0].Name, // unused
+			FilePath: "pkg/api.ts",
+			Line:     tc.startFn,
+			Meta:     map[string]any{"method": "POST", "path": "/dummy"},
+		}
+		lines := splitLinesForTest(src)
+		EnrichHTTPContract(&c, lines, nodes, "typescript")
+		if got := c.Meta["response_type"]; got != "pkg/api.ts::EmailSource" {
+			t.Errorf("%s response_type = %v, want pkg/api.ts::EmailSource", tc.id, got)
+		}
+		if tc.wantReq != "" {
+			if got := c.Meta["request_type"]; got != tc.wantReq {
+				t.Errorf("%s request_type = %v, want %s", tc.id, got, tc.wantReq)
+			}
+		}
+	}
+}
+
+func splitLinesForTest(src []byte) []string {
+	out := make([]string, 0)
+	start := 0
+	for i, b := range src {
+		if b == '\n' {
+			out = append(out, string(src[start:i]))
+			start = i + 1
+		}
+	}
+	out = append(out, string(src[start:]))
+	return out
+}
+
+// -----------------------------------------------------------------------------
 // Fetch consumer
 // -----------------------------------------------------------------------------
 

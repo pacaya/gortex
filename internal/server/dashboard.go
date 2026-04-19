@@ -305,6 +305,11 @@ type contractEntry struct {
 	// per-location JSON. Populated from the provider when present,
 	// otherwise from the first consumer.
 	Schema *contractSchema `json:"schema,omitempty"`
+	// ProviderSchema / ConsumerSchema expose each side's meta
+	// independently so the UI can render side-by-side comparison.
+	// Both are nil when no location of that role has schema info.
+	ProviderSchema *contractSchema `json:"provider_schema,omitempty"`
+	ConsumerSchema *contractSchema `json:"consumer_schema,omitempty"`
 }
 
 // contractSchema summarises the request/response shape of a contract
@@ -422,6 +427,8 @@ func (h *Handler) handleContracts(w http.ResponseWriter, r *http.Request) {
 			return a.Line < b.Line
 		})
 		e.Schema = promoteSchemaFromLocations(e.Locations)
+		e.ProviderSchema = promoteSchemaForRole(e.Locations, "provider")
+		e.ConsumerSchema = promoteSchemaForRole(e.Locations, "consumer")
 		out = append(out, *e)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -480,6 +487,64 @@ func uiContractKind(raw string) string {
 	default:
 		return strings.ToUpper(raw)
 	}
+}
+
+// promoteSchemaForRole extracts a schema summary from every location
+// matching `role` (provider | consumer). Multiple locations for the
+// same role are merged additively — first non-empty value wins for
+// type fields, lists union. Returns nil when no matching location has
+// any schema info.
+func promoteSchemaForRole(locs []contractLocation, role string) *contractSchema {
+	var primary *contractLocation
+	for i := range locs {
+		if locs[i].Role != role || locs[i].Meta == nil {
+			continue
+		}
+		primary = &locs[i]
+		break
+	}
+	if primary == nil {
+		return nil
+	}
+	s := &contractSchema{
+		RequestType:  metaString(primary.Meta, "request_type"),
+		ResponseType: metaString(primary.Meta, "response_type"),
+		RequestExpr:  metaString(primary.Meta, "request_expr"),
+		ResponseExpr: metaString(primary.Meta, "response_expr"),
+		Source:       metaString(primary.Meta, "schema_source"),
+		PathParams:   metaStrings(primary.Meta, "path_params"),
+		QueryParams:  metaStrings(primary.Meta, "query_params"),
+		StatusCodes:  metaInts(primary.Meta, "status_codes"),
+	}
+	if v, _ := primary.Meta["request_stream"].(bool); v {
+		s.RequestStream = true
+	}
+	if v, _ := primary.Meta["response_stream"].(bool); v {
+		s.ResponseStream = true
+	}
+	// Merge secondary same-role locations (multi-consumer case).
+	for i := range locs {
+		l := &locs[i]
+		if l == primary || l.Role != role || l.Meta == nil {
+			continue
+		}
+		if s.RequestType == "" {
+			s.RequestType = metaString(l.Meta, "request_type")
+		}
+		if s.ResponseType == "" {
+			s.ResponseType = metaString(l.Meta, "response_type")
+		}
+		if len(s.StatusCodes) == 0 {
+			s.StatusCodes = metaInts(l.Meta, "status_codes")
+		}
+		if len(s.QueryParams) == 0 {
+			s.QueryParams = metaStrings(l.Meta, "query_params")
+		}
+	}
+	if schemaIsEmpty(s) {
+		return nil
+	}
+	return s
 }
 
 // promoteSchemaFromLocations folds schema-shape meta from the primary

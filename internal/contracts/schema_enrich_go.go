@@ -32,8 +32,21 @@ var goUnmarshalRe = regexp.MustCompile(`json\.Unmarshal\([^,]+,\s*&?(\w+)\s*\)`)
 //	WriteJSON(w, status, resp)
 var goStdlibEncodeRe = regexp.MustCompile(`json\.NewEncoder\([^)]+\)\.Encode\(\s*&?(\w+)\s*\)`)
 
-// WriteJSON(w, <status>, <value>) — status may be a constant or literal.
-var goWriteJSONRe = regexp.MustCompile(`\bWriteJSON\(\s*\w+\s*,\s*([^,]+?)\s*,\s*([^)\s]+)\s*\)`)
+// JSON response helpers. Custom wrappers are the norm in handwritten
+// Go servers — `respondJSON`, `writeJSON`, `sendJSON`, `renderJSON`,
+// `h.json`, `render.JSON` all converge on the same (w, code, value)
+// shape. Matching any of these gets us the status code and response
+// value expression in one pass. The name capture is case-insensitive
+// only for the leading letter so `WriteJSON` still matches.
+var goWriteJSONRe = regexp.MustCompile(`\b(?:[A-Za-z_]\w*\.)?(?:[Rr]espond|[Ww]rite|[Ss]end|[Rr]ender)(?:JSON|Json)\(\s*\w+\s*,\s*([^,]+?)\s*,\s*([^)]+?)\s*\)`)
+
+// Matches the first string-keyed value inside a map-envelope literal:
+// `map[string]any{"data": workspaces}` or
+// `map[string]interface{}{"items": list, "total": total}`. The outer
+// prefix is checked separately (via HasPrefix) because
+// `map[string]interface{}` contains its own `{}` pair that would
+// otherwise confuse a single compound regex.
+var goMapEnvelopeRe = regexp.MustCompile(`"[^"]+"\s*:\s*&?([A-Za-z_][\w.]*)`)
 
 // r.URL.Query().Get("x"), r.FormValue("x"), r.PostFormValue("x").
 var goQueryParamRe = regexp.MustCompile(`\b(?:URL\.Query\(\)\.Get|FormValue|PostFormValue)\(\s*["` + "`" + `]([^"` + "`" + `]+)["` + "`" + `]\s*\)`)
@@ -269,6 +282,18 @@ func setRequestType(h *schemaHints, ident, body string, fileNodes []*graph.Node,
 }
 
 func setResponseType(h *schemaHints, ident, body string, fileNodes []*graph.Node, matchText string) {
+	// Envelope unwrap: `map[string]any{"data": workspaces, ...}` →
+	// recurse on the first string-keyed value. Common pattern in
+	// handwritten Go servers that wrap a typed payload in a map for
+	// JSON framing. Guard with a HasPrefix so we don't misfire on
+	// regular struct literals that happen to include a quoted tag.
+	trimmed := strings.TrimSpace(ident)
+	if strings.HasPrefix(trimmed, "map[") {
+		if em := goMapEnvelopeRe.FindStringSubmatch(trimmed); len(em) > 1 {
+			setResponseType(h, em[1], body, fileNodes, matchText)
+			return
+		}
+	}
 	if t := findVarType(body, ident); t != "" {
 		h.ResponseType = resolveTypeInFile(t, fileNodes)
 		return
@@ -277,10 +302,17 @@ func setResponseType(h *schemaHints, ident, body string, fileNodes []*graph.Node
 		h.ResponseType = resolveTypeInFile(ident, fileNodes)
 		return
 	}
+	// No syntactic type on the variable's binding line. Fall back to
+	// recording the raw expression — the indexer's
+	// resolveCallReturnTypes post-pass (graph-aware) picks the bare
+	// identifier back out and traces it to the method call that
+	// bound it, reading the real return type from the method's
+	// signature.
 	if h.ResponseExpr == "" {
 		h.ResponseExpr = strings.TrimSpace(matchText)
 	}
 }
+
 
 // looksLikeType is a quick heuristic: starts with an uppercase letter,
 // contains only identifier-ish characters. Filters out things like

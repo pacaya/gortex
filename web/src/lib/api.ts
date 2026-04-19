@@ -185,9 +185,25 @@ export const api = {
     }
   },
 
+  // Fetches a node with full detail so callers see `meta` (including
+  // `meta.shape` populated by the Stage 2 snapshot pass) and end_line.
+  // The brief response omits both via json `omitempty` tags and the
+  // UI needs the shape to render JSON-preview payloads. The full tool
+  // response wraps the node under `.node` alongside in_edges /
+  // out_edges — we unwrap to a flat GortexNode for the caller.
   getSymbol: async (id: string): Promise<GortexNode | null> => {
     try {
-      return await callToolJSON<GortexNode>('get_symbol', { id })
+      const full = await callToolJSON<{ node?: GortexNode } & GortexNode>(
+        'get_symbol',
+        { id, detail: 'full' },
+      )
+      // full.node when the tool returns the detailed envelope;
+      // otherwise the response IS the node (edge case for legacy
+      // callers that left detail unset).
+      if (full && typeof full === 'object' && 'node' in full && full.node) {
+        return full.node
+      }
+      return (full as unknown as GortexNode) ?? null
     } catch { return null }
   },
 

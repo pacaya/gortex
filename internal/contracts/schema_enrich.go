@@ -82,6 +82,15 @@ type schemaEnricher struct {
 // fields without stepping on each other.
 var schemaEnrichers []schemaEnricher
 
+// EnrichHTTPContract is the exported entry point for the schema
+// enrichment pipeline. The per-file HTTPExtractor calls it during
+// extraction; the indexer's cross-file handler-resolution post-pass
+// calls it again when the first attempt ran against the wrong
+// function body (router vs. actual handler).
+func EnrichHTTPContract(c *Contract, lines []string, fileNodes []*graph.Node, lang string) {
+	enrichHTTPContract(c, lines, fileNodes, lang)
+}
+
 // enrichHTTPContract extracts schema-shape hints from the handler body
 // that owns `c` and folds them into c.Meta. It is a no-op when the
 // contract is a consumer (there is no handler to scan), when the

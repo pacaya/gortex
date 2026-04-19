@@ -134,6 +134,41 @@ func createTuck(c *fiber.Ctx) error {
 	assertMetaString(t, c, "schema_source", "extracted")
 }
 
+// Map-envelope response recursion still resolves when the inner
+// identifier has a syntactic type we can read (Stage 1 scope).
+// Cases where the inner identifier comes from a method-call return
+// (e.g. `workspaces, err := h.svc.List(...)`) belong to the
+// graph-aware `resolveCallReturnTypes` post-pass covered in the
+// indexer test suite.
+func TestHTTPEnrich_Go_RespondJSONEnvelope_SyntacticInner(t *testing.T) {
+	src := []byte(`package api
+
+import "net/http"
+
+type Workspace struct { ID string }
+
+func register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/workspaces", h.ListWorkspaces)
+}
+
+func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
+	ws := &Workspace{}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"data": ws})
+}
+`)
+	nodes := []*graph.Node{
+		{ID: "pkg/api.go::register", Name: "register", Kind: graph.KindFunction, FilePath: "pkg/api.go", StartLine: 7, EndLine: 9},
+		{ID: "pkg/api.go::Handler.ListWorkspaces", Name: "ListWorkspaces", Kind: graph.KindMethod, FilePath: "pkg/api.go", StartLine: 11, EndLine: 14},
+		{ID: "pkg/api.go::Workspace", Name: "Workspace", Kind: graph.KindType, FilePath: "pkg/api.go", StartLine: 5, EndLine: 5},
+	}
+	cs := (&HTTPExtractor{}).Extract("pkg/api.go", src, nodes, nil)
+	c := findContract(t, cs, "http::GET::/v1/workspaces", RoleProvider)
+
+	assertMetaString(t, c, "response_type", "pkg/api.go::Workspace")
+	assertMetaInts(t, c, "status_codes", []int{200})
+	assertMetaString(t, c, "schema_source", "extracted")
+}
+
 func TestHTTPEnrich_Go_PathParams_AlwaysPresent(t *testing.T) {
 	src := []byte(`package api
 

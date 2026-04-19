@@ -17,7 +17,11 @@ var _ Extractor = (*HTTPExtractor)(nil)
 
 // SupportedLanguages returns the languages this extractor can analyse.
 func (h *HTTPExtractor) SupportedLanguages() []string {
-	return []string{"go", "typescript", "javascript", "python", "java", "kotlin", "dart"}
+	return []string{
+		"go", "typescript", "javascript", "python",
+		"java", "kotlin", "dart",
+		"rust", "csharp", "ruby", "php", "elixir",
+	}
 }
 
 // httpPattern describes a single regex pattern that matches an HTTP route
@@ -278,6 +282,170 @@ var httpPatterns = []httpPattern{
 		confidence: 0.8,
 		languages:  []string{"dart"},
 	},
+
+	// ---- Rust providers ----
+	// Axum: `Router::new().route("/users", get(handler))` and
+	// `Router::new().route("/users/:id", post(create).delete(remove))`.
+	// The method comes from the `get|post|...` function call; the
+	// path is the first string literal in `.route(`.
+	{
+		re:         regexp.MustCompile(`\.route\(\s*"([^"]+)"\s*,\s*(get|post|put|delete|patch|head|options)\(\s*(\w+)?`),
+		role:       RoleProvider,
+		methodGrp:  2,
+		pathGrp:    1,
+		handlerGrp: 3,
+		framework:  "axum",
+		confidence: 0.9,
+		languages:  []string{"rust"},
+	},
+	// Actix-web macro form: `#[get("/path")]` / `#[post("/path")]`.
+	{
+		re:         regexp.MustCompile(`#\[(get|post|put|delete|patch|head|options)\(\s*"([^"]+)"`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "actix",
+		confidence: 0.95,
+		languages:  []string{"rust"},
+	},
+	// Rocket macro form: `#[get("/path")]` (same syntax as Actix —
+	// the detection code can't tell them apart from the route line
+	// alone; tag as "rust" and let repo context disambiguate).
+	// Covered by the Actix regex above.
+
+	// ---- Rust consumers ----
+	// reqwest: `client.get("/users")`, `Client::new().post("/users")`.
+	{
+		re:         regexp.MustCompile(`\b\w+\.(get|post|put|delete|patch|head)\(\s*(?:&?format!\(\s*)?"([^"]+)"`),
+		role:       RoleConsumer,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "reqwest",
+		confidence: 0.7,
+		languages:  []string{"rust"},
+	},
+
+	// ---- C# ASP.NET providers ----
+	// Attribute routing: `[HttpGet("/path")]`, `[HttpPost]` +
+	// `[Route("path")]`. First form is the clean one.
+	{
+		re:         regexp.MustCompile(`\[Http(Get|Post|Put|Delete|Patch|Head|Options)\(\s*"([^"]+)"`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "aspnet",
+		confidence: 0.95,
+		languages:  []string{"csharp"},
+	},
+	// Minimal APIs: `app.MapGet("/path", handler)`.
+	{
+		re:         regexp.MustCompile(`\b(?:app|routes?)\.Map(Get|Post|Put|Delete|Patch|Head|Options)\(\s*"([^"]+)"`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "aspnet",
+		confidence: 0.9,
+		languages:  []string{"csharp"},
+	},
+
+	// ---- C# consumers ----
+	// HttpClient: `client.GetAsync("/path")`, `PostAsync`, etc.
+	{
+		re:         regexp.MustCompile(`\b\w+\.(Get|Post|Put|Delete|Patch|Head|Options)(?:Async|String)?\(\s*"([^"]+)"`),
+		role:       RoleConsumer,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "httpclient",
+		confidence: 0.7,
+		languages:  []string{"csharp"},
+	},
+
+	// ---- Ruby on Rails providers ----
+	// Explicit route: `get '/users', to: 'users#index'`,
+	// `post '/users' => 'users#create'`.
+	{
+		re:         regexp.MustCompile(`(?m)^\s*(get|post|put|patch|delete|head|options)\s+['"]([^'"]+)['"]\s*(?:,|=>)`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "rails",
+		confidence: 0.9,
+		languages:  []string{"ruby"},
+	},
+
+	// ---- Ruby consumers ----
+	// Net::HTTP.get(URI("http://..."))  — low confidence, skip.
+	// Faraday: `conn.post('/users')` — generic consumer.
+	{
+		re:         regexp.MustCompile(`\b\w+\.(get|post|put|delete|patch|head)\(\s*['"]([^'"]+)['"]`),
+		role:       RoleConsumer,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "faraday",
+		confidence: 0.6,
+		languages:  []string{"ruby"},
+	},
+
+	// ---- PHP Laravel providers ----
+	// `Route::get('/path', ...)`, `Route::post('/path', [Controller::class, 'method'])`.
+	{
+		re:         regexp.MustCompile(`Route::(get|post|put|patch|delete|head|options)\(\s*['"]([^'"]+)['"]`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "laravel",
+		confidence: 0.95,
+		languages:  []string{"php"},
+	},
+	// Symfony attribute routing: `#[Route("/path", methods: ["POST"])]`.
+	{
+		re:         regexp.MustCompile(`#\[Route\(\s*['"]([^'"]+)['"][^)]*methods:\s*\[\s*['"](\w+)['"]`),
+		role:       RoleProvider,
+		methodGrp:  2,
+		pathGrp:    1,
+		framework:  "symfony",
+		confidence: 0.9,
+		languages:  []string{"php"},
+	},
+
+	// ---- PHP consumers ----
+	// Guzzle: `$client->get('/path')`, `$client->request('POST', '/path')`.
+	{
+		re:         regexp.MustCompile(`\$\w+->(get|post|put|delete|patch|head)\(\s*['"]([^'"]+)['"]`),
+		role:       RoleConsumer,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "guzzle",
+		confidence: 0.8,
+		languages:  []string{"php"},
+	},
+
+	// ---- Elixir Phoenix providers ----
+	// `get "/users", UserController, :index` inside router.ex scope.
+	{
+		re:         regexp.MustCompile(`(?m)^\s*(get|post|put|patch|delete|head|options)\s+"([^"]+)"\s*,`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		framework:  "phoenix",
+		confidence: 0.9,
+		languages:  []string{"elixir"},
+	},
+
+	// ---- Dart providers (shelf_router) ----
+	// `router.get('/path', handler)` and Dart's cascade form
+	// `..get('/path', handler)` — the latter dominates in
+	// idiomatic shelf_router code.
+	{
+		re:         regexp.MustCompile(`(?:\.\.|\b\w*[Rr]outer\.)(get|post|put|delete|patch|head|options)\(\s*['"]([^'"]+)['"]\s*,\s*(\w+)?`),
+		role:       RoleProvider,
+		methodGrp:  1,
+		pathGrp:    2,
+		handlerGrp: 3,
+		framework:  "shelf_router",
+		confidence: 0.85,
+		languages:  []string{"dart"},
+	},
 }
 
 // Extract scans src for HTTP route patterns and returns contracts.
@@ -328,35 +496,59 @@ func (h *HTTPExtractor) Extract(filePath string, src []byte, nodes []*graph.Node
 			//      that resolves to a function in this file. That's
 			//      the innermost handler — what "trace a request"
 			//      actually wants to land on.
+			var handlerIdent, handlerTrail string
 			if pat.handlerGrp > 0 && pat.role == RoleProvider {
 				gStart := m[pat.handlerGrp*2]
 				gEnd := m[pat.handlerGrp*2+1]
 				if gStart >= 0 && gEnd > gStart {
 					handlerName := text[gStart:gEnd]
+					handlerIdent = handlerName
+					// Always capture the full call-trail (every
+					// argument between the HandleFunc parens) so a
+					// later module-wide pass can enumerate handler
+					// candidates — the narrow `\w+` regex capture
+					// above stops at the first `.` in `h.ServeArchive`
+					// and misses wrappers in `WithAuth(h.Foo)`.
+					// callTrailSlice walks forward from the start of the
+					// HandleFunc match to the matching `)`; passing m[0]
+					// (match start) gets us the full args slice. Passing
+					// m[1] (match end) would search past every paren we
+					// care about and return the empty string.
+					handlerTrail = callTrailSlice(text, m[0])
 					if hID := resolveHandlerIdent(fileNodes, handlerName); hID != "" {
 						symbolID = hID
-					} else {
-						// Scan the call-trail for a better candidate.
-						trail := callTrailSlice(text, m[1])
-						if hID := findInnermostResolvableHandler(fileNodes, trail); hID != "" {
-							symbolID = hID
-						}
+					} else if hID := findInnermostResolvableHandler(fileNodes, handlerTrail); hID != "" {
+						symbolID = hID
 					}
 				}
 			}
 
+			meta := map[string]any{
+				"method":    method,
+				"path":      normPath,
+				"framework": pat.framework,
+			}
+			// Keep the raw handler identifier + the full call-trail
+			// so a later module-wide pass can look handlers up
+			// globally when file-scoped resolution failed. The
+			// trail carries every candidate (wrappers + inner
+			// handler) so we can pick the innermost-resolvable one
+			// across repos.
+			if handlerIdent != "" {
+				meta["handler_ident"] = handlerIdent
+			}
+			if handlerTrail != "" {
+				meta["handler_trail"] = handlerTrail
+			}
+
 			c := Contract{
-				ID:       contractID,
-				Type:     ContractHTTP,
-				Role:     pat.role,
-				SymbolID: symbolID,
-				FilePath: filePath,
-				Line:     lineNum,
-				Meta: map[string]any{
-					"method":    method,
-					"path":      normPath,
-					"framework": pat.framework,
-				},
+				ID:         contractID,
+				Type:       ContractHTTP,
+				Role:       pat.role,
+				SymbolID:   symbolID,
+				FilePath:   filePath,
+				Line:       lineNum,
+				Meta:       meta,
 				Confidence: pat.confidence,
 			}
 
@@ -390,6 +582,16 @@ func detectLanguage(filePath string) string {
 		return "kotlin"
 	case strings.HasSuffix(filePath, ".dart"):
 		return "dart"
+	case strings.HasSuffix(filePath, ".rs"):
+		return "rust"
+	case strings.HasSuffix(filePath, ".cs"):
+		return "csharp"
+	case strings.HasSuffix(filePath, ".rb"):
+		return "ruby"
+	case strings.HasSuffix(filePath, ".php"):
+		return "php"
+	case strings.HasSuffix(filePath, ".ex"), strings.HasSuffix(filePath, ".exs"):
+		return "elixir"
 	default:
 		return ""
 	}
@@ -568,6 +770,22 @@ func callTrailSlice(src string, matchStart int) string {
 // like "context" or "nil" only by not resolving them to a file-local
 // function — the caller filters via findFunctionByName.
 var handlerCandidateRE = regexp.MustCompile(`\b([A-Za-z_]\w*(?:\.\w+)?)\b`)
+
+// HandlerCandidatesInTrail enumerates every identifier / receiver.method
+// reference inside a HandleFunc call-trail in source order. The
+// indexer's cross-file resolution pass uses this to pick the
+// innermost-resolvable handler (last candidate that resolves to a
+// real function or method globally).
+func HandlerCandidatesInTrail(trail string) []string {
+	matches := handlerCandidateRE.FindAllStringSubmatch(trail, -1)
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) > 1 && m[1] != "" {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
 
 // findInnermostResolvableHandler walks the call trail and returns the
 // LAST identifier that resolves to a function or method declared in

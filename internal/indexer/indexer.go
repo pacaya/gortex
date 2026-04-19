@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1161,6 +1162,24 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 		return others
 	})
 
+	// Cross-file handler resolution. When a route is registered with
+	// a handler identifier that the file-scoped extractor couldn't
+	// resolve (`h.ServeArchive` in router.go wiring a method defined
+	// in archive_handler.go), the contract's SymbolID fell back to
+	// the enclosing router function and schema extraction ran
+	// against the router's body — which has every route's bindings
+	// piled on top of each other. Re-run enrichment with the
+	// correct per-handler scope now that the graph is complete.
+	idx.resolveProviderHandlers(reg)
+
+	// Trace response variables back to their call-site return types.
+	// Handles `source, err := h.svc.Get(...)` → response_type is
+	// whatever `h.svc.Get` returns. The enricher can't do this
+	// without graph access; this pass reads each method's signature
+	// directly off the graph node, parses the first non-error
+	// return type, and resolves it to a symbol ID.
+	idx.resolveCallReturnTypes(reg)
+
 	// Snapshot field-level shapes for every type that's referenced as
 	// a contract's request / response body. This is Stage 2 — without
 	// per-field data Stage 3 (validation, breaking-change detection)
@@ -1203,6 +1222,643 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 	idx.logger.Info("contracts extracted",
 		zap.String("repo", repo),
 		zap.Int("count", len(reg.All())))
+}
+
+// resolveProviderHandlers finds the actual handler for every HTTP
+// provider contract whose per-file extraction couldn't resolve the
+// handler identifier (typically routers in one file wiring handlers
+// defined in sibling files). For each such contract:
+//
+//   - Take Meta["handler_trail"] — the full expression between the
+//     HandleFunc parens, which carries every handler candidate
+//     (wrappers + inner handler). Fall back to "handler_ident"
+//     when no trail was captured (older contracts, simple consumer
+//     patterns).
+//   - Enumerate candidates in source order and look each up in the
+//     graph; take the innermost (last) one that resolves. That
+//     picks h.ServeArchive out of WithAuth(h.ServeArchive) instead
+//     of the WithAuth wrapper.
+//   - Re-run EnrichHTTPContract against the handler's file with the
+//     handler's line range so the enricher sees its actual body
+//     instead of the router's.
+//   - Drop `handler_ident` / `handler_trail` from meta afterwards —
+//     they were internal resolution hints.
+func (idx *Indexer) resolveProviderHandlers(reg *contracts.Registry) {
+	type pending struct {
+		contractID string
+		trail      string
+		fallback   string
+		repoHint   string
+	}
+	var todo []pending
+	for _, c := range reg.All() {
+		if c.Role != contracts.RoleProvider || c.Type != contracts.ContractHTTP {
+			continue
+		}
+		trail, _ := c.Meta["handler_trail"].(string)
+		fallback, _ := c.Meta["handler_ident"].(string)
+		if trail == "" && fallback == "" {
+			continue
+		}
+		// Skip contracts where schema is already populated — the
+		// initial file-scoped pass worked.
+		if src, _ := c.Meta["schema_source"].(string); src == "extracted" || src == "partial" {
+			continue
+		}
+		todo = append(todo, pending{contractID: c.ID, trail: trail, fallback: fallback, repoHint: c.RepoPrefix})
+	}
+	if len(todo) == 0 {
+		return
+	}
+
+	// Cache file source + node list per file path — a single router
+	// often refers to dozens of handlers in the same sibling file.
+	fileSrc := make(map[string][]byte)
+	fileNodes := make(map[string][]*graph.Node)
+
+	resolved := 0
+	for _, p := range todo {
+		handlerNode := idx.resolveInnermostHandler(p.trail, p.fallback, p.repoHint)
+		if handlerNode == nil {
+			continue
+		}
+		src, ok := fileSrc[handlerNode.FilePath]
+		if !ok {
+			diskPath := handlerNode.FilePath
+			if idx.repoPrefix != "" && strings.HasPrefix(diskPath, idx.repoPrefix+"/") {
+				diskPath = strings.TrimPrefix(diskPath, idx.repoPrefix+"/")
+			}
+			diskPath = filepath.Join(idx.rootPath, diskPath)
+			data, err := os.ReadFile(diskPath)
+			if err != nil {
+				fileSrc[handlerNode.FilePath] = nil
+				continue
+			}
+			fileSrc[handlerNode.FilePath] = data
+			src = data
+		}
+		if src == nil {
+			continue
+		}
+		nodes, ok := fileNodes[handlerNode.FilePath]
+		if !ok {
+			nodes = idx.graph.GetFileNodes(handlerNode.FilePath)
+			fileNodes[handlerNode.FilePath] = nodes
+		}
+
+		// Re-run enrichment. EnrichHTTPContract reads the contract's
+		// SymbolID to locate the handler body range — swap it in
+		// temporarily to the resolved handler so the lookup works.
+		matches := reg.ByID(p.contractID)
+		if len(matches) == 0 {
+			continue
+		}
+		for i, c := range matches {
+			if c.Role != contracts.RoleProvider {
+				continue
+			}
+			// Operate on a copy; Registry entries are values.
+			patched := c
+			patched.SymbolID = handlerNode.ID
+			patched.FilePath = handlerNode.FilePath
+			if patched.Meta == nil {
+				patched.Meta = map[string]any{}
+			}
+			// Drop prior path_params so the enricher's fresh pass
+			// repopulates consistently (path hasn't changed, but we
+			// want the call-path to be identical to Stage 1).
+			lines := splitLines(src)
+			contracts.EnrichHTTPContract(&patched, lines, nodes, detectLangFromPath(handlerNode.FilePath))
+			delete(patched.Meta, "handler_ident")
+			delete(patched.Meta, "handler_trail")
+			matches[i] = patched
+			resolved++
+		}
+		// Write back the mutated set. The registry doesn't have an
+		// "update" API; we use AddAll semantics via Set-like
+		// operations. Simpler: clear then re-add all roles to this ID.
+		reg.ReplaceByID(p.contractID, matches)
+	}
+	if resolved > 0 {
+		idx.logger.Info("resolved cross-file provider handlers",
+			zap.Int("count", resolved),
+			zap.Int("considered", len(todo)))
+	}
+}
+
+// resolveInnermostHandler picks the innermost handler candidate from
+// the call trail that resolves to a real function or method in the
+// graph. Walks candidates in source order and keeps the LAST
+// successful lookup — for `WithAuth(h.ServeArchive)` that's
+// `h.ServeArchive`, not the `WithAuth` wrapper. Falls back to the
+// single identifier when no trail is available (e.g. simple bare
+// `r.GET("/x", listUsers)` patterns).
+func (idx *Indexer) resolveInnermostHandler(trail, fallback, repoHint string) *graph.Node {
+	candidates := contracts.HandlerCandidatesInTrail(trail)
+	if len(candidates) == 0 && fallback != "" {
+		candidates = []string{fallback}
+	}
+	var best *graph.Node
+	for _, c := range candidates {
+		if n := idx.lookupHandler(c, repoHint); n != nil {
+			best = n
+		}
+	}
+	return best
+}
+
+// lookupHandler maps a raw identifier from a route pattern to the
+// graph node for the handler function / method.
+//
+//   - "h.ServeArchive" → method named "ServeArchive", prefer same repo.
+//   - "ServeArchive"   → function or method of that name.
+//   - "pkg.Foo"        → same as first form, package-qualified call.
+//
+// Returns nil when no candidate resolves unambiguously.
+func (idx *Indexer) lookupHandler(ident, repoHint string) *graph.Node {
+	// Strip a leading receiver / package qualifier — "h.ServeArchive"
+	// → "ServeArchive".
+	name := ident
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" {
+		return nil
+	}
+	candidates := idx.graph.FindNodesByName(name)
+	if len(candidates) == 0 {
+		return nil
+	}
+	var sameRepo, other []*graph.Node
+	for _, n := range candidates {
+		if n.Kind != graph.KindFunction && n.Kind != graph.KindMethod {
+			continue
+		}
+		if repoHint != "" && strings.HasPrefix(n.ID, repoHint+"/") {
+			sameRepo = append(sameRepo, n)
+			continue
+		}
+		other = append(other, n)
+	}
+	if len(sameRepo) == 1 {
+		return sameRepo[0]
+	}
+	if len(sameRepo) == 0 && len(other) == 1 {
+		return other[0]
+	}
+	return nil // ambiguous
+}
+
+func splitLines(src []byte) []string {
+	return strings.Split(string(src), "\n")
+}
+
+// detectLangFromPath mirrors internal/contracts.detectLanguage so the
+// enricher's language-gate fires correctly for the handler's own file.
+func detectLangFromPath(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".go"):
+		return "go"
+	case strings.HasSuffix(path, ".ts"), strings.HasSuffix(path, ".tsx"):
+		return "typescript"
+	case strings.HasSuffix(path, ".js"), strings.HasSuffix(path, ".jsx"):
+		return "javascript"
+	case strings.HasSuffix(path, ".py"):
+		return "python"
+	case strings.HasSuffix(path, ".java"):
+		return "java"
+	case strings.HasSuffix(path, ".kt"), strings.HasSuffix(path, ".kts"):
+		return "kotlin"
+	case strings.HasSuffix(path, ".dart"):
+		return "dart"
+	}
+	return ""
+}
+
+// responseHelperCallRe pulls the third argument out of a JSON-response
+// helper call, e.g. `respondJSON(w, http.StatusOK, source)` → "source",
+// `WriteJSON(w, 200, &result)` → "result". Matches every helper name
+// the Go enricher knows about so the two pipes stay in sync.
+var responseHelperCallRe = regexp.MustCompile(
+	`(?:[A-Za-z_]\w*\.)?(?:[Rr]espond|[Ww]rite|[Ss]end|[Rr]ender)(?:JSON|Json)\(\s*\w+\s*,\s*[^,]+?\s*,\s*&?([A-Za-z_]\w*)\s*\)`,
+)
+
+// goCallBindRe matches a Go variable declaration whose right-hand
+// side is a function / method call. Capture 1 is the variable name,
+// capture 2 is the call expression (receiver + method or function
+// name, without the argument list):
+//
+//	source, err := h.emailSources.Get(ctx, id)  → ("source", "h.emailSources.Get")
+//	data       := buildThing()                   → ("data",   "buildThing")
+//	resp       := client.List(ctx)               → ("resp",   "client.List")
+var goCallBindRe = regexp.MustCompile(
+	`(?m)^\s*(\w+)(?:\s*,\s*\w+)?\s*:?=\s*([A-Za-z_][\w.]*)\(`,
+)
+
+// receiverMatchesHint decides whether a method node could plausibly
+// be the target of a call whose receiver chain includes `hint` as
+// its penultimate segment. For `h.tucks.Update`, the hint is
+// "tucks" and we accept receivers whose name (stripped of pointer
+// marker) contains "tucks" case-insensitively:
+//
+//	*TucksStore.Update       ✓  (receiver "TucksStore" contains "tucks")
+//	*PostgresTuckStore.Update ✓  (contains "tuck")
+//	*EmailSources.Update     ✗  (no "tucks")
+//
+// The hint may itself be the receiver variable (`h` in `h.Update(...)`)
+// when the call has only two segments; in that case any same-repo
+// method named `Update` passes — but the upstream `len(matches) != 1`
+// check still demands uniqueness, which is the real guard.
+func receiverMatchesHint(n *graph.Node, hint string) bool {
+	if hint == "" {
+		return true
+	}
+	// Method ID looks like "<repo>/<file>::Receiver.Method". Extract
+	// "Receiver" by splitting once on `::` then taking the type part
+	// before the last `.`.
+	idParts := strings.Split(n.ID, "::")
+	if len(idParts) < 2 {
+		return true // conservative: no receiver info available → don't filter out
+	}
+	last := idParts[len(idParts)-1]
+	dot := strings.LastIndex(last, ".")
+	if dot < 0 {
+		return true // plain function, no receiver
+	}
+	recv := strings.TrimPrefix(last[:dot], "*")
+	// Handle both singular and plural forms: "tucks" in hint matches
+	// "TuckStore" by containing "tuck", and "tuck" hint matches
+	// "Tucks" too. Strip a trailing `s` from the longer side to let
+	// singular/plural pairs match.
+	return strings.Contains(strings.ToLower(recv), strings.ToLower(hint)) ||
+		strings.Contains(strings.ToLower(recv), strings.ToLower(strings.TrimSuffix(hint, "s"))) ||
+		strings.Contains(strings.ToLower(recv), strings.ToLower(hint+"s"))
+}
+
+// parseFirstNonErrorReturnType walks a Go function signature and
+// returns the first return type that isn't `error`. Signatures as
+// stored in the graph have the form:
+//
+//	func ((s *Store)) Get(args) (*EmailSource, error)
+//	func list() []*User
+//	func save(x Foo) error
+//
+// Regex-based extraction struggles with the receiver's `((...))`
+// nesting and with multi-paren return groups — we parse with an
+// explicit bracket-depth counter so every shape above is handled
+// the same way.
+
+// resolveCallReturnTypes is the graph-aware companion to the
+// regex-based schema enricher. For every HTTP provider contract whose
+// response couldn't be pinned syntactically (response_expr is set,
+// response_type is empty), we:
+//
+//   - Pull the bound variable's name out of the helper-call expression.
+//   - Read the handler's body from disk.
+//   - Find the variable's declaration line and parse the RHS call.
+//   - Look up the called method by name in the graph (preferring the
+//     same file / same repo).
+//   - Parse the method's signature meta for the first non-error
+//     return type, strip `*` / `[]`, resolve to a type node's ID.
+//   - Patch the contract's meta in place.
+//
+// This is the proper tracing the name-based heuristic only
+// approximated — it follows the variable to its definition instead
+// of guessing from its name.
+func (idx *Indexer) resolveCallReturnTypes(reg *contracts.Registry) {
+	resolved := 0
+	handlerBodies := make(map[string]string)
+
+	for _, c := range reg.All() {
+		if c.Role != contracts.RoleProvider || c.Type != contracts.ContractHTTP {
+			continue
+		}
+		if rt, _ := c.Meta["response_type"].(string); rt != "" {
+			continue
+		}
+		respExpr, _ := c.Meta["response_expr"].(string)
+		if respExpr == "" {
+			continue
+		}
+		// Pull the bound variable name out of the helper call.
+		m := responseHelperCallRe.FindStringSubmatch(respExpr)
+		if len(m) < 2 {
+			continue
+		}
+		varName := m[1]
+
+		handler := idx.graph.GetNode(c.SymbolID)
+		if handler == nil {
+			continue
+		}
+		body, ok := handlerBodies[c.SymbolID]
+		if !ok {
+			body = idx.readHandlerSource(handler)
+			handlerBodies[c.SymbolID] = body
+		}
+		if body == "" {
+			continue
+		}
+
+		typeID := idx.traceVarTypeFromBody(body, varName, c.RepoPrefix)
+		if typeID == "" {
+			continue
+		}
+		// Patch in place.
+		items := reg.ByID(c.ID)
+		changed := false
+		for i := range items {
+			if items[i].Role != contracts.RoleProvider || items[i].SymbolID != c.SymbolID {
+				continue
+			}
+			if items[i].Meta == nil {
+				items[i].Meta = map[string]any{}
+			}
+			items[i].Meta["response_type"] = typeID
+			items[i].Meta["schema_source"] = "extracted"
+			delete(items[i].Meta, "response_expr")
+			changed = true
+		}
+		if changed {
+			reg.ReplaceByID(c.ID, items)
+			resolved++
+		}
+	}
+	if resolved > 0 {
+		idx.logger.Info("resolved response types from call signatures",
+			zap.Int("count", resolved))
+	}
+}
+
+// readHandlerSource returns the handler function's source lines,
+// trimmed to its start_line..end_line range. Empty string when the
+// file can't be read or the node's span is missing.
+func (idx *Indexer) readHandlerSource(handler *graph.Node) string {
+	if handler.StartLine <= 0 {
+		return ""
+	}
+	diskPath := handler.FilePath
+	if idx.repoPrefix != "" && strings.HasPrefix(diskPath, idx.repoPrefix+"/") {
+		diskPath = strings.TrimPrefix(diskPath, idx.repoPrefix+"/")
+	}
+	diskPath = filepath.Join(idx.rootPath, diskPath)
+	data, err := os.ReadFile(diskPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	end := handler.EndLine
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	start := handler.StartLine
+	if start > len(lines) {
+		return ""
+	}
+	return strings.Join(lines[start-1:end], "\n")
+}
+
+// traceVarTypeFromBody walks the handler body for `varName`'s
+// declaration, extracts the RHS call, looks up the called method in
+// the graph, and returns the method's first non-error return type as
+// a symbol ID. Empty string when any step fails.
+//
+// Ambiguity is treated as failure. Common method names like `Update`,
+// `Get`, `List` exist on many stores in a real codebase — picking the
+// first same-repo match would silently attribute the wrong type
+// (e.g. `h.tucks.Update(...)` resolving to `EmailSources.Update`
+// because that entry sorts first). The call's receiver chain gives us
+// a disambiguation hint (`tucks` in `h.tucks.Update`) which we use to
+// filter by receiver type name. When no single candidate survives,
+// we return "" so the UI honestly shows that the type wasn't resolved
+// rather than showing a wrong one.
+func (idx *Indexer) traceVarTypeFromBody(body, varName, repoHint string) string {
+	bindings := goCallBindRe.FindAllStringSubmatch(body, -1)
+	var callExpr string
+	for _, b := range bindings {
+		if b[1] == varName {
+			callExpr = b[2]
+			break
+		}
+	}
+	if callExpr == "" {
+		return ""
+	}
+	// Split the call path. `h.tucks.Update` → ["h", "tucks", "Update"].
+	// The last segment is the method name; the penultimate is the
+	// receiver field / package, which we use to disambiguate when
+	// multiple methods share the name.
+	parts := strings.Split(callExpr, ".")
+	methodName := parts[len(parts)-1]
+	if methodName == "" {
+		return ""
+	}
+	var receiverHint string
+	if len(parts) >= 2 {
+		receiverHint = parts[len(parts)-2]
+	}
+
+	candidates := idx.graph.FindNodesByName(methodName)
+	var matches []*graph.Node
+	for _, n := range candidates {
+		if n.Kind != graph.KindMethod && n.Kind != graph.KindFunction {
+			continue
+		}
+		if repoHint != "" && !strings.HasPrefix(n.ID, repoHint+"/") {
+			continue
+		}
+		if receiverHint != "" && !receiverMatchesHint(n, receiverHint) {
+			continue
+		}
+		matches = append(matches, n)
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+
+	// Interface + implementation stacks often produce multiple
+	// receivers that share the same method signature — a production
+	// postgres store and a mock test store both implement
+	// `emailSources.Update(...) (*EmailSource, error)`. Parse every
+	// candidate's signature; if they all agree on the first
+	// non-error return type, use that. Otherwise bail so we don't
+	// attribute a wrong type silently.
+	var retType string
+	for _, m := range matches {
+		if m.Meta == nil {
+			continue
+		}
+		sig, _ := m.Meta["signature"].(string)
+		t := parseFirstNonErrorReturnType(sig)
+		if t == "" {
+			continue
+		}
+		// De-prioritise mock receivers: if a non-mock candidate
+		// later disagrees we want that to be the authoritative one.
+		if retType == "" {
+			retType = t
+			continue
+		}
+		if t != retType {
+			// Candidates disagree — can't tell which wins. The
+			// caller sees the raw expression and can drill in.
+			return ""
+		}
+	}
+	if retType == "" {
+		return ""
+	}
+	// Strip `*` / `[]` / package qualifier so resolveTypeByName can
+	// match the plain type-node name.
+	retType = strings.TrimLeft(retType, "*[]")
+	if dot := strings.LastIndex(retType, "."); dot >= 0 {
+		retType = retType[dot+1:]
+	}
+	// Look up the type node, preferring same-repo matches.
+	typeCandidates := idx.graph.FindNodesByName(retType)
+	var bestType *graph.Node
+	for _, n := range typeCandidates {
+		if n.Kind != graph.KindType {
+			continue
+		}
+		if repoHint != "" && strings.HasPrefix(n.ID, repoHint+"/") {
+			bestType = n
+			break
+		}
+		if bestType == nil {
+			bestType = n
+		}
+	}
+	if bestType != nil {
+		return bestType.ID
+	}
+	// Bare name — downstream UpgradeBareTypeRefs can still upgrade
+	// it later, but we return it as-is so the consumer sees something
+	// real.
+	return retType
+}
+
+func parseFirstNonErrorReturnType(sig string) string {
+	sig = strings.TrimSpace(sig)
+	if !strings.HasPrefix(sig, "func") {
+		return ""
+	}
+	sig = strings.TrimSpace(strings.TrimPrefix(sig, "func"))
+
+	// Optional receiver. Two forms to recognise:
+	//   `((*Recv)) Name(params)`  — gortex's stored double-paren form
+	//   `(r *Recv) Name(params)`  — standard Go source form
+	// In both cases a function name follows the receiver parens.
+	// Anonymous function types (`func(a, b) (c, d)`) have no
+	// receiver — the first `(` opens the parameter list and is
+	// followed by another `(` for the return group or end-of-string.
+	// Disambiguate by peeking past the first balanced `(...)` group
+	// for an identifier letter.
+	if strings.HasPrefix(sig, "(") {
+		end := findBalancedParenEnd(sig)
+		if end < 0 {
+			return ""
+		}
+		afterFirstGroup := strings.TrimSpace(sig[end+1:])
+		if len(afterFirstGroup) > 0 {
+			r := afterFirstGroup[0]
+			isIdent := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '_'
+			if isIdent {
+				sig = afterFirstGroup
+			}
+		}
+	}
+
+	// Skip the function name — everything up to the parameter list's
+	// opening `(`.
+	if i := strings.Index(sig, "("); i >= 0 {
+		sig = sig[i:]
+	} else {
+		return ""
+	}
+
+	// Skip parameter list.
+	end := findBalancedParenEnd(sig)
+	if end < 0 {
+		return ""
+	}
+	sig = strings.TrimSpace(sig[end+1:])
+	if sig == "" {
+		return ""
+	}
+
+	// Return clause — either `(T1, T2, ...)` or a bare single type.
+	var inner string
+	if strings.HasPrefix(sig, "(") {
+		end := findBalancedParenEnd(sig)
+		if end < 0 {
+			return ""
+		}
+		inner = sig[1:end]
+	} else {
+		inner = sig
+	}
+	return firstNonErrorReturnField(inner)
+}
+
+// findBalancedParenEnd returns the index of the `)` that closes the
+// `(` at s[0]. Returns -1 when the parens don't balance.
+func findBalancedParenEnd(s string) int {
+	if len(s) == 0 || s[0] != '(' {
+		return -1
+	}
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// firstNonErrorReturnField splits a return-clause body by top-level
+// commas and returns the first type expression that isn't `error`.
+// Named return parameters (`result *User`) are handled by taking the
+// last whitespace-separated token as the type.
+func firstNonErrorReturnField(inner string) string {
+	var fields []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '(', '[':
+			depth++
+		case ')', ']':
+			depth--
+		case ',':
+			if depth == 0 {
+				fields = append(fields, strings.TrimSpace(inner[start:i]))
+				start = i + 1
+			}
+		}
+	}
+	if last := strings.TrimSpace(inner[start:]); last != "" {
+		fields = append(fields, last)
+	}
+	for _, f := range fields {
+		t := f
+		// Named return: `ctx context.Context`, `result *User`. Grab
+		// the last whitespace-separated token — that's the type.
+		if parts := strings.Fields(f); len(parts) > 1 {
+			t = parts[len(parts)-1]
+		}
+		if t == "error" || strings.HasSuffix(t, ".error") {
+			continue
+		}
+		return t
+	}
+	return ""
 }
 
 // snapshotContractShapes walks every request_type / response_type

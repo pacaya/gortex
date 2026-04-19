@@ -630,55 +630,40 @@ function SourcePane({ symbolId, filePath }: { symbolId: string | null; filePath:
 }
 
 function SchemaPane({ contract, loc }: { contract: Contract; loc: ContractLocation | null }) {
-  const schema = contract.schema
-  const hasSchema =
-    !!schema &&
-    (!!schema.request_type ||
-      !!schema.response_type ||
-      !!schema.request_expr ||
-      !!schema.response_expr ||
-      (schema.path_params?.length ?? 0) > 0 ||
-      (schema.query_params?.length ?? 0) > 0 ||
-      (schema.status_codes?.length ?? 0) > 0)
+  // Render one panel per location instead of merging consumers into
+  // a single column. With multiple consumers (e.g. tuck_app + web)
+  // the merged view hid which side actually declared what — you
+  // couldn't tell whether "not declared on this side" meant neither
+  // consumer captured a request or one did and the merger dropped
+  // it. Per-location panels make every side's data visible and
+  // pin each to its repo so diffs are attributable.
+  const panels = contract.locations
+    .map((l) => buildSchemaFromLocation(l))
+    .filter((p): p is LocationPanel => p !== null)
+
+  const hasAny = panels.length > 0
 
   return (
     <div style={{ display: 'grid', gap: 10, overflow: 'auto' }}>
-      {hasSchema && schema ? (
-        <div style={{ display: 'grid', gap: 10 }}>
-          <div className="hstack" style={{ gap: 6, flexWrap: 'wrap', fontSize: 11.5 }}>
-            <span className="chip" title="Contract type">{contract.type}</span>
-            {schema.source && (
-              <span
-                className="chip"
-                title="How the schema was inferred"
-                style={{
-                  color:
-                    schema.source === 'extracted'
-                      ? 'var(--ok)'
-                      : schema.source === 'partial'
-                      ? 'var(--warn)'
-                      : 'var(--fg-2)',
-                }}
-              >
-                {schema.source}
-              </span>
-            )}
-          </div>
-
-          <SchemaField label="Request" type={schema.request_type} expr={schema.request_expr} stream={schema.request_stream} />
-          <TypeShapeInline symbolId={schemaTypeSymbolId(schema.request_type)} />
-          <SchemaField label="Response" type={schema.response_type} expr={schema.response_expr} stream={schema.response_stream} />
-          <TypeShapeInline symbolId={schemaTypeSymbolId(schema.response_type)} />
-
-          {(schema.path_params?.length ?? 0) > 0 && (
-            <ParamRow label="Path params" values={schema.path_params!} />
-          )}
-          {(schema.query_params?.length ?? 0) > 0 && (
-            <ParamRow label="Query params" values={schema.query_params!} />
-          )}
-          {(schema.status_codes?.length ?? 0) > 0 && (
-            <ParamRow label="Status codes" values={schema.status_codes!.map(String)} />
-          )}
+      {hasAny ? (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+            gap: 12,
+            alignItems: 'start',
+          }}
+        >
+          {panels.map((p, i) => (
+            <SchemaSide
+              key={`${p.role}-${p.repo}-${i}`}
+              label={p.role === 'provider' ? 'Provider' : 'Consumer'}
+              subLabel={p.subLabel}
+              schema={p.schema}
+              contractType={contract.type}
+              accent={p.role === 'provider' ? 'var(--ok)' : 'var(--violet)'}
+            />
+          ))}
         </div>
       ) : (
         <div className="faint" style={{ padding: 12, fontSize: 12 }}>
@@ -701,55 +686,347 @@ function SchemaPane({ contract, loc }: { contract: Contract; loc: ContractLocati
   )
 }
 
-function SchemaField({
+// LocationPanel is one column in the side-by-side comparison — a
+// single contract location's meta projected into the ContractSchema
+// shape for rendering. We attribute every panel to its specific repo
+// + symbol so multi-consumer contracts show each consumer's view
+// independently instead of hiding differences behind a merged blob.
+type LocationPanel = {
+  role: 'provider' | 'consumer' | string
+  repo: string
+  subLabel: string
+  schema: import('@/lib/schema').ContractSchema
+}
+
+function buildSchemaFromLocation(l: ContractLocation): LocationPanel | null {
+  const meta = l.meta ?? {}
+  if (Object.keys(meta).length === 0) return null
+
+  const asString = (k: string) => (typeof meta[k] === 'string' ? (meta[k] as string) : undefined)
+  const asStringArr = (k: string): string[] | undefined => {
+    const v = meta[k]
+    return Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined
+  }
+  const asNumberArr = (k: string): number[] | undefined => {
+    const v = meta[k]
+    return Array.isArray(v) && v.every((x) => typeof x === 'number') ? (v as number[]) : undefined
+  }
+  const asBool = (k: string) => (typeof meta[k] === 'boolean' ? (meta[k] as boolean) : undefined)
+
+  const schema: import('@/lib/schema').ContractSchema = {
+    request_type: asString('request_type'),
+    response_type: asString('response_type'),
+    request_expr: asString('request_expr'),
+    response_expr: asString('response_expr'),
+    request_stream: asBool('request_stream'),
+    response_stream: asBool('response_stream'),
+    path_params: asStringArr('path_params'),
+    query_params: asStringArr('query_params'),
+    status_codes: asNumberArr('status_codes'),
+    source: asString('schema_source'),
+  }
+
+  const subLabel = l.symbol_id
+    ? `${l.repo_prefix || 'unknown'} · ${l.symbol_id.split('::').pop()}`
+    : l.repo_prefix || 'unknown'
+
+  return { role: l.role, repo: l.repo_prefix, subLabel, schema }
+}
+
+// SchemaSide is one column in the provider/consumer comparison view.
+// Renders a small header (role label + repo + schema-source badge)
+// then the request / response bodies and param lists. Same content
+// structure used on both sides so visual diffing is straightforward.
+function SchemaSide({
+  label,
+  subLabel,
+  schema,
+  contractType,
+  accent,
+}: {
+  label: string
+  subLabel: string
+  schema: import('@/lib/schema').ContractSchema
+  contractType: string
+  accent: string
+}) {
+  const hasParams =
+    (schema.path_params?.length ?? 0) > 0 ||
+    (schema.query_params?.length ?? 0) > 0 ||
+    (schema.status_codes?.length ?? 0) > 0
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 8,
+        padding: '10px 12px',
+        border: '1px solid var(--line)',
+        borderLeft: `3px solid ${accent}`,
+        borderRadius: 4,
+        background: 'var(--bg-0)',
+        minWidth: 0,
+      }}
+    >
+      <div className="hstack" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: 0.5,
+            color: accent,
+          }}
+        >
+          {label}
+        </span>
+        {subLabel && (
+          <span className="mono faint" style={{ fontSize: 11 }}>
+            {subLabel}
+          </span>
+        )}
+        {schema.source && (
+          <span
+            className="chip"
+            title="How the schema was inferred"
+            style={{
+              marginLeft: 'auto',
+              color:
+                schema.source === 'extracted'
+                  ? 'var(--ok)'
+                  : schema.source === 'partial'
+                  ? 'var(--warn)'
+                  : 'var(--fg-2)',
+              fontSize: 10,
+            }}
+          >
+            {schema.source}
+          </span>
+        )}
+      </div>
+
+      {/* Always render BOTH Request and Response rows so a provider / consumer
+          comparison can scan line-for-line. Missing halves render as an
+          explicit "not declared" placeholder instead of collapsing the row,
+          otherwise one side would hide the row entirely and misalign the
+          visual comparison. */}
+      <ContractBody
+        label="Request"
+        type={schema.request_type}
+        expr={schema.request_expr}
+        stream={schema.request_stream}
+        contractType={contractType}
+        placeholder="not declared on this side"
+      />
+      <ContractBody
+        label="Response"
+        type={schema.response_type}
+        expr={schema.response_expr}
+        stream={schema.response_stream}
+        contractType={contractType}
+        placeholder="not declared on this side"
+      />
+
+      {hasParams && (
+        <div style={{ display: 'grid', gap: 4 }}>
+          {(schema.path_params?.length ?? 0) > 0 && (
+            <ParamRow label="Path params" values={schema.path_params!} />
+          )}
+          {(schema.query_params?.length ?? 0) > 0 && (
+            <ParamRow label="Query params" values={schema.query_params!} />
+          )}
+          {(schema.status_codes?.length ?? 0) > 0 && (
+            <ParamRow label="Status codes" values={schema.status_codes!.map(String)} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ContractBody renders a request or response payload transparently —
+// if the graph has a shape attached to the referenced type, we
+// render it as a JSON object (or proto message, if the contract
+// type is gRPC) so the reader sees the actual wire structure, not
+// just a symbol ID chip. Falls back to a raw type chip or a bare
+// expression when the shape can't be resolved.
+function ContractBody({
   label,
   type,
   expr,
   stream,
+  contractType,
+  placeholder,
 }: {
   label: string
   type?: string
   expr?: string
   stream?: boolean
+  contractType: string
+  /**
+   * Text shown when this side has no declared body for this role.
+   * Rendered as a dim placeholder so the row still appears and
+   * provider/consumer panels stay aligned for visual comparison.
+   * When omitted, a null return preserves the older collapse-row
+   * behaviour for callers that want it.
+   */
+  placeholder?: string
 }) {
-  if (!type && !expr) return null
-  const isSymbolId = !!type && type.includes('::')
+  const symbolId = type && type.includes('::') ? type : null
+  const { data: node } = useSymbol(symbolId)
+  const shape = (node?.meta?.shape ?? null) as TypeShape | null
+
+  const typeDisplay = type ? lastSegment(type) : ''
+  const kindHint = contractType === 'grpc' ? 'message' : 'object'
+  const isEmpty = !type && !expr
+  if (isEmpty && !placeholder) return null
+
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '90px 1fr',
-        gap: 10,
-        alignItems: 'baseline',
-        fontSize: 12,
-      }}
-    >
-      <div className="faint" style={{ textTransform: 'uppercase', fontSize: 10, letterSpacing: 0.5 }}>
-        {label}
-        {stream && <span style={{ marginLeft: 4, color: 'var(--violet)' }}>stream</span>}
-      </div>
-      <div className="hstack" style={{ gap: 6, flexWrap: 'wrap' }}>
-        {type ? (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div className="hstack" style={{ gap: 8, alignItems: 'baseline', fontSize: 11 }}>
+        <span
+          className="faint"
+          style={{ textTransform: 'uppercase', fontSize: 10, letterSpacing: 0.5 }}
+        >
+          {label}
+          {stream && <span style={{ marginLeft: 4, color: 'var(--violet)' }}>stream</span>}
+        </span>
+        {type && (
           <span
             className="mono"
-            title={isSymbolId ? 'Symbol ID (resolved)' : 'Bare type name (unresolved across repos)'}
+            title={symbolId ? 'Symbol ID (resolved)' : 'Bare type name (unresolved across repos)'}
             style={{
-              color: isSymbolId ? 'var(--fg-0)' : 'var(--fg-2)',
-              background: 'var(--bg-1)',
-              border: '1px solid var(--line)',
-              borderRadius: 4,
-              padding: '2px 6px',
+              color: symbolId ? 'var(--fg-1)' : 'var(--fg-2)',
               fontSize: 11.5,
             }}
           >
-            {type}
+            {typeDisplay}
           </span>
-        ) : (
+        )}
+        {!type && expr && (
           <span className="mono faint" style={{ fontSize: 11 }}>{expr}</span>
         )}
+        {isEmpty && (
+          <span
+            className="faint"
+            style={{ fontSize: 11, fontStyle: 'italic' }}
+          >
+            {placeholder}
+          </span>
+        )}
       </div>
+
+      {shape && shape.fields.length > 0 ? (
+        <JSONPreview shape={shape} kindHint={kindHint} />
+      ) : symbolId ? (
+        <div
+          className="faint"
+          style={{
+            fontSize: 11,
+            padding: '4px 0',
+            marginLeft: 2,
+          }}
+        >
+          Shape not indexed for <span className="mono">{type}</span>. Re-index the
+          type&apos;s repo or extend the shape extractor for its language.
+        </div>
+      ) : null}
     </div>
   )
+}
+
+// JSONPreview renders a TypeShape as a JSON-object literal:
+//
+//   {
+//     "id": string,
+//     "created_at": string,
+//     "provider"?: string,
+//     "tags": string[]
+//   }
+//
+// Optional fields get a trailing `?`, repeated fields get `[]`,
+// JSON tag renames are displayed as an aside when they diverge.
+function JSONPreview({ shape, kindHint }: { shape: TypeShape; kindHint: string }) {
+  const isProto = shape.kind === 'message'
+  const open = isProto ? `${kindHint} {` : '{'
+  const close = '}'
+  return (
+    <pre
+      className="mono"
+      style={{
+        margin: 0,
+        padding: '8px 10px',
+        background: 'var(--bg-1)',
+        border: '1px solid var(--line)',
+        borderRadius: 4,
+        fontSize: 11.5,
+        lineHeight: 1.55,
+        overflow: 'auto',
+        maxHeight: 280,
+      }}
+    >
+      <span className="faint">{open}</span>
+      {'\n'}
+      {shape.fields.map((f, i) => (
+        <JSONPreviewField
+          key={f.name}
+          f={f}
+          trailingComma={i < shape.fields.length - 1}
+          isProto={isProto}
+        />
+      ))}
+      <span className="faint">{close}</span>
+    </pre>
+  )
+}
+
+function JSONPreviewField({
+  f,
+  trailingComma,
+  isProto,
+}: {
+  f: { name: string; type: string; required: boolean; repeated?: boolean; json_tag?: string; comment?: string }
+  trailingComma: boolean
+  isProto: boolean
+}) {
+  // Proto uses `<type> <name> = N;` ordering; JSON uses `"<name>": <type>,`.
+  const typeDisplay = f.repeated && !isProto ? `${f.type}[]` : f.type
+  const nameDisplay = isProto ? f.name : `"${f.name}"`
+  const optional = !isProto && !f.required
+  const aliasNote =
+    f.json_tag && f.json_tag !== f.name ? (
+      <span className="faint" style={{ marginLeft: 8, fontSize: 10.5 }}>
+        (json: {f.json_tag})
+      </span>
+    ) : null
+
+  return (
+    <div style={{ paddingLeft: 14 }}>
+      {isProto && f.repeated && <span style={{ color: 'var(--violet)' }}>repeated </span>}
+      {isProto && <span style={{ color: 'var(--k-type)' }}>{f.type} </span>}
+      <span style={{ color: f.required ? 'var(--fg-0)' : 'var(--fg-2)' }}>{nameDisplay}</span>
+      {optional && <span className="faint">?</span>}
+      {!isProto && <span className="faint">:</span>}{' '}
+      {!isProto && <span style={{ color: 'var(--k-type)' }}>{typeDisplay}</span>}
+      {trailingComma && !isProto && <span className="faint">,</span>}
+      {isProto && <span className="faint">;</span>}
+      {aliasNote}
+      {f.comment && (
+        <span className="faint" style={{ marginLeft: 10, fontStyle: 'italic' }}>
+          // {f.comment}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// lastSegment trims a symbol ID down to the type name for display.
+// `tuck_app/lib/shared/models/email_ingest_log_entry.dart::EmailIngestLogEntry` →
+// `EmailIngestLogEntry`. Full ID is always available in the hover title.
+function lastSegment(id: string): string {
+  const idx = id.lastIndexOf('::')
+  if (idx >= 0) return id.slice(idx + 2)
+  return id
 }
 
 function ParamRow({ label, values }: { label: string; values: string[] }) {
@@ -784,82 +1061,6 @@ function ParamRow({ label, values }: { label: string; values: string[] }) {
         ))}
       </div>
     </div>
-  )
-}
-
-// schemaTypeSymbolId returns the type identifier only when it's a
-// graph symbol ID (contains `::`), otherwise null. Bare names that
-// the module-wide post-pass couldn't upgrade don't resolve to nodes,
-// so we can't fetch shapes for them.
-function schemaTypeSymbolId(t?: string): string | null {
-  if (!t) return null
-  return t.includes('::') ? t : null
-}
-
-// TypeShapeInline fetches the type node for a symbol ID and renders
-// its field-level shape (Stage 2 output). No-op when the symbolId is
-// null, when the node has no shape attached, or while the fetch is
-// in flight — the surrounding Request/Response row already conveys
-// the type name, so this is purely additive.
-function TypeShapeInline({ symbolId }: { symbolId: string | null }) {
-  const { data: node } = useSymbol(symbolId)
-  const shape = (node?.meta?.shape ?? null) as TypeShape | null
-  if (!shape || shape.fields.length === 0) return null
-
-  return (
-    <div
-      style={{
-        marginLeft: 100,
-        marginTop: -4,
-        border: '1px solid var(--line)',
-        borderRadius: 4,
-        overflow: 'hidden',
-        fontSize: 11.5,
-      }}
-    >
-      <div
-        className="faint"
-        style={{
-          padding: '4px 8px',
-          background: 'var(--bg-1)',
-          borderBottom: '1px solid var(--line)',
-          textTransform: 'uppercase',
-          fontSize: 10,
-          letterSpacing: 0.5,
-        }}
-      >
-        {shape.kind} · {shape.fields.length} field{shape.fields.length === 1 ? '' : 's'}
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'max-content max-content 1fr' }}>
-        {shape.fields.map((f) => (
-          <TypeShapeRow key={f.name} f={f} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TypeShapeRow({ f }: { f: { name: string; type: string; required: boolean; repeated?: boolean; json_tag?: string; comment?: string } }) {
-  return (
-    <>
-      <div
-        className="mono"
-        style={{
-          padding: '3px 8px',
-          color: f.required ? 'var(--fg-0)' : 'var(--fg-2)',
-        }}
-      >
-        {f.name}
-        {f.required ? '' : <span className="faint">?</span>}
-      </div>
-      <div className="mono faint" style={{ padding: '3px 8px' }}>
-        {f.repeated ? `${f.type}[]` : f.type}
-      </div>
-      <div className="faint" style={{ padding: '3px 8px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {f.json_tag && f.json_tag !== f.name && <span className="mono" style={{ marginRight: 8 }}>tag={f.json_tag}</span>}
-        {f.comment}
-      </div>
-    </>
   )
 }
 

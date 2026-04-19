@@ -44,6 +44,12 @@ func init() {
 			roles:     []Role{RoleConsumer},
 			detect:    tsFetchDetect,
 		},
+		schemaEnricher{
+			name:      "ts-wrapper-consumer",
+			languages: []string{"typescript", "javascript"},
+			roles:     []Role{RoleConsumer},
+			detect:    tsWrapperConsumerDetect,
+		},
 	)
 }
 
@@ -224,6 +230,113 @@ func tsFetchDetect(body string, fileNodes []*graph.Node) schemaHints {
 		h.ResponseType = resolveTypeInFile(m[1], fileNodes)
 	}
 	return h
+}
+
+// -----------------------------------------------------------------------------
+// Custom wrapper consumer
+//
+// Many TS/JS codebases wrap `fetch` / `axios` in a project-specific
+// helper so individual call sites look like:
+//
+//	export async function blockEmailSource(
+//	  getToken: TokenGetter,
+//	  id: string,
+//	): Promise<void> {
+//	  return request<void>(`/v1/email-sources/${id}/block`, getToken, {
+//	    method: 'POST',
+//	  });
+//	}
+//
+//	const resp = await request<UserResp>('/users', t, { method: 'POST', body: JSON.stringify(payload) });
+//
+// Neither the axios nor the fetch enricher matches because the
+// network call goes through a user-defined function. But the
+// generic type parameter (`request<UserResp>`) or the enclosing
+// function's return annotation (`: Promise<UserResp>`) give us the
+// response type directly. This detector picks up both signals.
+// -----------------------------------------------------------------------------
+
+var (
+	// Generic type parameter on a call. Covers three idioms:
+	//   request<UserResp>(             — plain wrapper
+	//   api.get<User>(                 — namespaced method
+	//   createClient(cfg).get<T>(path) — curried-then-called
+	// The `(?:\.[A-Za-z_$][\w$]*)*` chain tolerates any number of
+	// method hops before the generic call.
+	tsGenericCallRe = regexp.MustCompile(
+		`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*<\s*([A-Za-z_$][\w$.|\s<>[\],]*?)\s*>\s*\(`,
+	)
+	// React Query / SWR style (`useQuery<UserResp>(...)`) is already
+	// handled by the generic regex above — `useQuery` has the same
+	// syntactic shape as any other generic call.
+	// Function return annotation: `): Promise<UserResp> {`. Used
+	// when the generic-call form above wasn't found (e.g. the
+	// wrapper is untyped but the outer function annotates its
+	// return). Requires `Promise<...>` to avoid matching arbitrary
+	// `: Type` annotations elsewhere.
+	tsPromiseReturnRe = regexp.MustCompile(
+		`\)\s*:\s*Promise\s*<\s*([A-Za-z_$][\w$.|\s<>[\],]*?)\s*>\s*[{=]`,
+	)
+	// Body option carrying a JSON-stringified payload through a
+	// wrapper call: `body: JSON.stringify(payload)` or
+	// `{ body: payload }` in the options object. Reuses
+	// fetchJSONStringifyRe via tsFetchDetect, so we only handle the
+	// typed-payload case here.
+	tsWrapperBodyArgRe = regexp.MustCompile(`body\s*:\s*([A-Za-z_$][\w$]*)\b`)
+)
+
+func tsWrapperConsumerDetect(body string, fileNodes []*graph.Node) schemaHints {
+	var h schemaHints
+
+	// Response type via generic call. First match wins — call sites
+	// usually have at most one HTTP wrapper invocation.
+	if m := tsGenericCallRe.FindStringSubmatch(body); len(m) > 1 {
+		t := cleanTSTypeExpr(m[1])
+		if t != "" && t != "void" && t != "unknown" && t != "any" {
+			h.ResponseType = resolveTypeInFile(stripGenerics(t), fileNodes)
+		}
+	}
+	if h.ResponseType == "" {
+		if m := tsPromiseReturnRe.FindStringSubmatch(body); len(m) > 1 {
+			t := cleanTSTypeExpr(m[1])
+			if t != "" && t != "void" && t != "unknown" && t != "any" {
+				h.ResponseType = resolveTypeInFile(stripGenerics(t), fileNodes)
+			}
+		}
+	}
+
+	// Request type via a body argument in the options object.
+	if m := tsWrapperBodyArgRe.FindStringSubmatch(body); len(m) > 1 {
+		if rt := findTSVarType(body, m[1]); rt != "" {
+			h.RequestType = resolveTypeInFile(rt, fileNodes)
+		}
+	}
+
+	return h
+}
+
+// cleanTSTypeExpr trims whitespace, drops nullable-union suffixes
+// (`| null` / `| undefined`), and strips pointer/optional markers.
+// Keeps generic-parameter and union structure intact so
+// `stripGenerics` can act on the result.
+func cleanTSTypeExpr(t string) string {
+	t = strings.TrimSpace(t)
+	t = strings.TrimSuffix(t, "?")
+	// Trim trailing `| null` / `| undefined`.
+	lower := strings.ReplaceAll(t, " ", "")
+	for _, suffix := range []string{"|null", "|undefined"} {
+		if strings.HasSuffix(lower, suffix) {
+			cut := len(t) - len(suffix)
+			// Preserve original whitespace form by cutting at the
+			// rightmost `|` instead of trusting the squashed length.
+			if idx := strings.LastIndex(t, "|"); idx >= 0 {
+				t = strings.TrimSpace(t[:idx])
+			} else {
+				t = strings.TrimSpace(t[:cut])
+			}
+		}
+	}
+	return strings.TrimSpace(t)
 }
 
 // -----------------------------------------------------------------------------

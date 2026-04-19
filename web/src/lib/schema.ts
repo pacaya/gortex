@@ -126,6 +126,15 @@ export type Contract = {
   last: string
   locations: ContractLocation[]
   schema?: ContractSchema
+  /**
+   * Side-specific schemas. When both are present the UI renders them
+   * side-by-side so provider / consumer mismatches are visible at a
+   * glance. When only one side is indexed, that side gets the full
+   * width. `schema` (merged) is still sent as a convenience for
+   * callers that just want the best-known view.
+   */
+  provider_schema?: ContractSchema
+  consumer_schema?: ContractSchema
 }
 
 export type Community = {

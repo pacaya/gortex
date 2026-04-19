@@ -125,6 +125,48 @@ func TestShape_Java_ClassWithJacksonAnnotations(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// Dart
+// -----------------------------------------------------------------------------
+
+func TestShape_Dart_ClassWithFields(t *testing.T) {
+	src := []byte(`class EmailIngestLogEntry {
+  final String id;
+  final String createdAt;
+  final String? provider;
+  final List<String> tags;
+
+  @JsonKey(name: 'user_id')
+  final String userId;
+
+  EmailIngestLogEntry(this.id, this.createdAt, this.provider, this.tags, this.userId);
+
+  factory EmailIngestLogEntry.fromJson(Map<String, dynamic> j) => EmailIngestLogEntry(
+    j['id'] as String,
+    j['createdAt'] as String,
+    j['provider'] as String?,
+    (j['tags'] as List).cast<String>(),
+    j['user_id'] as String,
+  );
+}
+`)
+	s := ExtractShape("lib/models/entry.dart", src, 1, 19)
+	if s == nil {
+		t.Fatal("expected shape, got nil")
+	}
+	if s.Kind != "class" {
+		t.Errorf("kind = %q, want class", s.Kind)
+	}
+	want := map[string]ShapeField{
+		"id":        {Name: "id", Type: "String", Required: true},
+		"createdAt": {Name: "createdAt", Type: "String", Required: true},
+		"provider":  {Name: "provider", Type: "String", Required: false},
+		"tags":      {Name: "tags", Type: "List", Required: true, Repeated: true},
+		"user_id":   {Name: "user_id", Type: "String", JSONTag: "user_id", Required: true},
+	}
+	assertShapeFields(t, s, want)
+}
+
+// -----------------------------------------------------------------------------
 // Proto
 // -----------------------------------------------------------------------------
 

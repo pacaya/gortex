@@ -69,8 +69,14 @@ func ExtractShape(filePath string, src []byte, startLine, endLine int) *Shape {
 		return extractTSShape(src, startLine, endLine)
 	case "python":
 		return extractPythonShape(src, startLine, endLine)
-	case "java":
+	case "java", "kotlin":
 		return extractJavaShape(src, startLine, endLine)
+	case "dart":
+		return extractDartShape(src, startLine, endLine)
+	case "rust":
+		return extractRustShape(src, startLine, endLine)
+	case "csharp":
+		return extractCSharpShape(src, startLine, endLine)
 	}
 	if strings.HasSuffix(filePath, ".proto") {
 		return extractProtoShape(src, startLine, endLine)
