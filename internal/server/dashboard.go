@@ -847,6 +847,15 @@ type caveatEntry struct {
 	Desc     string `json:"desc"`
 	Owner    string `json:"owner"`
 	Age      string `json:"age"`
+	// Graph-enriched fields. Populated in handleCaveats after parsing,
+	// by looking up the symbol in the graph — all optional because cycle
+	// entries and synthetic caveats may have no resolvable node.
+	FilePath        string   `json:"file_path,omitempty"`
+	RepoPrefix      string   `json:"repo_prefix,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	FanIn           int      `json:"fan_in,omitempty"`
+	ExternalCallers int      `json:"external_callers,omitempty"`
+	CallerRepos     []string `json:"caller_repos,omitempty"`
 }
 
 func (h *Handler) handleCaveats(w http.ResponseWriter, r *http.Request) {
@@ -878,7 +887,60 @@ func (h *Handler) handleCaveats(w http.ResponseWriter, r *http.Request) {
 		"deprecated": 5,
 	}
 	sortByRank(out, severityRank)
+	enrichCaveats(h.Graph(), out)
 	WriteJSON(w, http.StatusOK, map[string]any{"caveats": out})
+}
+
+// enrichCaveats fills in file_path, repo_prefix, kind, fan_in, and
+// cross-repo caller counts by looking each caveat's symbol up in the
+// graph. Entries with an unresolvable symbol (e.g. cycle placeholders
+// or stale IDs from a prior index) are left untouched so the caller can
+// detect the gap instead of rendering zeros that look like real data.
+func enrichCaveats(g *graph.Graph, caveats []caveatEntry) {
+	if g == nil {
+		return
+	}
+	for i := range caveats {
+		sym := caveats[i].Symbol
+		if sym == "" {
+			continue
+		}
+		node := g.GetNode(sym)
+		if node == nil {
+			continue
+		}
+		caveats[i].FilePath = node.FilePath
+		caveats[i].RepoPrefix = node.RepoPrefix
+		caveats[i].Kind = string(node.Kind)
+
+		inEdges := g.GetInEdges(sym)
+		repoSet := make(map[string]struct{}, len(inEdges))
+		var fanIn, external int
+		for _, e := range inEdges {
+			if e.Kind != graph.EdgeCalls && e.Kind != graph.EdgeReferences {
+				continue
+			}
+			fanIn++
+			caller := g.GetNode(e.From)
+			if caller == nil {
+				continue
+			}
+			if caller.RepoPrefix != "" && caller.RepoPrefix != node.RepoPrefix {
+				external++
+				repoSet[caller.RepoPrefix] = struct{}{}
+			}
+		}
+		caveats[i].FanIn = fanIn
+		caveats[i].ExternalCallers = external
+		if len(repoSet) > 0 {
+			repos := make([]string, 0, len(repoSet))
+			for r := range repoSet {
+				repos = append(repos, r)
+			}
+			sort.Strings(repos)
+			caveats[i].CallerRepos = repos
+		}
+	}
 }
 
 func sortByRank(in []caveatEntry, rank map[string]int) {

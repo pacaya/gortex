@@ -6,6 +6,8 @@ import { Icon } from '@/components/primitives/Icon'
 import { useTweaks } from '@/lib/tweaks'
 import { useCmdK } from '@/lib/cmdk'
 import { useDashboard } from '@/lib/hooks'
+import { useInspector } from '@/lib/inspector'
+import { usePins } from '@/lib/pins'
 import { NAV, type NavItem } from './nav'
 import { pageIdFromPath } from './path'
 
@@ -60,6 +62,9 @@ export function SideRail() {
   const openCmdK = useCmdK((s) => s.setOpen)
   const pageId = pageIdFromPath(pathname)
   const { data } = useDashboard()
+  const pins = usePins((s) => s.pins)
+  const removePin = usePins((s) => s.remove)
+  const setSym = useInspector((s) => s.setSym)
 
   const isActive = (id: string) => {
     if (id === 'dashboard') return pageId === 'dashboard'
@@ -129,9 +134,54 @@ export function SideRail() {
             count={counts[n.id]}
           />
         ))}
+        {pins.length > 0 && (
+          <div style={{ marginTop: 'auto', borderTop: '1px solid var(--line-1)', padding: '6px 0' }}>
+            <div className="section-label">Pinned</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0 6px' }}>
+              {pins.map((p) => (
+                <div key={p.id} className="hstack" style={{ gap: 4, padding: '3px 6px', borderRadius: 4 }}>
+                  <button
+                    type="button"
+                    className="btn small ghost"
+                    style={{ flex: 1, justifyContent: 'flex-start', fontSize: 11, overflow: 'hidden' }}
+                    onClick={() =>
+                      setSym({
+                        id: p.id,
+                        kind: 'function',
+                        name: p.name,
+                        repo: p.repo,
+                        file: p.id.split('::')[0] ?? '',
+                        sig: '',
+                        callers: 0,
+                        callees: 0,
+                        community: '',
+                        caveats: [],
+                      })
+                    }
+                    title={p.id}
+                  >
+                    <Icon name="pin" size={10} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.name}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn small ghost"
+                    onClick={() => removePin(p.id)}
+                    title="Unpin"
+                    aria-label={`Unpin ${p.name}`}
+                  >
+                    <Icon name="close" size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div
           style={{
-            marginTop: 'auto',
+            marginTop: pins.length > 0 ? 0 : 'auto',
             padding: 10,
             borderTop: '1px solid var(--line-1)',
             fontSize: 11,

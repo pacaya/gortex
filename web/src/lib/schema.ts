@@ -163,6 +163,16 @@ export type Caveat = {
   desc: string
   owner: string
   age: string
+  // Graph-enriched fields from /v1/caveats. All optional — cycle
+  // entries and caveats whose symbol is no longer in the index carry
+  // no graph data, and the UI must treat zero/empty as "unknown",
+  // not "none".
+  file_path?: string
+  repo_prefix?: string
+  kind?: string
+  fan_in?: number
+  external_callers?: number
+  caller_repos?: string[]
 }
 
 export type Activity = {
