@@ -10,6 +10,7 @@
 #   GORTEX_INSTALL_DIR    Install directory (default: $HOME/.local/bin)
 #   GORTEX_NO_VERIFY      Set to skip checksum + cosign verification
 #   GORTEX_NO_PATH        Set to skip PATH update in shell rc
+#   GORTEX_NO_BREW        Set to skip Homebrew (macOS) and force the tarball path
 #   GORTEX_FORCE          Set to overwrite an existing binary without backup
 #   GORTEX_DOWNLOAD_BASE  Override release download base URL (for testing)
 
@@ -145,6 +146,9 @@ update_path_in_rc() {
 		else
 			{
 				printf '\n%s\n' "$marker_begin"
+				# We want a literal $PATH in the rc file so the user's shell
+				# expands it at source time, not us at install time.
+				# shellcheck disable=SC2016
 				printf 'export PATH="%s:$PATH"\n' "$install_dir"
 				printf '%s\n' "$marker_end"
 			} >> "$rc"
@@ -153,10 +157,60 @@ update_path_in_rc() {
 	done
 }
 
+# Homebrew handoff. Cask is macOS-only and brew handles its own PATH, so we
+# only divert when the user has plain `brew` on PATH on macOS, isn't pinning
+# a version, and didn't pick a custom install dir.
+should_use_brew() {
+	[ "$1" = darwin ] || return 1
+	[ -z "${GORTEX_NO_BREW:-}" ] || return 1
+	[ "${GORTEX_VERSION:-latest}" = latest ] || return 1
+	[ -z "${GORTEX_INSTALL_DIR:-}" ] || return 1
+	command -v brew >/dev/null 2>&1
+}
+
+install_via_brew() {
+	if brew list --cask gortex >/dev/null 2>&1; then
+		info "gortex cask already installed; upgrading via Homebrew"
+		brew upgrade --cask gortex || die "brew upgrade failed"
+	else
+		info "installing via Homebrew (zzet/tap/gortex)"
+		brew install zzet/tap/gortex || die "brew install failed"
+	fi
+
+	bin="$(command -v gortex || true)"
+	[ -n "$bin" ] || die "brew finished but 'gortex' is not on PATH"
+	ok "installed $bin"
+
+	# Best-effort daemon restart, mirroring the tarball path.
+	if "$bin" daemon status >/dev/null 2>&1; then
+		info "restarting running daemon onto new binary"
+		"$bin" daemon restart >/dev/null 2>&1 || warn "daemon restart failed; run 'gortex daemon restart' manually"
+	fi
+
+	if version_out="$("$bin" version 2>/dev/null)"; then
+		ok "$version_out"
+	fi
+
+	printf '\n%sNext steps:%s\n' "${C_BOLD}" "${C_RESET}"
+	printf '  - %sgortex install%s   one-time machine setup (MCP, skills, slash commands)\n' "${C_BOLD}" "${C_RESET}"
+	printf '  - %sgortex init%s      run inside a repo to wire up your AI assistant\n' "${C_BOLD}" "${C_RESET}"
+	printf '\nDocs: https://github.com/%s\n\n' "$GORTEX_REPO"
+}
+
 main() {
 	os="$(detect_os)"
 	arch="$(detect_arch)"
 	version="${GORTEX_VERSION:-latest}"
+
+	if should_use_brew "$os"; then
+		printf '\n%sGortex installer%s\n' "${C_BOLD}" "${C_RESET}"
+		printf '  os:      %s\n' "$os"
+		printf '  arch:    %s\n' "$arch"
+		printf '  version: %s (via Homebrew — set GORTEX_NO_BREW=1 to use the tarball)\n\n' "$version"
+		install_via_brew
+		return 0
+	fi
+
 	install_dir="${GORTEX_INSTALL_DIR:-$HOME/.local/bin}"
 
 	printf '\n%sGortex installer%s\n' "${C_BOLD}" "${C_RESET}"
