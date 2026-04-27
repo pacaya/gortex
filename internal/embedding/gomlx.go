@@ -25,7 +25,7 @@ type GoMLXProvider struct {
 }
 
 func newGoMLXProvider() (Provider, error) {
-	session, err := hugot.NewXLASession()
+	session, err := hugot.NewXLASession(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("gomlx/xla session: %w", err)
 	}
@@ -57,8 +57,8 @@ func newGoMLXProvider() (Provider, error) {
 	}, nil
 }
 
-func (p *GoMLXProvider) Embed(_ context.Context, text string) ([]float32, error) {
-	vecs, err := p.EmbedBatch(context.Background(), []string{text})
+func (p *GoMLXProvider) Embed(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := p.EmbedBatch(ctx, []string{text})
 	if err != nil {
 		return nil, err
 	}
@@ -68,11 +68,11 @@ func (p *GoMLXProvider) Embed(_ context.Context, text string) ([]float32, error)
 	return vecs[0], nil
 }
 
-func (p *GoMLXProvider) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+func (p *GoMLXProvider) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	output, err := p.pipeline.RunPipeline(texts)
+	output, err := p.pipeline.RunPipeline(ctx, texts)
 	if err != nil {
 		return nil, fmt.Errorf("gomlx run: %w", err)
 	}
@@ -97,7 +97,7 @@ func ensureGoMLXModel() (string, error) {
 		return modelDir, nil
 	}
 
-	path, err := hugot.DownloadModel(gomlxModelName, dest, hugot.NewDownloadOptions())
+	path, err := hugot.DownloadModel(context.Background(), gomlxModelName, dest, hugot.NewDownloadOptions())
 	if err != nil {
 		return "", fmt.Errorf("download model: %w", err)
 	}
