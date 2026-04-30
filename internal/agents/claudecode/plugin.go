@@ -46,9 +46,9 @@ const (
 // without re-deriving them.
 const (
 	pluginName        = "gortex"
-	pluginDescription = "Code intelligence engine — daemon-backed knowledge graph with 52 MCP tools for navigation, refactoring, contracts, impact analysis, and search across 92 languages."
+	pluginDescription = "Your AI's live map of your codebase — every call, dependency, and contract indexed across your repos, shared across every running agent via a local daemon. Gives Claude Code, Cursor, and any MCP-aware client 52 graph-aware tools so they answer \"what calls this?\", \"what breaks if I rename UserStore?\", or \"which services consume this endpoint?\" in one call instead of grepping for minutes. Real AST parsing across 92 languages — deterministic, zero LLM calls during indexing. Useful before refactoring, when tracing bugs across services, exploring unfamiliar code, or any time your agent reaches for Grep or Read. Returns precise answers tagged with confidence tiers (compiler-grade vs heuristic). Local-first, source-available, free under defined thresholds."
 	pluginAuthorName  = "Andrey Kumanyaev"
-	pluginAuthorEmail = "me@zzet.org"
+	pluginAuthorEmail = "support@gortex.dev"
 	pluginHomepage    = "https://gortex.dev"
 )
 
@@ -376,4 +376,3 @@ func PluginSkillPaths() []string {
 	}
 	return out
 }
-
