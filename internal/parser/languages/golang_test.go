@@ -183,11 +183,12 @@ const DefaultPort = 8080
 	require.NoError(t, err)
 
 	vars := nodesOfKind(result.Nodes, graph.KindVariable)
-	require.Len(t, vars, 2)
+	require.Len(t, vars, 1, "var declarations stay in KindVariable")
+	assert.Equal(t, "MaxRetries", vars[0].Name)
 
-	names := []string{vars[0].Name, vars[1].Name}
-	assert.Contains(t, names, "MaxRetries")
-	assert.Contains(t, names, "DefaultPort")
+	consts := nodesOfKind(result.Nodes, graph.KindConstant)
+	require.Len(t, consts, 1, "const declarations are peeled into KindConstant")
+	assert.Equal(t, "DefaultPort", consts[0].Name)
 }
 
 func TestGoExtractor_FullFile(t *testing.T) {

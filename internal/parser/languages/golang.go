@@ -1239,8 +1239,20 @@ func (e *GoExtractor) emitConst(m parser.QueryResult, filePath, fileID string, r
 	}
 	name := nameCap.Text
 	id := filePath + "::" + name
+	// Detect Go's enum-by-convention: a const_declaration block that
+	// contains the `iota` identifier anywhere within its body marks
+	// every spec in that block as an enum member. The heuristic
+	// matches both the explicit form (`Red Color = iota`) and the
+	// implicit-continuation form (`Red Color = iota; Green; Blue`),
+	// which share the same enclosing block. False positives are
+	// possible if the user happens to write `iota` inside a const
+	// block for an unrelated reason — vanishingly rare in practice.
+	kind := graph.KindConstant
+	if def != nil && def.Node != nil && containsGoIotaBlock(def.Text) {
+		kind = graph.KindEnumMember
+	}
 	result.Nodes = append(result.Nodes, &graph.Node{
-		ID: id, Kind: graph.KindVariable, Name: name,
+		ID: id, Kind: kind, Name: name,
 		FilePath: filePath, StartLine: def.StartLine + 1, EndLine: def.EndLine + 1,
 		Language: "go",
 		Meta:     map[string]any{"visibility": VisibilityByCase(name)},
@@ -1248,6 +1260,37 @@ func (e *GoExtractor) emitConst(m parser.QueryResult, filePath, fileID string, r
 	result.Edges = append(result.Edges, &graph.Edge{
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: def.StartLine + 1,
 	})
+}
+
+// containsGoIotaBlock reports whether a const_declaration's source
+// text contains the bare `iota` identifier. Word-boundary anchoring
+// keeps `bigiotabig` and similar identifier substrings from
+// triggering. Simpler than walking the AST for a one-off detection.
+func containsGoIotaBlock(text string) bool {
+	if text == "" {
+		return false
+	}
+	for i := 0; i+4 <= len(text); i++ {
+		if text[i:i+4] != "iota" {
+			continue
+		}
+		before := byte(' ')
+		if i > 0 {
+			before = text[i-1]
+		}
+		after := byte(' ')
+		if i+4 < len(text) {
+			after = text[i+4]
+		}
+		if !isGoIdentByte(before) && !isGoIdentByte(after) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGoIdentByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // recordShortVarType infers a type from the RHS expression of a short

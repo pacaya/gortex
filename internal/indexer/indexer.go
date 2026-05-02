@@ -562,6 +562,25 @@ func (idx *Indexer) applyCoverageDomains(relPath, lang string, src []byte, resul
 	if !idx.config.Coverage.IsEnabled("type_shape") {
 		stripTypeShape(result)
 	}
+	if !idx.config.Coverage.IsEnabled("constants") {
+		revertConstantsToVariables(result)
+	}
+}
+
+// revertConstantsToVariables re-classifies KindConstant /
+// KindEnumMember nodes back to KindVariable when the constants
+// coverage domain is gated off. Unlike stripFunctionShape /
+// stripTypeShape this is a re-classification, not a removal —
+// users who disable the domain still want their `const` and `iota`
+// declarations in the graph, just under the original kind that
+// pre-coverage code expected.
+func revertConstantsToVariables(result *parser.ExtractionResult) {
+	for _, n := range result.Nodes {
+		switch n.Kind {
+		case graph.KindConstant, graph.KindEnumMember:
+			n.Kind = graph.KindVariable
+		}
+	}
 }
 
 // stripTypeShape removes the alias / composition edges introduced
