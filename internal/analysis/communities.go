@@ -237,19 +237,25 @@ func DetectCommunities(g *graph.Graph) *CommunityResult {
 
 func edgeWeight(kind graph.EdgeKind) float64 {
 	switch kind {
-	case graph.EdgeCalls:
+	case graph.EdgeCalls, graph.EdgeSpawns:
 		return 3.0
-	case graph.EdgeMemberOf:
+	case graph.EdgeMemberOf, graph.EdgeParamOf:
 		return 2.0
-	case graph.EdgeReferences:
+	case graph.EdgeReferences, graph.EdgeReturns, graph.EdgeTypedAs:
 		return 1.5
-	case graph.EdgeImplements, graph.EdgeExtends:
+	case graph.EdgeImplements, graph.EdgeExtends,
+		graph.EdgeAliases, graph.EdgeComposes:
 		return 2.0
-	case graph.EdgeImports:
+	case graph.EdgeImports, graph.EdgeDependsOnModule:
 		return 0.5
 	case graph.EdgeInstantiates:
 		return 1.0
 	default:
+		// Domain-specific edges (queries, config, flag toggles, emits,
+		// owns, licensed_as, generated_by, …) deliberately do not
+		// influence community formation — they pull symbols toward
+		// per-domain hubs (the flag node, the table node) which is
+		// noise for code-cluster detection.
 		return 0
 	}
 }

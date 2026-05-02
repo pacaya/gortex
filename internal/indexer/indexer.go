@@ -23,7 +23,10 @@ import (
 	"github.com/zzet/gortex/internal/progress"
 	"github.com/zzet/gortex/internal/resolver"
 	"github.com/zzet/gortex/internal/search"
+	"github.com/zzet/gortex/internal/codeowners"
+	"github.com/zzet/gortex/internal/licenses"
 	"github.com/zzet/gortex/internal/semantic"
+	"github.com/zzet/gortex/internal/todos"
 )
 
 // IndexResult holds the outcome of an indexing operation.
@@ -123,6 +126,15 @@ type Indexer struct {
 	// pass's graph walk via AllEdges().
 	deferResolve       bool
 	pendingContractReg *contracts.Registry
+
+	// codeownersOnce ensures the repo-level CODEOWNERS file is parsed
+	// exactly once per indexer lifetime. spec-graph-coverage.md §5.13
+	// stamps team ownership per-file via applyCodeowners. The rule
+	// list is derived from .github/CODEOWNERS / CODEOWNERS /
+	// docs/CODEOWNERS at first use; absent file → empty rules and a
+	// no-op applyCodeowners path.
+	codeownersOnce  sync.Once
+	codeownersRules []codeowners.Rule
 }
 
 // contractCacheEntry is a cached contract-extraction result for one file.
@@ -455,6 +467,77 @@ func (idx *Indexer) prefixPath(relPath string) string {
 // languages. Skip prefixing on unresolved targets; the resolver will land
 // the edge on a real ID that already carries its own correct prefix
 // (possibly cross-repo, which the resolver marks explicitly).
+
+// todoTags returns the configured TODO marker set or the default
+// (TODO/FIXME/HACK/XXX/NOTE). Reads from the IndexConfig the indexer
+// already holds — IsCoverageEnabled gating happens at the call site.
+func (idx *Indexer) todoTags() []string {
+	if tags := idx.config.Coverage.Todos.Tags; len(tags) > 0 {
+		return tags
+	}
+	return []string{"TODO", "FIXME", "HACK", "XXX", "NOTE"}
+}
+
+// todoMaxText returns the configured cap on stored TODO text or the
+// 200-char default.
+func (idx *Indexer) todoMaxText() int {
+	if n := idx.config.Coverage.Todos.MaxText; n > 0 {
+		return n
+	}
+	return 200
+}
+
+// loadCodeownersRules lazily parses the repo's CODEOWNERS file. The
+// sync.Once guarantees one parse per indexer; applyCodeowners is
+// then a pure rule-match per file. Errors silently produce an empty
+// rule set — the spec gates this domain on file presence (§5.13)
+// rather than failing extraction when the file is missing or
+// malformed.
+func (idx *Indexer) loadCodeownersRules() []codeowners.Rule {
+	idx.codeownersOnce.Do(func() {
+		rules, _, ok := codeowners.LoadFromRepo(idx.rootPath)
+		if !ok {
+			return
+		}
+		idx.codeownersRules = rules
+	})
+	return idx.codeownersRules
+}
+
+// applyCoverageDomains runs the per-file extractors from
+// spec-graph-coverage.md (Phase 1: todos, licenses, ownership). It
+// appends nodes/edges to the file's ExtractionResult so they go
+// through the same applyRepoPrefix / graph.AddNode pipeline as the
+// language extractor's output. Called from both the bulk index
+// worker pool (IndexCtx) and the incremental indexFile path.
+//
+// relPath is the unprefixed file path; lang is the detected
+// language; src is the file bytes.
+func (idx *Indexer) applyCoverageDomains(relPath, lang string, src []byte, result *parser.ExtractionResult) {
+	if idx.config.Coverage.IsEnabled("todos") {
+		findings := todos.Scan(src, idx.todoTags(), idx.todoMaxText())
+		todoNodes, todoEdges := todos.BuildGraphArtifacts(relPath, findings, lang)
+		result.Nodes = append(result.Nodes, todoNodes...)
+		result.Edges = append(result.Edges, todoEdges...)
+	}
+	if idx.config.Coverage.IsEnabled("licenses") {
+		if spdx := licenses.Scan(src); spdx != "" {
+			licNodes, licEdges := licenses.BuildGraphArtifacts(relPath, spdx, lang)
+			result.Nodes = append(result.Nodes, licNodes...)
+			result.Edges = append(result.Edges, licEdges...)
+		}
+	}
+	if idx.config.Coverage.IsEnabled("ownership") {
+		if rules := idx.loadCodeownersRules(); len(rules) > 0 {
+			if owners := codeowners.MatchFile(relPath, rules); len(owners) > 0 {
+				teamNodes, teamEdges := codeowners.BuildGraphArtifacts(relPath, owners, lang)
+				result.Nodes = append(result.Nodes, teamNodes...)
+				result.Edges = append(result.Edges, teamEdges...)
+			}
+		}
+	}
+}
+
 func (idx *Indexer) applyRepoPrefix(nodes []*graph.Node, edges []*graph.Edge) {
 	// Stamp WorkspaceID / ProjectID on every node emitted by this
 	// indexer regardless of mode — single-repo and multi-repo both
@@ -622,6 +705,12 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 					errMu.Unlock()
 					continue
 				}
+
+				// spec-graph-coverage.md Phase 1: append todos /
+				// licenses / ownership artifacts before
+				// applyRepoPrefix so they get the same multi-repo
+				// namespacing treatment as language-extractor output.
+				idx.applyCoverageDomains(relPath, lang, src, result)
 
 				idx.applyRepoPrefix(result.Nodes, result.Edges)
 
@@ -878,6 +967,11 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 	if err != nil {
 		return err
 	}
+
+	// spec-graph-coverage.md Phase 1 extractors (todos, licenses,
+	// ownership) — see applyCoverageDomains. Called from both this
+	// incremental path and the bulk IndexCtx worker pool.
+	idx.applyCoverageDomains(relPath, lang, src, result)
 
 	idx.applyRepoPrefix(result.Nodes, result.Edges)
 

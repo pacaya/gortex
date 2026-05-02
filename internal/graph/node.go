@@ -21,6 +21,83 @@ const (
 	// previously emitted only type-ref edges from fields (Go, Rust,
 	// Java, C#).
 	KindField NodeKind = "field"
+	// Phase 1+ kinds added by spec-graph-coverage.md. Each kind is gated
+	// behind .gortex.yaml::index.<domain>.enabled. Parsers register a
+	// kind on first use; the registry is permissive (validNodeKinds
+	// accepts all known kinds) so an unenabled domain simply produces no
+	// nodes of that kind, rather than failing extraction.
+
+	// KindParam represents a single function/method parameter. ID
+	// convention: `<func-id>#param:<name>`. EdgeParamOf links the param
+	// node back to its owner; EdgeTypedAs binds it to its declared
+	// type. Created when index.function_shape.enabled is true.
+	KindParam NodeKind = "param"
+	// KindClosure represents an anonymous function / lambda inside an
+	// enclosing function. ID convention: `<file>::<enclosing>#closure@<line>`.
+	// Calls/reads/writes inside the closure attribute to the closure
+	// node, not its enclosing function. EdgeMemberOf links to the
+	// enclosing function. EdgeCaptures lists outer bindings closed over.
+	KindClosure NodeKind = "closure"
+	// KindConstant peels off `const`, `iota`, top-level immutable
+	// bindings, and language-specific constant declarations from
+	// KindVariable. Existing variable-kind nodes are re-classified on
+	// next index; IDs are preserved.
+	KindConstant NodeKind = "constant"
+	// KindEnumMember represents one member of an enum-like type. ID
+	// convention: `<file>::<EnumType>.<Member>`. EdgeMemberOf links to
+	// the enum's type node.
+	KindEnumMember NodeKind = "enum_member"
+	// KindGenericParam represents a type parameter declared by a
+	// function or type. ID convention: `<owner-id>#tparam:<name>`.
+	KindGenericParam NodeKind = "generic_param"
+	// KindModule represents a single (ecosystem, name, version) tuple
+	// for an external dependency. Shared across files that import it.
+	// ID convention: `module::<ecosystem>:<name>@<version>`.
+	// Ecosystems: go, npm, pypi, cargo, maven, composer, gem, hex, nuget.
+	KindModule NodeKind = "module"
+	// KindTable represents a database table. ID convention:
+	// `db::<dialect>::<schema>.<table>`. Sourced from migrations, ORM
+	// models, and string-literal SQL in priority order.
+	KindTable NodeKind = "table"
+	// KindColumn represents a database column. ID convention:
+	// `db::<dialect>::<schema>.<table>.<column>`. EdgeMemberOf links to
+	// the owning table.
+	KindColumn NodeKind = "column"
+	// KindConfigKey represents a configuration key — env var, viper
+	// path, CLI flag, struct-tag-driven field, or k8s ConfigMap entry.
+	// ID convention: `cfg::<source>::<dotted.path>`. Source ∈
+	// env|viper|flags|k8s_cm|k8s_secret|struct_tag.
+	KindConfigKey NodeKind = "config_key"
+	// KindFlag represents a feature flag / experiment. ID convention:
+	// `flag::<provider>::<name>`. Provider ∈ growthbook|launchdarkly|
+	// unleash|internal|env.
+	KindFlag NodeKind = "flag"
+	// KindEvent represents a log, metric, span, or trace name emitted
+	// from code. ID convention: `event::<kind>::<name>`. Kind ∈
+	// log|metric|trace|span.
+	KindEvent NodeKind = "event"
+	// KindMigration represents a database migration unit. ID
+	// convention: `migration::<dialect>::<id>`. Provides tables/columns
+	// it creates; consumes ones it references.
+	KindMigration NodeKind = "migration"
+	// KindFixture represents a test data file or golden file. ID
+	// convention: `fixture::<path>`. Test functions reference it via
+	// EdgeReferences.
+	KindFixture NodeKind = "fixture"
+	// KindTodo represents a TODO/FIXME/HACK/XXX/NOTE comment marker. ID
+	// convention: `todo::<file>:<line>`. Meta carries tag, assignee,
+	// due, ticket, and the truncated text.
+	KindTodo NodeKind = "todo"
+	// KindTeam represents a CODEOWNERS team or individual. ID
+	// convention: `team::<name>`. Meta.kind ∈ team|person disambiguates.
+	KindTeam NodeKind = "team"
+	// KindRelease represents a tag/version boundary. ID convention:
+	// `release::<tag>`. Used as a query filter via Node.Meta["added_in"]
+	// rather than as an edge endpoint in most cases.
+	KindRelease NodeKind = "release"
+	// KindLicense represents an SPDX license identifier. ID convention:
+	// `license::<spdx>`. Files link to it via EdgeLicensedAs.
+	KindLicense NodeKind = "license"
 )
 
 var validNodeKinds = map[NodeKind]bool{
@@ -28,6 +105,13 @@ var validNodeKinds = map[NodeKind]bool{
 	KindMethod: true, KindType: true, KindInterface: true,
 	KindVariable: true, KindImport: true, KindContract: true,
 	KindField: true,
+	// spec-graph-coverage.md additions
+	KindParam: true, KindClosure: true, KindConstant: true,
+	KindEnumMember: true, KindGenericParam: true, KindModule: true,
+	KindTable: true, KindColumn: true, KindConfigKey: true,
+	KindFlag: true, KindEvent: true, KindMigration: true,
+	KindFixture: true, KindTodo: true, KindTeam: true,
+	KindRelease: true, KindLicense: true,
 }
 
 type Node struct {

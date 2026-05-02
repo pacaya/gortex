@@ -258,6 +258,214 @@ type IndexConfig struct {
 	// that drops real symbols silently is a worse default than a
 	// slightly slower full index.
 	MaxFileSize int64 `mapstructure:"max_file_size" yaml:"max_file_size,omitempty"`
+	// Coverage gates the spec-graph-coverage.md domains. Each
+	// sub-block has its own default; an empty Coverage block means
+	// "use the documented per-domain defaults" (cheap structural
+	// domains on, expensive ones off).
+	Coverage CoverageConfig `mapstructure:"coverage" yaml:"coverage,omitempty"`
+}
+
+// CoverageConfig collects the per-domain extraction gates introduced
+// by spec-graph-coverage.md. Each sub-block is independently shippable
+// and gated; defaults are documented per spec §5.
+//
+// Defaults (per-domain Enabled value when not set in YAML):
+//
+//   - FunctionShape: true  (params/returns/generics/closures — Phase 1)
+//   - Concurrency:   true  (closures already covered by FunctionShape;
+//                            this gates EdgeSpawns / channel I/O)
+//   - Constants:     true  (cheap, structural)
+//   - TypeShape:     true  (aliases vs newtypes vs composition)
+//   - Codegen:       true  (// Code generated markers)
+//   - Todos:         true  (comment scanner)
+//   - Ownership:     true  (CODEOWNERS — only emits when file present)
+//   - Licenses:      true  (SPDX header scan)
+//   - Modules:       true  (lockfile parse — cheap)
+//   - Configs:       false (recognizers per provider; opt-in)
+//   - Flags:         false (auto-on if a provider client is detected)
+//   - Observability: false (logging/metric/trace event names)
+//   - SQL:           false (Phase 3 — noisy and slow)
+//   - Fixtures:      true  (testdata path detection)
+//   - CrossLanguage: false (cgo / wasm-bindgen)
+//
+// Setting any leaf Enabled explicitly overrides the default.
+type CoverageConfig struct {
+	FunctionShape DomainToggle    `mapstructure:"function_shape" yaml:"function_shape,omitempty"`
+	Concurrency   DomainToggle    `mapstructure:"concurrency"    yaml:"concurrency,omitempty"`
+	Constants     DomainToggle    `mapstructure:"constants"      yaml:"constants,omitempty"`
+	TypeShape     DomainToggle    `mapstructure:"type_shape"     yaml:"type_shape,omitempty"`
+	Codegen       DomainToggle    `mapstructure:"codegen"        yaml:"codegen,omitempty"`
+	Todos         TodoConfig      `mapstructure:"todos"          yaml:"todos,omitempty"`
+	Ownership     DomainToggle    `mapstructure:"ownership"      yaml:"ownership,omitempty"`
+	Licenses      DomainToggle    `mapstructure:"licenses"       yaml:"licenses,omitempty"`
+	Modules       DomainToggle    `mapstructure:"modules"        yaml:"modules,omitempty"`
+	Configs       DomainToggle    `mapstructure:"configs"        yaml:"configs,omitempty"`
+	Flags         FlagConfig      `mapstructure:"flags"          yaml:"flags,omitempty"`
+	Observability DomainToggle    `mapstructure:"observability"  yaml:"observability,omitempty"`
+	SQL           SQLConfig       `mapstructure:"sql"            yaml:"sql,omitempty"`
+	Fixtures      DomainToggle    `mapstructure:"fixtures"       yaml:"fixtures,omitempty"`
+	CrossLanguage DomainToggle    `mapstructure:"cross_language" yaml:"cross_language,omitempty"`
+}
+
+// DomainToggle is the minimal config for a domain whose only knob is
+// on/off plus an optional language allow-list. The Enabled field uses
+// a tri-state pointer so we can distinguish "user set false" from
+// "user did not set" (and apply the per-domain default for the
+// latter). The language list, when non-empty, restricts extraction to
+// the listed source languages.
+type DomainToggle struct {
+	Enabled   *bool    `mapstructure:"enabled"   yaml:"enabled,omitempty"`
+	Languages []string `mapstructure:"languages" yaml:"languages,omitempty"`
+}
+
+// TodoConfig configures the TODO scanner. Tags is the set of
+// recognised marker tokens (default: TODO, FIXME, HACK, XXX, NOTE);
+// MaxText caps the stored text length (default 200) so a wall of
+// commented-out code in a TODO doesn't bloat the graph.
+type TodoConfig struct {
+	Enabled *bool    `mapstructure:"enabled"  yaml:"enabled,omitempty"`
+	Tags    []string `mapstructure:"tags"     yaml:"tags,omitempty"`
+	MaxText int      `mapstructure:"max_text" yaml:"max_text,omitempty"`
+}
+
+// FlagConfig configures feature-flag recognition. Recognizers is a
+// list of (provider, function-name) pairs to treat as flag checks;
+// the built-in recognizers cover GrowthBook, LaunchDarkly, Unleash by
+// default.
+type FlagConfig struct {
+	Enabled     *bool             `mapstructure:"enabled"     yaml:"enabled,omitempty"`
+	Recognizers []FlagRecognizer  `mapstructure:"recognizers" yaml:"recognizers,omitempty"`
+}
+
+// FlagRecognizer maps a fully-qualified function name to a flag
+// provider and operation. Op ∈ read|write|register.
+type FlagRecognizer struct {
+	Provider string `mapstructure:"provider" yaml:"provider"`
+	Func     string `mapstructure:"func"     yaml:"func"`
+	Op       string `mapstructure:"op"       yaml:"op,omitempty"`
+}
+
+// SQLConfig gates SQL schema extraction. Default-off because SQL
+// parsing is slow and string-literal SQL produces false positives.
+type SQLConfig struct {
+	Enabled        *bool          `mapstructure:"enabled"         yaml:"enabled,omitempty"`
+	Dialect        string         `mapstructure:"dialect"         yaml:"dialect,omitempty"`
+	Migrations     SQLMigrations  `mapstructure:"migrations"      yaml:"migrations,omitempty"`
+	ORM            SQLOrm         `mapstructure:"orm"             yaml:"orm,omitempty"`
+	StringLiterals SQLStringLits  `mapstructure:"string_literals" yaml:"string_literals,omitempty"`
+}
+
+type SQLMigrations struct {
+	Paths  []string `mapstructure:"paths"  yaml:"paths,omitempty"`
+	Format string   `mapstructure:"format" yaml:"format,omitempty"`
+}
+
+type SQLOrm struct {
+	Detect []string `mapstructure:"detect" yaml:"detect,omitempty"`
+}
+
+type SQLStringLits struct {
+	Enabled       *bool  `mapstructure:"enabled"        yaml:"enabled,omitempty"`
+	MinConfidence string `mapstructure:"min_confidence" yaml:"min_confidence,omitempty"`
+}
+
+// coverageDomainDefault is the per-domain default that applies when a
+// user has not explicitly set Enabled in their YAML. Cheap structural
+// domains default on; expensive or noisy domains default off. See the
+// CoverageConfig doc comment for the canonical list.
+var coverageDomainDefault = map[string]bool{
+	"function_shape": true,
+	"concurrency":    true,
+	"constants":      true,
+	"type_shape":     true,
+	"codegen":        true,
+	"todos":          true,
+	"ownership":      true,
+	"licenses":       true,
+	"modules":        true,
+	"configs":        false,
+	"flags":          false,
+	"observability":  false,
+	"sql":            false,
+	"fixtures":       true,
+	"cross_language": false,
+}
+
+// resolveDomainEnabled returns the effective Enabled flag for a
+// domain — explicit YAML setting if present, else the documented
+// default. Used by IsCoverageEnabled and the per-domain accessors.
+func resolveDomainEnabled(explicit *bool, domain string) bool {
+	if explicit != nil {
+		return *explicit
+	}
+	return coverageDomainDefault[domain]
+}
+
+// IsCoverageEnabled reports whether a coverage domain's extractor
+// should run for this Config. Pass a domain string from the
+// CoverageConfig YAML field names: "function_shape", "todos",
+// "licenses", etc. Unknown domain strings return false.
+func (c *Config) IsCoverageEnabled(domain string) bool {
+	return c.Index.Coverage.IsEnabled(domain)
+}
+
+// IsEnabled is the IndexConfig-level form of IsCoverageEnabled. The
+// indexer holds an IndexConfig directly (not the parent Config) so
+// the gate accessor lives here too — keeps the call-site short and
+// avoids passing the whole Config around for one boolean check.
+func (cov CoverageConfig) IsEnabled(domain string) bool {
+	switch domain {
+	case "function_shape":
+		return resolveDomainEnabled(cov.FunctionShape.Enabled, domain)
+	case "concurrency":
+		return resolveDomainEnabled(cov.Concurrency.Enabled, domain)
+	case "constants":
+		return resolveDomainEnabled(cov.Constants.Enabled, domain)
+	case "type_shape":
+		return resolveDomainEnabled(cov.TypeShape.Enabled, domain)
+	case "codegen":
+		return resolveDomainEnabled(cov.Codegen.Enabled, domain)
+	case "todos":
+		return resolveDomainEnabled(cov.Todos.Enabled, domain)
+	case "ownership":
+		return resolveDomainEnabled(cov.Ownership.Enabled, domain)
+	case "licenses":
+		return resolveDomainEnabled(cov.Licenses.Enabled, domain)
+	case "modules":
+		return resolveDomainEnabled(cov.Modules.Enabled, domain)
+	case "configs":
+		return resolveDomainEnabled(cov.Configs.Enabled, domain)
+	case "flags":
+		return resolveDomainEnabled(cov.Flags.Enabled, domain)
+	case "observability":
+		return resolveDomainEnabled(cov.Observability.Enabled, domain)
+	case "sql":
+		return resolveDomainEnabled(cov.SQL.Enabled, domain)
+	case "fixtures":
+		return resolveDomainEnabled(cov.Fixtures.Enabled, domain)
+	case "cross_language":
+		return resolveDomainEnabled(cov.CrossLanguage.Enabled, domain)
+	}
+	return false
+}
+
+// TodoTags returns the configured TODO tag set, or the default set
+// when the user has not provided one. The defaults match the spec
+// (TODO, FIXME, HACK, XXX, NOTE).
+func (c *Config) TodoTags() []string {
+	if tags := c.Index.Coverage.Todos.Tags; len(tags) > 0 {
+		return tags
+	}
+	return []string{"TODO", "FIXME", "HACK", "XXX", "NOTE"}
+}
+
+// TodoMaxText returns the configured cap on stored TODO text, or the
+// default of 200 characters.
+func (c *Config) TodoMaxText() int {
+	if n := c.Index.Coverage.Todos.MaxText; n > 0 {
+		return n
+	}
+	return 200
 }
 
 type WatchConfig struct {

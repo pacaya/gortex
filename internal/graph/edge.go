@@ -81,6 +81,90 @@ const (
 	// summarise every public function's error contract without
 	// re-deriving it from source.
 	EdgeThrows EdgeKind = "throws"
+	// Phase 1+ edges added by spec-graph-coverage.md. Each edge is
+	// produced only when the relevant index.<domain>.enabled gate is
+	// set; the registry is permissive (DefaultOriginFor handles
+	// unknown kinds via the confidence-score fallback).
+
+	// EdgeParamOf links a KindParam node to its owning function or
+	// method. Distinct from EdgeMemberOf (which is for fields of
+	// types). Always ast_resolved by construction.
+	EdgeParamOf EdgeKind = "param_of"
+	// EdgeReturns links a function/method to a type it returns. Multi-
+	// return Go functions emit one edge per result. Confidence reflects
+	// the resolver: ast_inferred when the type is named in source,
+	// promoted to ast_resolved / lsp_resolved by the semantic layer.
+	EdgeReturns EdgeKind = "returns"
+	// EdgeTypedAs binds a variable, parameter, field, or constant to
+	// its declared type. Lets traversals answer "find all values of
+	// type T". Distinct from EdgeReferences, which is broader.
+	EdgeTypedAs EdgeKind = "typed_as"
+	// EdgeCaptures links a closure node to an outer binding it closes
+	// over.
+	EdgeCaptures EdgeKind = "captures"
+	// EdgeSpawns links a caller to a function it launches
+	// asynchronously (goroutine, async/await, Promise, worker pool).
+	// Emitted in addition to the corresponding EdgeCalls so synchronous
+	// reachability queries can scope by edge kind. Meta["mode"] ∈
+	// goroutine|async|promise|worker_pool.
+	EdgeSpawns EdgeKind = "spawns"
+	// EdgeSends / EdgeRecvs link a function to a channel-typed
+	// variable for channel I/O. The channel's element type is reachable
+	// via the variable's EdgeTypedAs edge.
+	EdgeSends EdgeKind = "sends"
+	EdgeRecvs EdgeKind = "recvs"
+	// EdgeQueries links a function to a database table it queries
+	// against. Default origin text_matched from string-literal SQL;
+	// promoted to ast_resolved when an ORM mapping is recognized.
+	EdgeQueries EdgeKind = "queries"
+	// EdgeReadsCol / EdgeWritesCol provide column-level resolution
+	// when the SQL parser can extract it. Falls back to table-level
+	// EdgeQueries when columns can't be resolved.
+	EdgeReadsCol  EdgeKind = "reads_col"
+	EdgeWritesCol EdgeKind = "writes_col"
+	// EdgeReadsConfig / EdgeWritesConfig link a function to a config
+	// key it reads or writes (env var, viper key, k8s configmap entry,
+	// struct-tag binding).
+	EdgeReadsConfig  EdgeKind = "reads_config"
+	EdgeWritesConfig EdgeKind = "writes_config"
+	// EdgeTogglesFlag links a function to a feature flag it checks or
+	// toggles. Meta["op"] ∈ read|write|register.
+	EdgeTogglesFlag EdgeKind = "toggles_flag"
+	// EdgeEmits links a function to a log/metric/trace event it emits.
+	// Meta carries level (for logs), unit (for metrics), and label keys.
+	EdgeEmits EdgeKind = "emits"
+	// EdgeGeneratedBy links a generated file to its schema source
+	// (.proto, .graphql, openapi.yaml, etc.). Detected via comment
+	// markers (// Code generated …), conventional adjacency, or
+	// go:generate directives.
+	EdgeGeneratedBy EdgeKind = "generated_by"
+	// EdgeDependsOnModule links a file/package/import to a KindModule
+	// node. One edge per import statement; aggregable to package-level.
+	EdgeDependsOnModule EdgeKind = "depends_on_module"
+	// EdgeOwns links a team to a file or directory. Sourced from
+	// CODEOWNERS. Directory entries materialize per-file.
+	EdgeOwns EdgeKind = "owns"
+	// EdgeAuthored links a person/team to a node they last touched.
+	// Meta carries commit and timestamp. People are stored as
+	// KindTeam nodes with Meta["kind"]="person".
+	EdgeAuthored EdgeKind = "authored"
+	// EdgeCoveredBy links a function/method to a test that exercises
+	// it, with coverage_pct attached in Meta. Directional inverse of
+	// EdgeTests, distinguished by carrying the coverage metric.
+	EdgeCoveredBy EdgeKind = "covered_by"
+	// EdgeAliases links a type alias `type X = Y` to its underlying
+	// type. Distinct from EdgeExtends (`type X Y` newtype) — agents
+	// distinguish by edge kind to compute correct blast radius.
+	EdgeAliases EdgeKind = "aliases"
+	// EdgeComposes links a type to an embedded/composed/mixed-in type
+	// (Go struct embedding, Rust trait bounds, Python multiple
+	// inheritance). Distinct from EdgeExtends (newtype/inheritance/
+	// interface extension).
+	EdgeComposes EdgeKind = "composes"
+	// EdgeLicensedAs links a file to its SPDX license. Sourced from
+	// the file's SPDX-License-Identifier header, falling back to the
+	// repo-level LICENSE file.
+	EdgeLicensedAs EdgeKind = "licensed_as"
 )
 
 type Edge struct {
@@ -172,7 +256,12 @@ func DefaultOriginFor(kind EdgeKind, confidence float64, semanticSource string) 
 	// Structural AST edges are unambiguous by construction.
 	switch kind {
 	case EdgeDefines, EdgeImports, EdgeExtends, EdgeMemberOf,
-		EdgeImplements, EdgeProvides, EdgeConsumes, EdgeMatches:
+		EdgeImplements, EdgeProvides, EdgeConsumes, EdgeMatches,
+		// spec-graph-coverage.md additions: structural edges where the
+		// extractor produces an unambiguous source→target binding.
+		EdgeParamOf, EdgeAliases, EdgeComposes, EdgeLicensedAs,
+		EdgeOwns, EdgeAuthored, EdgeGeneratedBy, EdgeDependsOnModule,
+		EdgeCaptures:
 		return OriginASTResolved
 	}
 	// Resolution-derived edges fall back to confidence score.
@@ -194,7 +283,10 @@ func ConfidenceLabelFor(kind EdgeKind, confidence float64) string {
 	// Structural edges from AST are always extracted.
 	switch kind {
 	case EdgeDefines, EdgeImports, EdgeExtends, EdgeMemberOf, EdgeImplements,
-		EdgeProvides, EdgeConsumes, EdgeMatches:
+		EdgeProvides, EdgeConsumes, EdgeMatches,
+		EdgeParamOf, EdgeAliases, EdgeComposes, EdgeLicensedAs,
+		EdgeOwns, EdgeAuthored, EdgeGeneratedBy, EdgeDependsOnModule,
+		EdgeCaptures:
 		return "EXTRACTED"
 	}
 	// Resolution-derived edges: classify by confidence score.
