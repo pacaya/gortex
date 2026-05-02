@@ -27,6 +27,7 @@ import (
 	"github.com/zzet/gortex/internal/codeowners"
 	"github.com/zzet/gortex/internal/fixtures"
 	"github.com/zzet/gortex/internal/licenses"
+	"github.com/zzet/gortex/internal/modules"
 	"github.com/zzet/gortex/internal/semantic"
 	"github.com/zzet/gortex/internal/todos"
 )
@@ -341,6 +342,7 @@ func (idx *Indexer) RunDeferredPasses(ctx context.Context) {
 
 	reporter.Report("extracting contracts", 0, 0)
 	idx.extractGoModContracts(idx.pendingContractReg)
+	idx.extractExternalModules()
 	idx.extractDIContracts(idx.pendingContractReg)
 	idx.commitContracts(idx.pendingContractReg)
 	idx.pendingContractReg = nil
@@ -1004,6 +1006,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 		// provides/consumes edges from the merged registry.
 		reporter.Report("extracting contracts", 0, 0)
 		idx.extractGoModContracts(contractReg)
+		idx.extractExternalModules()
 		idx.extractDIContracts(contractReg)
 		idx.commitContracts(contractReg)
 
@@ -2369,6 +2372,53 @@ func (idx *Indexer) snapshotContractShapes(reg *contracts.Registry) {
 		idx.logger.Info("contract shapes snapshotted",
 			zap.Int("types", attached),
 			zap.Int("examined", len(symbols)))
+	}
+}
+
+// extractExternalModules parses the repo's go.mod once and writes
+// KindModule nodes plus EdgeDependsOnModule edges into the graph.
+// A synthetic KindFile node is emitted for go.mod itself so the
+// edges have a real source endpoint that survives applyRepoPrefix.
+// Safe to call when no go.mod exists. Other manifest formats
+// (package.json, pnpm-lock, requirements.txt, Cargo.toml, …) are
+// future additions — each lands as another switch case here.
+//
+// Import-node → module-node edges (per the broader coverage spec)
+// are deferred to v2; the v1 file-level edge is already enough for
+// agents asking "what does this repo depend on".
+func (idx *Indexer) extractExternalModules() {
+	if !idx.config.Coverage.IsEnabled("modules") {
+		return
+	}
+	goModPath := filepath.Join(idx.rootPath, "go.mod")
+	src, err := os.ReadFile(goModPath)
+	if err != nil {
+		return
+	}
+	relPath := "go.mod"
+	specs := modules.ParseGoMod(src)
+	nodes, edges := modules.BuildGraphArtifacts(relPath, specs)
+	if len(nodes) == 0 && len(edges) == 0 {
+		return
+	}
+	// Synthetic file node for go.mod — it isn't represented through
+	// the language-extractor pipeline (no extractor is registered for
+	// the .mod extension), so the EdgeDependsOnModule edges would
+	// otherwise dangle from a missing source endpoint.
+	manifestNode := &graph.Node{
+		ID:       relPath,
+		Kind:     graph.KindFile,
+		Name:     filepath.Base(relPath),
+		FilePath: relPath,
+		Language: "go",
+	}
+	allNodes := append([]*graph.Node{manifestNode}, nodes...)
+	idx.applyRepoPrefix(allNodes, edges)
+	for _, n := range allNodes {
+		idx.graph.AddNode(n)
+	}
+	for _, e := range edges {
+		idx.graph.AddEdge(e)
 	}
 }
 
