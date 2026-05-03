@@ -266,6 +266,23 @@ func (e *RustExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 		})
 	}
 
+	// Cross-language interop sentinel: when any function in this
+	// file carries the `#[wasm_bindgen]` attribute, stamp the file
+	// node so audit / porting queries can filter by it. The check
+	// runs as a post-pass against the already-emitted annotation
+	// edges, avoiding the need to thread fileNode through every
+	// emit helper that calls emitRustAnnotationEdges.
+	const wasmAnnotationID = "annotation::rust::wasm_bindgen"
+	for _, e := range result.Edges {
+		if e.Kind == graph.EdgeAnnotated && e.To == wasmAnnotationID {
+			if fileNode.Meta == nil {
+				fileNode.Meta = map[string]any{}
+			}
+			fileNode.Meta["uses_wasm_bindgen"] = true
+			break
+		}
+	}
+
 	return result, nil
 }
 

@@ -110,7 +110,7 @@ func (s *Server) registerEnhancementTools() {
 	s.mcpServer.AddTool(
 		mcp.NewTool("analyze",
 			mcp.WithDescription("Unified graph analysis. kind=dead_code: symbols with zero incoming edges. kind=hotspots: high-complexity symbols by fan-in/out. kind=cycles: circular dependency chains. kind=would_create_cycle: check if a new edge would form a cycle (requires from_id, to_id). kind=todos: list KindTodo nodes with optional tag/assignee/ticket/has_assignee filters. kind=blame: run `git blame` against the indexed repo and stamp meta.last_authored on every symbol-level node. kind=coverage: parse a Go cover.out profile (path via `profile` arg) and stamp meta.coverage_pct on every executable symbol. kind=stale_code: list symbols whose meta.last_authored is older than the threshold (requires blame-enriched graph). kind=ownership: group blame metadata by author email — symbol count, files touched, oldest/newest timestamps; supports path_prefix scoping (requires blame-enriched graph). kind=coverage_gaps: list symbols whose meta.coverage_pct falls in [min_pct, max_pct) — sorted ascending so the most undertested code surfaces first (requires coverage-enriched graph)."),
-			mcp.WithString("kind", mcp.Required(), mcp.Description("Analysis kind: dead_code | hotspots | cycles | would_create_cycle | todos | blame | coverage | stale_code | ownership | coverage_gaps | stale_flags | releases | cgo_users")),
+			mcp.WithString("kind", mcp.Required(), mcp.Description("Analysis kind: dead_code | hotspots | cycles | would_create_cycle | todos | blame | coverage | stale_code | ownership | coverage_gaps | stale_flags | releases | cgo_users | wasm_users")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-result text output")),
 			mcp.WithString("format", mcp.Description("Output format: json (default) or gcx (GCX1 compact wire format, per-kind hand-tuned encoder)")),
 			mcp.WithBoolean("include_variables", mcp.Description("(dead_code) Include variable nodes (default false — usually false positives without data-flow analysis)")),
@@ -629,9 +629,11 @@ func (s *Server) handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*m
 	case "releases":
 		return s.handleAnalyzeReleases(ctx, req)
 	case "cgo_users":
-		return s.handleAnalyzeCgoUsers(ctx, req)
+		return s.handleAnalyzeInteropUsers(ctx, req, "uses_cgo", "cgo_users")
+	case "wasm_users":
+		return s.handleAnalyzeInteropUsers(ctx, req, "uses_wasm_bindgen", "wasm_users")
 	default:
-		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage, stale_code, ownership, coverage_gaps, stale_flags, releases, cgo_users)"), nil
+		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage, stale_code, ownership, coverage_gaps, stale_flags, releases, cgo_users, wasm_users)"), nil
 	}
 }
 
@@ -1329,27 +1331,34 @@ func stringFromMeta(meta map[string]any, key string) string {
 	return ""
 }
 
-// handleAnalyzeCgoUsers lists every file with meta.uses_cgo set —
-// i.e. files that `import "C"`. Useful for porting surveys ("how
-// much surface uses cgo?"), CI gate questions ("did this PR add
-// a new cgo dependency?"), and non-cgo build planning.
+// handleAnalyzeInteropUsers lists every file with the named
+// cross-language interop meta flag set. Currently used for two
+// sentinels: meta.uses_cgo (Go files that `import "C"`) and
+// meta.uses_wasm_bindgen (Rust files with `#[wasm_bindgen]`).
+// Each routes through the same handler with a different
+// metaKey + resultKey pair — adding future interop kinds
+// (jni, napi, ffi-style imports) is one switch case in the
+// dispatcher.
 //
-// Files are reported in path order so the result is diff-able
-// across runs.
-func (s *Server) handleAnalyzeCgoUsers(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	type cgoFile struct {
+// Useful for porting surveys ("how much surface uses cgo?"),
+// CI gate questions ("did this PR add a new wasm-bindgen
+// boundary?"), and non-interop build planning. Files are
+// reported in path order so the result is diff-able across
+// runs.
+func (s *Server) handleAnalyzeInteropUsers(_ context.Context, req mcp.CallToolRequest, metaKey, resultKey string) (*mcp.CallToolResult, error) {
+	type interopFile struct {
 		File string `json:"file"`
 		ID   string `json:"id"`
 	}
-	var rows []cgoFile
+	var rows []interopFile
 	for _, n := range s.graph.AllNodes() {
 		if n.Kind != graph.KindFile {
 			continue
 		}
-		if v, _ := n.Meta["uses_cgo"].(bool); !v {
+		if v, _ := n.Meta[metaKey].(bool); !v {
 			continue
 		}
-		rows = append(rows, cgoFile{
+		rows = append(rows, interopFile{
 			File: n.FilePath,
 			ID:   n.ID,
 		})
@@ -1365,13 +1374,13 @@ func (s *Server) handleAnalyzeCgoUsers(_ context.Context, req mcp.CallToolReques
 			b.WriteByte('\n')
 		}
 		if len(rows) == 0 {
-			b.WriteString("no cgo users\n")
+			fmt.Fprintf(&b, "no %s\n", resultKey)
 		}
 		return mcp.NewToolResultText(b.String()), nil
 	}
 	return mcp.NewToolResultJSON(map[string]any{
-		"cgo_users": rows,
-		"total":     len(rows),
+		resultKey: rows,
+		"total":   len(rows),
 	})
 }
 
