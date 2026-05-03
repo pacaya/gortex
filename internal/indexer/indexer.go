@@ -2518,6 +2518,11 @@ func (idx *Indexer) extractExternalModules() {
 			parse:          modules.ParseRequirementsTxt,
 			ownPathFromSrc: nil, // requirements.txt has no own-name notion
 		},
+		{
+			path:           "Cargo.toml",
+			parse:          modules.ParseCargoToml,
+			ownPathFromSrc: readCargoTomlOwnName,
+		},
 	}
 
 	for _, m := range manifests {
@@ -2584,12 +2589,28 @@ func manifestLanguage(relPath string) string {
 		return "go"
 	case "package.json":
 		return "json"
-	case "pyproject.toml":
+	case "pyproject.toml", "Cargo.toml":
 		return "toml"
 	case "requirements.txt":
 		return "text"
 	}
 	return ""
+}
+
+// readCargoTomlOwnName reads the crate's own name from
+// `[package] name`. Used for LinkImports's own-module filter so
+// workspace-internal crate references don't accidentally match
+// external crates with the same name.
+func readCargoTomlOwnName(src []byte) string {
+	var manifest struct {
+		Package struct {
+			Name string `toml:"name"`
+		} `toml:"package"`
+	}
+	if err := toml.Unmarshal(src, &manifest); err != nil {
+		return ""
+	}
+	return manifest.Package.Name
 }
 
 // readPyProjectOwnName returns the package's own name from the

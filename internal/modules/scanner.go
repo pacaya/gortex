@@ -388,6 +388,81 @@ func ParseRequirementsTxt(source []byte) []Spec {
 	return specs
 }
 
+// ParseCargoToml walks a Rust Cargo.toml manifest's dependency
+// tables and returns one Spec per declared crate. Three blocks
+// are recognised: [dependencies] for production deps,
+// [dev-dependencies] (and [dev_dependencies]) for test-only
+// deps, and [build-dependencies] for build-script deps. The
+// latter two stamp Replace = "dev" / "build" and Indirect = true,
+// matching the npm/pyproject convention.
+//
+// Each entry's value can be either a bare version string ("1.0",
+// "^1.0", "~1.0", "=1.0") or a table such as
+// `serde = { version = "1.0", features = [...] }`. Git/path/
+// registry-only deps without a version field are skipped — they
+// resolve to a workspace-internal source rather than a versioned
+// crates.io release, and the graph cares about external versioned
+// identity.
+func ParseCargoToml(source []byte) []Spec {
+	if len(source) == 0 {
+		return nil
+	}
+	var manifest struct {
+		Dependencies      map[string]any `toml:"dependencies"`
+		DevDependencies   map[string]any `toml:"dev-dependencies"`
+		DevDependenciesU  map[string]any `toml:"dev_dependencies"`
+		BuildDependencies map[string]any `toml:"build-dependencies"`
+	}
+	if err := toml.Unmarshal(source, &manifest); err != nil {
+		return nil
+	}
+	var specs []Spec
+	specs = append(specs, cargoBlock(manifest.Dependencies, "")...)
+	// Cargo's canonical key is `dev-dependencies`, but the
+	// underscore form is occasionally seen in older manifests.
+	// Both fold into a single Replace="dev" set.
+	specs = append(specs, cargoBlock(manifest.DevDependencies, "dev")...)
+	specs = append(specs, cargoBlock(manifest.DevDependenciesU, "dev")...)
+	specs = append(specs, cargoBlock(manifest.BuildDependencies, "build")...)
+	return specs
+}
+
+func cargoBlock(deps map[string]any, kind string) []Spec {
+	if len(deps) == 0 {
+		return nil
+	}
+	out := make([]Spec, 0, len(deps))
+	for name, raw := range deps {
+		var version string
+		switch v := raw.(type) {
+		case string:
+			version = v
+		case map[string]any:
+			if s, ok := v["version"].(string); ok {
+				version = s
+			}
+			// Git/path deps without a version field resolve to
+			// repo-local sources; skip them.
+			if version == "" {
+				continue
+			}
+		default:
+			continue
+		}
+		out = append(out, Spec{
+			Ecosystem: "cargo",
+			Path:      name,
+			Version:   version,
+			Indirect:  kind != "",
+			Replace:   kind,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
 // parseReplace extracts the from/to module paths from a replace
 // directive line. Returns ("", "") when the line doesn't have the
 // expected `from [version] => to [version]` shape. Replace

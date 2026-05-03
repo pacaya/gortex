@@ -337,6 +337,82 @@ func TestSplitPEP508(t *testing.T) {
 	}
 }
 
+func TestParseCargoToml_AllBlocks(t *testing.T) {
+	src := []byte(`[package]
+name = "myapp"
+version = "0.1.0"
+
+[dependencies]
+serde = "1.0"
+tokio = { version = "1.30", features = ["full"] }
+local-only = { path = "../local" }
+git-only = { git = "https://example.com/git/repo.git" }
+
+[dev-dependencies]
+assert_cmd = "2"
+
+[build-dependencies]
+cc = "1"
+`)
+	specs := ParseCargoToml(src)
+	got := map[string]Spec{}
+	for _, s := range specs {
+		got[s.Path] = s
+		if s.Ecosystem != "cargo" {
+			t.Errorf("ecosystem = %q for %q", s.Ecosystem, s.Path)
+		}
+	}
+
+	if len(specs) != 4 {
+		t.Errorf("expected 4 specs (serde + tokio + assert_cmd + cc; local/git skipped), got %d: %+v",
+			len(specs), specs)
+	}
+	if got["serde"].Version != "1.0" {
+		t.Errorf("serde version = %q", got["serde"].Version)
+	}
+	if got["tokio"].Version != "1.30" {
+		t.Errorf("tokio version (from table) = %q", got["tokio"].Version)
+	}
+	if _, ok := got["local-only"]; ok {
+		t.Errorf("path-only dep must not produce a Spec")
+	}
+	if _, ok := got["git-only"]; ok {
+		t.Errorf("git-only dep without version must not produce a Spec")
+	}
+	if !got["assert_cmd"].Indirect || got["assert_cmd"].Replace != "dev" {
+		t.Errorf("assert_cmd should be dev-indirect: %+v", got["assert_cmd"])
+	}
+	if got["cc"].Replace != "build" {
+		t.Errorf("cc.Replace = %q (want build)", got["cc"].Replace)
+	}
+}
+
+func TestParseCargoToml_UnderscoreDevDeps(t *testing.T) {
+	// Older Cargo manifests sometimes use the underscore form.
+	src := []byte(`[package]
+name = "p"
+
+[dev_dependencies]
+mockall = "0.11"
+`)
+	specs := ParseCargoToml(src)
+	if len(specs) != 1 {
+		t.Fatalf("expected 1 spec, got %d", len(specs))
+	}
+	if specs[0].Replace != "dev" {
+		t.Errorf("Replace = %q (underscore form should still be dev)", specs[0].Replace)
+	}
+}
+
+func TestParseCargoToml_Empty(t *testing.T) {
+	if got := ParseCargoToml(nil); got != nil {
+		t.Errorf("nil input should yield nil")
+	}
+	if got := ParseCargoToml([]byte("[package]\nname = \"x\"\n")); len(got) != 0 {
+		t.Errorf("manifest with no deps should yield empty specs")
+	}
+}
+
 func TestLinkImports_LongestPrefix(t *testing.T) {
 	g := graph.New()
 	// Two import nodes — one for an exact match, one for a sub-package.
