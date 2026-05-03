@@ -32,6 +32,11 @@ var (
 	enrichBlameSnapshot    string
 	enrichCoverageSnapshot string
 	enrichReleasesSnapshot string
+
+	enrichAllSnapshot string
+	enrichAllBlame    bool
+	enrichAllReleases bool
+	enrichAllProfile  string
 )
 
 var enrichBlameCmd = &cobra.Command{
@@ -55,6 +60,22 @@ var enrichReleasesCmd = &cobra.Command{
 	RunE:  runEnrichReleases,
 }
 
+var enrichAllCmd = &cobra.Command{
+	Use:   "all [path]",
+	Short: "Index once and run multiple enrichments in a single pass",
+	Long: `Combined enrichment that indexes the target path once, then runs
+the requested enrichments against the same in-memory graph. Avoids
+the ~3x indexing cost of running blame, coverage, and releases as
+three separate subcommand invocations.
+
+By default runs blame and releases (both git-only, no extra data
+needed). Pass --coverage <profile> to also run coverage enrichment.
+Each enrichment is independently optional via --no-blame /
+--no-releases flags should you want a subset.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runEnrichAll,
+}
+
 func init() {
 	enrichBlameCmd.Flags().StringVar(&enrichBlameSnapshot, "snapshot", "",
 		"write the enriched graph as a gob.gz snapshot to this path")
@@ -62,10 +83,80 @@ func init() {
 		"write the enriched graph as a gob.gz snapshot to this path")
 	enrichReleasesCmd.Flags().StringVar(&enrichReleasesSnapshot, "snapshot", "",
 		"write the enriched graph as a gob.gz snapshot to this path")
+	enrichAllCmd.Flags().StringVar(&enrichAllSnapshot, "snapshot", "",
+		"write the enriched graph as a gob.gz snapshot to this path")
+	enrichAllCmd.Flags().BoolVar(&enrichAllBlame, "blame", true,
+		"run blame enrichment (default: on)")
+	enrichAllCmd.Flags().BoolVar(&enrichAllReleases, "releases", true,
+		"run releases enrichment (default: on)")
+	enrichAllCmd.Flags().StringVar(&enrichAllProfile, "coverage", "",
+		"path to a Go cover.out profile — coverage enrichment is skipped when empty")
 	enrichCmd.AddCommand(enrichBlameCmd)
 	enrichCmd.AddCommand(enrichCoverageCmd)
 	enrichCmd.AddCommand(enrichReleasesCmd)
+	enrichCmd.AddCommand(enrichAllCmd)
 	rootCmd.AddCommand(enrichCmd)
+}
+
+func runEnrichAll(_ *cobra.Command, args []string) error {
+	logger := newLogger()
+	defer func() { _ = logger.Sync() }()
+
+	path := "."
+	if len(args) >= 1 {
+		path = args[0]
+	}
+
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return err
+	}
+
+	g := graph.New()
+	reg := parser.NewRegistry()
+	languages.RegisterAll(reg)
+	idx := indexer.New(g, reg, cfg.Index, logger)
+
+	if _, err := idx.IndexCtx(context.Background(), path); err != nil {
+		return fmt.Errorf("index %s: %w", path, err)
+	}
+
+	result := map[string]any{
+		"root": idx.RootPath(),
+	}
+
+	if enrichAllBlame {
+		count, err := blame.EnrichGraph(g, idx.RootPath())
+		if err != nil {
+			return fmt.Errorf("blame: %w", err)
+		}
+		result["blame_enriched"] = count
+	}
+	if enrichAllReleases {
+		count, err := releases.EnrichGraph(g, idx.RootPath())
+		if err != nil {
+			return fmt.Errorf("releases: %w", err)
+		}
+		result["releases_enriched"] = count
+	}
+	if enrichAllProfile != "" {
+		segments, err := coverage.ParseFile(enrichAllProfile)
+		if err != nil {
+			return fmt.Errorf("read profile: %w", err)
+		}
+		modulePath := coverage.ReadModulePath(idx.RootPath())
+		count := coverage.EnrichGraph(g, segments, modulePath)
+		result["coverage_enriched"] = count
+		result["coverage_segments"] = len(segments)
+	}
+
+	if enrichAllSnapshot != "" {
+		if err := saveSnapshotTo(g, nil, nil, "gortex-enrich-all", enrichAllSnapshot, logger); err != nil {
+			return fmt.Errorf("write snapshot %s: %w", enrichAllSnapshot, err)
+		}
+		result["snapshot"] = enrichAllSnapshot
+	}
+	return printEnrichResult(result)
 }
 
 func runEnrichReleases(_ *cobra.Command, args []string) error {
