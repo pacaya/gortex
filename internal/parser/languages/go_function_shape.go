@@ -104,6 +104,16 @@ func emitGoChannelOps(ownerID string, body *sitter.Node, src []byte, filePath st
 					})
 				}
 			}
+			// `for v := range ch` is the third receive shape in
+			// Go but distinguishing channel-range from map-range
+			// or slice-range needs type info we don't propagate
+			// here. Emitting a recv edge for every range target
+			// would over-fire on every map/slice iteration; the
+			// alternative — name-pattern heuristics — has worse
+			// precision than just leaving the gap. Tracked as a
+			// v1 limitation; a future pass that threads
+			// paramsByFunc into the channel walker can filter
+			// range RHSes by chan-typed variables only.
 		}
 		return true
 	})
