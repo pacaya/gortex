@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2523,6 +2524,11 @@ func (idx *Indexer) extractExternalModules() {
 			parse:          modules.ParseCargoToml,
 			ownPathFromSrc: readCargoTomlOwnName,
 		},
+		{
+			path:           "pom.xml",
+			parse:          modules.ParsePomXML,
+			ownPathFromSrc: readPomXMLOwnName,
+		},
 	}
 
 	for _, m := range manifests {
@@ -2593,8 +2599,31 @@ func manifestLanguage(relPath string) string {
 		return "toml"
 	case "requirements.txt":
 		return "text"
+	case "pom.xml":
+		return "xml"
 	}
 	return ""
+}
+
+// readPomXMLOwnName builds the project's own Maven coordinate
+// (groupId:artifactId) so LinkImports can filter self-references.
+// Java workspace setups where a sibling module imports the parent
+// project shouldn't accidentally resolve to an external dep with
+// the same coordinate. Returns "" when either field is missing —
+// the LinkImports filter treats "" as no own-module filter, which
+// is safe.
+func readPomXMLOwnName(src []byte) string {
+	var manifest struct {
+		GroupID    string `xml:"groupId"`
+		ArtifactID string `xml:"artifactId"`
+	}
+	if err := xml.Unmarshal(src, &manifest); err != nil {
+		return ""
+	}
+	if manifest.GroupID == "" || manifest.ArtifactID == "" {
+		return ""
+	}
+	return manifest.GroupID + ":" + manifest.ArtifactID
 }
 
 // readCargoTomlOwnName reads the crate's own name from

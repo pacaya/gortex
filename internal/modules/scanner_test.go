@@ -413,6 +413,112 @@ func TestParseCargoToml_Empty(t *testing.T) {
 	}
 }
 
+func TestParsePomXML_AllScopes(t *testing.T) {
+	src := []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>myapp</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+      <version>5.3.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.15.0</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <version>4.13.2</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>javax.servlet</groupId>
+      <artifactId>servlet-api</artifactId>
+      <version>2.5</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+</project>`)
+	specs := ParsePomXML(src)
+	if len(specs) != 4 {
+		t.Fatalf("expected 4 specs, got %d: %+v", len(specs), specs)
+	}
+
+	got := map[string]Spec{}
+	for _, s := range specs {
+		got[s.Path] = s
+		if s.Ecosystem != "maven" {
+			t.Errorf("ecosystem = %q for %q", s.Ecosystem, s.Path)
+		}
+	}
+	if got["org.springframework:spring-core"].Version != "5.3.0" {
+		t.Errorf("spring-core version = %q", got["org.springframework:spring-core"].Version)
+	}
+	// No-scope and explicit `compile` both treated as production.
+	if got["org.springframework:spring-core"].Indirect {
+		t.Errorf("missing scope should be production (Indirect=false)")
+	}
+	if got["com.fasterxml.jackson.core:jackson-databind"].Indirect {
+		t.Errorf("explicit compile should be production")
+	}
+	if got["junit:junit"].Replace != "test" || !got["junit:junit"].Indirect {
+		t.Errorf("junit/test scope wrong: %+v", got["junit:junit"])
+	}
+	if got["javax.servlet:servlet-api"].Replace != "provided" {
+		t.Errorf("servlet-api Replace = %q", got["javax.servlet:servlet-api"].Replace)
+	}
+}
+
+func TestParsePomXML_SkipsIncompleteCoordinate(t *testing.T) {
+	src := []byte(`<?xml version="1.0"?>
+<project>
+  <dependencies>
+    <dependency>
+      <artifactId>missing-group</artifactId>
+      <version>1.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <version>2.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>real</artifactId>
+      <version>3.0</version>
+    </dependency>
+  </dependencies>
+</project>`)
+	specs := ParsePomXML(src)
+	if len(specs) != 1 {
+		t.Errorf("expected 1 spec (the only complete coordinate), got %d", len(specs))
+	}
+}
+
+func TestParsePomXML_PropertyVersionVerbatim(t *testing.T) {
+	// Property substitution is left verbatim; resolving it from
+	// <properties> is a future enhancement noted inline.
+	src := []byte(`<?xml version="1.0"?>
+<project>
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+      <version>${spring.version}</version>
+    </dependency>
+  </dependencies>
+</project>`)
+	specs := ParsePomXML(src)
+	if len(specs) != 1 || specs[0].Version != "${spring.version}" {
+		t.Errorf("property reference should be kept verbatim, got %+v", specs)
+	}
+}
+
 func TestLinkImports_LongestPrefix(t *testing.T) {
 	g := graph.New()
 	// Two import nodes — one for an exact match, one for a sub-package.

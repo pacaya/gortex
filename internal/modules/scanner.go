@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -461,6 +462,68 @@ func cargoBlock(deps map[string]any, kind string) []Spec {
 		return out[i].Path < out[j].Path
 	})
 	return out
+}
+
+// ParsePomXML walks a Maven pom.xml manifest and returns one Spec
+// per <dependency> entry. Maven coordinates take the form
+// `<groupId>:<artifactId>` for the dependency name with the
+// version a separate child element. The scope attribute
+// (compile/test/provided/runtime/system/import) maps to Spec
+// fields the same way npm dev/peer/optional do — `compile` is
+// the implicit production scope and lands without a Replace
+// tag; everything else stamps Replace = "<scope>" and
+// Indirect = true so cleanup queries can scope to production-only
+// deps.
+//
+// Maven property substitution (`${project.version}`,
+// `${spring.version}` etc.) is left verbatim in the version
+// string. A future enhancement could resolve properties from
+// <properties> and parent inheritance; the v1 keeps it simple
+// since the canonical source-of-truth for resolved versions is
+// the lockfile or `mvn dependency:tree` output rather than
+// pom.xml itself.
+func ParsePomXML(source []byte) []Spec {
+	if len(source) == 0 {
+		return nil
+	}
+	var manifest struct {
+		Dependencies struct {
+			Dependency []struct {
+				GroupID    string `xml:"groupId"`
+				ArtifactID string `xml:"artifactId"`
+				Version    string `xml:"version"`
+				Scope      string `xml:"scope"`
+			} `xml:"dependency"`
+		} `xml:"dependencies"`
+	}
+	if err := xml.Unmarshal(source, &manifest); err != nil {
+		return nil
+	}
+	specs := make([]Spec, 0, len(manifest.Dependencies.Dependency))
+	for _, d := range manifest.Dependencies.Dependency {
+		if d.GroupID == "" || d.ArtifactID == "" {
+			continue
+		}
+		scope := strings.TrimSpace(d.Scope)
+		isProduction := scope == "" || scope == "compile"
+		spec := Spec{
+			Ecosystem: "maven",
+			Path:      d.GroupID + ":" + d.ArtifactID,
+			Version:   strings.TrimSpace(d.Version),
+		}
+		if !isProduction {
+			spec.Indirect = true
+			spec.Replace = scope
+		}
+		specs = append(specs, spec)
+	}
+	// Stable order — XML parsing preserves source order, but the
+	// downstream dedup + edge emission prefers alphabetical for
+	// diff-able output across runs.
+	sort.Slice(specs, func(i, j int) bool {
+		return specs[i].Path < specs[j].Path
+	})
+	return specs
 }
 
 // parseReplace extracts the from/to module paths from a replace
