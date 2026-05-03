@@ -14,6 +14,7 @@ import (
 	"github.com/zzet/gortex/internal/analysis"
 	"github.com/zzet/gortex/internal/audit"
 	"github.com/zzet/gortex/internal/blame"
+	"github.com/zzet/gortex/internal/coverage"
 	"github.com/zzet/gortex/internal/contracts"
 	"github.com/zzet/gortex/internal/excludes"
 	"github.com/zzet/gortex/internal/graph"
@@ -106,8 +107,8 @@ func (s *Server) registerEnhancementTools() {
 	// analyze — unified graph analysis tool (dead_code, hotspots, cycles, would_create_cycle)
 	s.mcpServer.AddTool(
 		mcp.NewTool("analyze",
-			mcp.WithDescription("Unified graph analysis. kind=dead_code: symbols with zero incoming edges. kind=hotspots: high-complexity symbols by fan-in/out. kind=cycles: circular dependency chains. kind=would_create_cycle: check if a new edge would form a cycle (requires from_id, to_id). kind=todos: list KindTodo nodes with optional tag/assignee/ticket/has_assignee filters. kind=blame: run `git blame` against the indexed repo and stamp meta.last_authored on every symbol-level node — blocking, intended as an explicit one-shot enrichment."),
-			mcp.WithString("kind", mcp.Required(), mcp.Description("Analysis kind: dead_code | hotspots | cycles | would_create_cycle | todos | blame")),
+			mcp.WithDescription("Unified graph analysis. kind=dead_code: symbols with zero incoming edges. kind=hotspots: high-complexity symbols by fan-in/out. kind=cycles: circular dependency chains. kind=would_create_cycle: check if a new edge would form a cycle (requires from_id, to_id). kind=todos: list KindTodo nodes with optional tag/assignee/ticket/has_assignee filters. kind=blame: run `git blame` against the indexed repo and stamp meta.last_authored on every symbol-level node. kind=coverage: parse a Go cover.out profile (path via `profile` arg) and stamp meta.coverage_pct on every executable symbol."),
+			mcp.WithString("kind", mcp.Required(), mcp.Description("Analysis kind: dead_code | hotspots | cycles | would_create_cycle | todos | blame | coverage")),
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-result text output")),
 			mcp.WithString("format", mcp.Description("Output format: json (default) or gcx (GCX1 compact wire format, per-kind hand-tuned encoder)")),
 			mcp.WithBoolean("include_variables", mcp.Description("(dead_code) Include variable nodes (default false — usually false positives without data-flow analysis)")),
@@ -115,6 +116,7 @@ func (s *Server) registerEnhancementTools() {
 			mcp.WithString("scope", mcp.Description("(cycles) File path or package prefix to limit scope")),
 			mcp.WithString("from_id", mcp.Description("(would_create_cycle) Source symbol ID")),
 			mcp.WithString("to_id", mcp.Description("(would_create_cycle) Target symbol ID")),
+			mcp.WithString("profile", mcp.Description("(coverage) Path to a Go cover.out profile, absolute or relative to the indexed repo root")),
 			mcp.WithString("tag", mcp.Description("(todos) Filter by tag — TODO / FIXME / HACK / XXX / NOTE — case-insensitive")),
 			mcp.WithString("assignee", mcp.Description("(todos) Filter by exact assignee — case-sensitive")),
 			mcp.WithString("ticket", mcp.Description("(todos) Filter by exact ticket reference — e.g. PROJ-42")),
@@ -604,8 +606,10 @@ func (s *Server) handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*m
 		return s.handleAnalyzeTodos(ctx, req)
 	case "blame":
 		return s.handleAnalyzeBlame(ctx, req)
+	case "coverage":
+		return s.handleAnalyzeCoverage(ctx, req)
 	default:
-		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: dead_code, hotspots, cycles, would_create_cycle, todos, blame)"), nil
+		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage)"), nil
 	}
 }
 
@@ -717,6 +721,40 @@ func stringArg(args map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// handleAnalyzeCoverage parses a Go cover profile and stamps
+// meta.coverage_pct + meta.coverage on every executable symbol it
+// can map to a profile segment by line range. Requires a `profile`
+// argument with the path to the cover.out file (relative paths
+// resolve against the indexed repo root).
+//
+// Re-runnable: each call re-reads the profile and overwrites
+// existing meta — the desired behaviour after a fresh test run.
+func (s *Server) handleAnalyzeCoverage(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	profileArg := stringArg(req.GetArguments(), "profile")
+	if profileArg == "" {
+		return mcp.NewToolResultError("coverage enrichment requires a `profile` argument with the cover.out path"), nil
+	}
+	if s.indexer == nil {
+		return mcp.NewToolResultError("coverage enrichment requires an active indexer"), nil
+	}
+	root := s.indexer.RootPath()
+	if !filepath.IsAbs(profileArg) {
+		profileArg = filepath.Join(root, profileArg)
+	}
+	segments, err := coverage.ParseFile(profileArg)
+	if err != nil {
+		return mcp.NewToolResultError("read profile: " + err.Error()), nil
+	}
+	modulePath := coverage.ReadModulePath(root)
+	count := coverage.EnrichGraph(s.graph, segments, modulePath)
+	return mcp.NewToolResultJSON(map[string]any{
+		"enriched":     count,
+		"segments":     len(segments),
+		"profile":      profileArg,
+		"module_path":  modulePath,
+	})
 }
 
 // handleAnalyzeBlame runs `git blame -p` against the indexed
