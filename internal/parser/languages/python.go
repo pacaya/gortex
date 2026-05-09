@@ -437,6 +437,9 @@ func (e *PythonExtractor) emitClass(m parser.QueryResult, filePath, fileID strin
 	// PEP-695 generic class declarations (`class Foo[T]:`) carry a
 	// `type_parameters` child same as functions; reuse the helper.
 	emitPyGenericParamNodes(id, def.Node, src, filePath, def.StartLine+1, result)
+	// ORM model attribution: emit EdgeModelsTable when the class
+	// inherits from a known ORM base (SQLAlchemy / Django).
+	detectPythonORMModel(def.Node, src, id, name, filePath, result)
 }
 
 // pyDecoratorNodes returns the `decorator` AST nodes attached to a

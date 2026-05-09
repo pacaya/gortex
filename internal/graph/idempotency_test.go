@@ -305,3 +305,73 @@ func TestReindexEdge_UpdatesSidecar(t *testing.T) {
 	g.AddEdge(e)
 	assert.Equal(t, 1, g.EdgeCount(), "AddEdge after ReindexEdge must still dedup")
 }
+
+// TestRemoveEdgeFromBucket_SwappedEdgeWithMutatedTo regresses a daemon
+// crash:
+//
+//	panic: runtime error: index out of range [N] with length N
+//	  graph.addEdgeToBucket
+//	  graph.(*Graph).ReindexEdge
+//	  resolver.(*Resolver).ResolveAll
+//
+// The resolver's serial pass mutates `j.edge.To = j.newTo` BEFORE
+// taking the shard lock. If the swap-with-last in
+// removeEdgeFromBucket lands on an edge whose .To was mutated in the
+// same flight (e.g. another job in the same bucket), recomputing
+// keyOf(swapped) returns the NEW key while the sidecar still has an
+// entry under the ORIGINAL key pointing past the shrunk slice. The
+// next AddEdge that collides with the orphaned key panics.
+//
+// The fix stores each entry's insertion-time edgeKey in a parallel
+// slice (outEdgeKeys / inEdgeKeys) so the sidecar update is
+// independent of the live Edge struct.
+func TestRemoveEdgeFromBucket_SwappedEdgeWithMutatedTo(t *testing.T) {
+	g := New()
+	g.AddNode(&Node{ID: "a::A", Name: "A", Kind: KindFunction, FilePath: "a"})
+	g.AddNode(&Node{ID: "b::B", Name: "B", Kind: KindFunction, FilePath: "b"})
+	g.AddNode(&Node{ID: "x::X", Name: "X", Kind: KindFunction, FilePath: "x"})
+	g.AddNode(&Node{ID: "y::Y", Name: "Y", Kind: KindFunction, FilePath: "y"})
+
+	// Two edges share an unresolved bucket. We'll mutate eSwapped's To
+	// out-of-band (mimicking the resolver's pre-lock mutation) before
+	// removing eHead, forcing eSwapped to be the swap-with-last
+	// element. With the bug, the sidecar update used keyOf(eSwapped)
+	// — a different key than the one eSwapped was indexed under —
+	// leaving a stale entry that pointed past the shrunk slice.
+	const target = "unresolved::shared"
+	eHead := &Edge{From: "a::A", To: target, Kind: EdgeCalls, FilePath: "a", Line: 1}
+	eSwapped := &Edge{From: "b::B", To: target, Kind: EdgeCalls, FilePath: "b", Line: 2}
+	g.AddEdge(eHead)
+	g.AddEdge(eSwapped)
+	require.Len(t, g.GetInEdges(target), 2)
+
+	// Out-of-band mutation: eSwapped.To changes BUT we don't yet
+	// ReindexEdge. This models the in-flight window in
+	// resolver.go's serial pass.
+	eSwapped.To = "x::X"
+
+	// Now remove eHead via ReindexEdge — this triggers the swap that
+	// previously corrupted the sidecar.
+	oldHead := target
+	eHead.To = "y::Y"
+	g.ReindexEdge(eHead, oldHead)
+
+	// With the bug, inEdgeIdx[target] still held an orphan entry under
+	// eSwapped's ORIGINAL key (To=target) at position 1 — past the
+	// now-shrunk slice (length 1, valid index only 0). Any subsequent
+	// AddEdge whose key collides with that stale entry would do
+	// `bucket[target][1] = newEdge` and panic with
+	// "index out of range [1] with length 1".
+	//
+	// Construct exactly that collision: a fresh edge sharing
+	// eSwapped's original (From, To, Kind, FilePath, Line) tuple,
+	// which is what the resolver does when it pre-stages a duplicate
+	// pending edge from another file at the same line.
+	collision := &Edge{From: "b::B", To: target, Kind: EdgeCalls, FilePath: "b", Line: 2}
+	require.NotPanics(t, func() {
+		g.AddEdge(collision)
+	}, "addEdgeToBucket must not panic on a stale sidecar position")
+
+	// eHead has been migrated to its new target.
+	assert.Len(t, g.GetInEdges("y::Y"), 1, "eHead's new target should hold one edge")
+}

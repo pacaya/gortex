@@ -107,6 +107,7 @@ The ` + "`analyze`" + ` MCP tool is a unified dispatcher. Pass ` + "`kind: \"<na
 - Schema: ` + "`orphan_tables`" + `, ` + "`unreferenced_tables`" + `
 - Flags / interop: ` + "`stale_flags`" + `, ` + "`cgo_users`" + `, ` + "`wasm_users`" + `
 - Edge-driven: ` + "`channel_ops`" + `, ` + "`goroutine_spawns`" + `, ` + "`field_writers`" + `, ` + "`annotation_users`" + `, ` + "`config_readers`" + `, ` + "`event_emitters`" + `, ` + "`error_surface`" + `, ` + "`external_calls`" + `
+- Framework layer: ` + "`routes`" + ` (handler ↔ HTTP/gRPC/WS/GraphQL/topic), ` + "`models`" + ` (ORM class ↔ DB table), ` + "`components`" + ` (parent → child JSX)
 
 The ` + "`gortex enrich blame|coverage|releases|all`" + ` CLI hydrates the graph with the metadata that the ` + "`stale_*`" + `, ` + "`coverage*`" + `, ` + "`ownership`" + `, and ` + "`releases`" + ` analyzers need.
 
@@ -185,6 +186,9 @@ The ` + "`analyze`" + ` MCP tool is a unified dispatcher. Supported ` + "`kind`"
 | Tracing event/log emitters            | ` + "`analyze`" + ` with ` + "`kind: \"event_emitters\"`" + ` — events grouped by EdgeEmits, ` + "`level`" + ` filter optional |
 | Mapping the error surface             | ` + "`analyze`" + ` with ` + "`kind: \"error_surface\"`" + ` — function/method nodes with their EdgeThrows targets |
 | Surveying stdlib / module-cache reach | ` + "`analyze`" + ` with ` + "`kind: \"external_calls\"`" + ` — KindModule nodes grouped by call/symbol counts; pass ` + "`id`" + ` for per-symbol detail, ` + "`module_kind`" + ` for stdlib/module_cache filter |
+| Listing every HTTP/gRPC/WS route      | ` + "`analyze`" + ` with ` + "`kind: \"routes\"`" + ` — handler→route pairs from the EdgeHandlesRoute graph layer; ` + "`method`" + `, ` + "`path`" + `, ` + "`type`" + ` filters (` + "`type`" + ` ∈ http/grpc/ws/graphql/topic) |
+| Mapping ORM models to tables          | ` + "`analyze`" + ` with ` + "`kind: \"models\"`" + ` — class→table edges from EdgeModelsTable across gorm / SQLAlchemy / Django / ActiveRecord / JPA / TypeORM; ` + "`orm`" + `, ` + "`table`" + `, ` + "`model`" + ` filters |
+| Walking the JSX component tree        | ` + "`analyze`" + ` with ` + "`kind: \"components\"`" + ` — parent↔child fan-in/out from EdgeRendersChild; pass ` + "`id`" + ` for per-component child list |
 | Checking if the index is stale        | ` + "`index_health`" + ` — health score, parse failures, stale files |
 | Wondering what changed this session   | ` + "`get_symbol_history`" + ` — modification counts, flags churning (3+ edits) |
 | Hydrating blame / coverage / releases | ` + "`gortex enrich blame|coverage|releases|all`" + ` (CLI) — bulk-stamps the graph for the ` + "`stale_*`" + `, ` + "`coverage_*`" + `, ` + "`ownership`" + `, and ` + "`releases`" + ` analyzers |

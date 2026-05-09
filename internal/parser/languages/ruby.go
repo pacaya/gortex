@@ -184,6 +184,9 @@ func (e *RubyExtractor) emitClass(m parser.QueryResult, filePath, fileID string,
 	result.Edges = append(result.Edges, &graph.Edge{
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: def.StartLine + 1,
 	})
+	// ActiveRecord model attribution: emit EdgeModelsTable when the
+	// class inherits from ApplicationRecord / ActiveRecord::Base.
+	detectRubyORMModel(def.Node, src, id, name, filePath, result)
 }
 
 func (e *RubyExtractor) emitModule(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, seen map[string]bool) {

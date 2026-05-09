@@ -686,6 +686,14 @@ func (e *GoExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRe
 		result.Edges = append(result.Edges, edge)
 	}
 
+	// ORM TableName() override resolution. detectGoORMModel uses gorm's
+	// snake_case+plural naming convention, but gorm honours an explicit
+	// `func (T) TableName() string { return "..." }` override. The
+	// override method emits as a separate KindMethod node, so this
+	// post-pass runs after every node in the file has been emitted and
+	// rewires any convention-derived EdgeModelsTable to the literal.
+	rewireORMTableNameOverrides(root, src, result)
+
 	return result, nil
 }
 
@@ -1002,6 +1010,11 @@ func (e *GoExtractor) emitTypeDecl(m parser.QueryResult, filePath, fileID string
 	})
 	if isStruct {
 		emitGoStructFields(body.Node, src, id, name, filePath, fileID, result)
+		// ORM model attribution: emit EdgeModelsTable when the struct
+		// carries gorm tags or embeds gorm.Model. Runs after field
+		// emission so the field metadata is in place for downstream
+		// analyzers that walk both edges together.
+		detectGoORMModel(body.Node, src, id, name, filePath, result)
 	}
 	if isInterface {
 		for _, embed := range extractEmbeddedInterfaceTypes(body.Node, src) {

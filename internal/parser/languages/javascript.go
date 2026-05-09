@@ -116,10 +116,10 @@ func (e *JavaScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 		switch {
 
 		case m.Captures["func.def"] != nil:
-			e.emitFunction(m, filePath, fileID, result)
+			e.emitFunction(m, filePath, fileID, src, result)
 
 		case m.Captures["arrow.def"] != nil:
-			e.emitArrow(m, filePath, fileID, result, arrowNames)
+			e.emitArrow(m, filePath, fileID, src, result, arrowNames)
 
 		case m.Captures["class.def"] != nil:
 			e.emitClass(m, filePath, fileID, result)
@@ -217,7 +217,7 @@ func (e *JavaScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 
 // --- Per-match emit helpers -----------------------------------------
 
-func (e *JavaScriptExtractor) emitFunction(m parser.QueryResult, filePath, fileID string, result *parser.ExtractionResult) {
+func (e *JavaScriptExtractor) emitFunction(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult) {
 	name := m.Captures["func.name"].Text
 	def := m.Captures["func.def"]
 	id := filePath + "::" + name
@@ -229,9 +229,12 @@ func (e *JavaScriptExtractor) emitFunction(m parser.QueryResult, filePath, fileI
 	result.Edges = append(result.Edges, &graph.Edge{
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: def.StartLine + 1,
 	})
+	if body := tsFunctionBody(def.Node); body != nil {
+		emitJSXRenderEdges(id, body, src, filePath, result)
+	}
 }
 
-func (e *JavaScriptExtractor) emitArrow(m parser.QueryResult, filePath, fileID string, result *parser.ExtractionResult, arrowNames map[string]bool) {
+func (e *JavaScriptExtractor) emitArrow(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, arrowNames map[string]bool) {
 	name := m.Captures["arrow.name"].Text
 	def := m.Captures["arrow.def"]
 	arrowNames[name] = true
@@ -244,6 +247,38 @@ func (e *JavaScriptExtractor) emitArrow(m parser.QueryResult, filePath, fileID s
 	result.Edges = append(result.Edges, &graph.Edge{
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: def.StartLine + 1,
 	})
+	// Walk the lexical_declaration down to the arrow_function body. The
+	// query captures `arrow.def` at the lexical-declaration level
+	// (because that's where the binding-name + arrow association lives)
+	// so the body isn't directly captured. JSX child rendering edges
+	// come from inside the arrow's body or expression.
+	if arrow := jsArrowFunctionFromDef(def.Node); arrow != nil {
+		body := arrow.ChildByFieldName("body")
+		if body == nil {
+			body = arrow
+		}
+		emitJSXRenderEdges(id, body, src, filePath, result)
+	}
+}
+
+// jsArrowFunctionFromDef descends a lexical_declaration captured at
+// arrow.def and returns the arrow_function node it wraps. Returns nil
+// when the structure differs (e.g. the value isn't actually an arrow).
+func jsArrowFunctionFromDef(def *sitter.Node) *sitter.Node {
+	if def == nil {
+		return nil
+	}
+	for i := 0; i < int(def.NamedChildCount()); i++ {
+		c := def.NamedChild(i)
+		if c == nil || c.Type() != "variable_declarator" {
+			continue
+		}
+		v := c.ChildByFieldName("value")
+		if v != nil && v.Type() == "arrow_function" {
+			return v
+		}
+	}
+	return nil
 }
 
 func (e *JavaScriptExtractor) emitClass(m parser.QueryResult, filePath, fileID string, result *parser.ExtractionResult) {

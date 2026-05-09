@@ -203,7 +203,46 @@ const (
 	// symbol. Both endpoints are inside the same enclosing
 	// function so the edge is fully resolved at extraction time.
 	// Origin: ast_resolved by construction.
-	EdgeValueFlow EdgeKind = "value_flow"
+	// EdgeHandlesRoute links a handler function/method to the
+	// KindContract node that represents its route. Emitted alongside
+	// EdgeProvides whenever the contract type is HTTP/gRPC/WS/GraphQL/
+	// topic — the framework layer that an agent asks "which symbol
+	// serves /v1/users/:id?" about. The narrower edge kind lets
+	// `analyze kind=routes` walk it without pulling in the broader
+	// EdgeProvides graph (which also covers env keys, OpenAPI specs,
+	// migrations, DI tokens, …). Origin tier mirrors the underlying
+	// extractor; defaults to ast_resolved (structural by construction).
+	EdgeHandlesRoute EdgeKind = "handles_route"
+	// EdgeModelsTable links an ORM model type/class to the KindTable
+	// node it persists. Per language:
+	//
+	//   go      struct with `gorm:"..."` tags or a `TableName() string`
+	//           method on the receiver type
+	//   python  SQLAlchemy / Django class with __tablename__ /
+	//           class Meta: db_table
+	//   ruby    class X < ApplicationRecord (or ActiveRecord::Base),
+	//           with optional self.table_name = "..."
+	//   java    @Entity class, optional @Table(name="...")
+	//   typescript  TypeORM @Entity({ name: "..." }) class
+	//
+	// Lets agents ask "which table does this class write?" and "which
+	// model owns the users table?" with a single graph hop instead of
+	// joining through migrations and raw SQL.
+	EdgeModelsTable EdgeKind = "models_table"
+	// EdgeRendersChild links a parent component (function / method /
+	// class) to a child component it renders inside its JSX/TSX/Vue/
+	// Svelte template body. Captures the component dependency tree so
+	// agents can ask "what renders <DataTable />?" or "what does
+	// <CheckoutPage /> reach into?" without grepping for the
+	// component name.
+	//
+	// Detection is heuristic: capital-first-letter element names
+	// inside JSX expressions are treated as component references and
+	// resolved through normal name resolution. Lowercase names map to
+	// HTML/SVG primitives and are skipped — the edge graph would be
+	// noise otherwise.
+	EdgeRendersChild EdgeKind = "renders_child"
+	EdgeValueFlow    EdgeKind = "value_flow"
 	// EdgeArgOf links an argument expression at a call site to the
 	// callee's parameter — the inter-procedural binding produced
 	// by passing a value across a function boundary. Direction:
@@ -319,6 +358,11 @@ func DefaultOriginFor(kind EdgeKind, confidence float64, semanticSource string) 
 		EdgeParamOf, EdgeAliases, EdgeComposes, EdgeOverrides, EdgeLicensedAs,
 		EdgeOwns, EdgeAuthored, EdgeGeneratedBy, EdgeDependsOnModule,
 		EdgeCaptures,
+		// Framework-layer edges. Each is materialised by an extractor
+		// that already proved the relationship (handler → route via
+		// the contracts pipeline, model → table via the ORM detector,
+		// parent → child via JSX walking) so they ride at ast_resolved.
+		EdgeHandlesRoute, EdgeModelsTable, EdgeRendersChild,
 		// Dataflow edges. EdgeValueFlow is intra-procedural and
 		// fully resolved at extraction. EdgeArgOf / EdgeReturnsTo
 		// inherit ast_resolved once the post-resolution pass has
@@ -350,6 +394,11 @@ func ConfidenceLabelFor(kind EdgeKind, confidence float64) string {
 		EdgeParamOf, EdgeAliases, EdgeComposes, EdgeOverrides, EdgeLicensedAs,
 		EdgeOwns, EdgeAuthored, EdgeGeneratedBy, EdgeDependsOnModule,
 		EdgeCaptures,
+		// Framework-layer edges. Each is materialised by an extractor
+		// that already proved the relationship (handler → route via
+		// the contracts pipeline, model → table via the ORM detector,
+		// parent → child via JSX walking) so they ride at ast_resolved.
+		EdgeHandlesRoute, EdgeModelsTable, EdgeRendersChild,
 		EdgeValueFlow, EdgeArgOf, EdgeReturnsTo:
 		return "EXTRACTED"
 	}

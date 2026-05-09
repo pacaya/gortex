@@ -296,6 +296,8 @@ func (e *JavaExtractor) emitClass(m parser.QueryResult, filePath, fileID string,
 	})
 	emitJavaAnnotationEdges(javaCollectAnnotations(def.Node, src), id, filePath, result, annotationSeen)
 	emitJavaGenericParamNodes(id, def.Node, src, filePath, def.StartLine+1, result)
+	// JPA model attribution: @Entity / @Table → EdgeModelsTable.
+	emitJavaORMEdges(def.Node, src, id, name, filePath, result)
 }
 
 // javaVisibility scans the `modifiers` child of a Java declaration for

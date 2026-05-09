@@ -91,22 +91,39 @@ type shard struct {
 	byRepoIdx  map[string]map[string]int  // repoPrefix → id  → position
 	outEdgeIdx map[string]map[edgeKey]int // fromID     → key → position
 	inEdgeIdx  map[string]map[edgeKey]int // toID       → key → position
+
+	// Reverse-index slices that remember each entry's insertion-time
+	// edgeKey, parallel to outEdges / inEdges. Required because keyOf
+	// is computed from live Edge fields (To, From, ...) — and the
+	// resolver mutates Edge.To when retargeting an unresolved edge.
+	// During swap-with-last in removeEdgeFromBucket, computing
+	// keyOf(swapped) on a swapped element whose To was just mutated
+	// produced a different key than the one it was originally indexed
+	// under, leaving a stale sidecar position pointing past the slice
+	// (panic: "index out of range [42] with length 41" in
+	// addEdgeToBucket on the next insert that collided with the stale
+	// key). Storing the original key here makes the swap update
+	// independent of live Edge state.
+	outEdgeKeys map[string][]edgeKey // fromID → position → key
+	inEdgeKeys  map[string][]edgeKey // toID   → position → key
 }
 
 func newShard() *shard {
 	return &shard{
-		nodes:      make(map[string]*Node),
-		outEdges:   make(map[string][]*Edge),
-		inEdges:    make(map[string][]*Edge),
-		byFile:     make(map[string][]*Node),
-		byName:     make(map[string][]*Node),
-		byQual:     make(map[string]*Node),
-		byRepo:     make(map[string][]*Node),
-		byFileIdx:  make(map[string]map[string]int),
-		byNameIdx:  make(map[string]map[string]int),
-		byRepoIdx:  make(map[string]map[string]int),
-		outEdgeIdx: make(map[string]map[edgeKey]int),
-		inEdgeIdx:  make(map[string]map[edgeKey]int),
+		nodes:       make(map[string]*Node),
+		outEdges:    make(map[string][]*Edge),
+		inEdges:     make(map[string][]*Edge),
+		byFile:      make(map[string][]*Node),
+		byName:      make(map[string][]*Node),
+		byQual:      make(map[string]*Node),
+		byRepo:      make(map[string][]*Node),
+		byFileIdx:   make(map[string]map[string]int),
+		byNameIdx:   make(map[string]map[string]int),
+		byRepoIdx:   make(map[string]map[string]int),
+		outEdgeIdx:  make(map[string]map[edgeKey]int),
+		inEdgeIdx:   make(map[string]map[edgeKey]int),
+		outEdgeKeys: make(map[string][]edgeKey),
+		inEdgeKeys:  make(map[string][]edgeKey),
 	}
 }
 
@@ -163,16 +180,22 @@ func removeNodeFromBucket(bucket map[string][]*Node, idx map[string]map[string]i
 // addEdgeToBucket appends e to bucket[key] unless an entry with the
 // same logical identity (edgeKey) is already there, in which case the
 // existing slot is overwritten. Returns whether this was a new insert.
-func addEdgeToBucket(bucket map[string][]*Edge, idx map[string]map[edgeKey]int, key string, e *Edge) bool {
+//
+// keys is the parallel slice that remembers each slot's insertion-time
+// edgeKey so removeEdgeFromBucket can update sidecars without
+// recomputing keyOf on a possibly-mutated swapped Edge.
+func addEdgeToBucket(bucket map[string][]*Edge, keys map[string][]edgeKey, idx map[string]map[edgeKey]int, key string, e *Edge) bool {
 	k := keyOf(e)
 	if inner, ok := idx[key]; ok {
 		if pos, exists := inner[k]; exists {
 			bucket[key][pos] = e
+			// keys[key][pos] already equals k — same logical identity.
 			return false
 		}
 	}
 	pos := len(bucket[key])
 	bucket[key] = append(bucket[key], e)
+	keys[key] = append(keys[key], k)
 	inner, ok := idx[key]
 	if !ok {
 		inner = make(map[edgeKey]int)
@@ -184,7 +207,7 @@ func addEdgeToBucket(bucket map[string][]*Edge, idx map[string]map[edgeKey]int, 
 
 // removeEdgeFromBucket removes the entry with key k from bucket[key]
 // using swap-with-last, maintaining the sidecar. No-op when absent.
-func removeEdgeFromBucket(bucket map[string][]*Edge, idx map[string]map[edgeKey]int, key string, k edgeKey) bool {
+func removeEdgeFromBucket(bucket map[string][]*Edge, keys map[string][]edgeKey, idx map[string]map[edgeKey]int, key string, k edgeKey) bool {
 	inner, ok := idx[key]
 	if !ok {
 		return false
@@ -194,19 +217,30 @@ func removeEdgeFromBucket(bucket map[string][]*Edge, idx map[string]map[edgeKey]
 		return false
 	}
 	slice := bucket[key]
+	keySlice := keys[key]
 	last := len(slice) - 1
 	if pos != last {
-		swapped := slice[last]
-		slice[pos] = swapped
-		inner[keyOf(swapped)] = pos
+		slice[pos] = slice[last]
+		// Use the swapped slot's STORED insertion-time key, not
+		// keyOf(swapped). The Edge's To may have been mutated by the
+		// resolver between insertion and now, in which case keyOf
+		// would yield a different key than the sidecar entry that
+		// actually points at this slot — leaking a stale "last"
+		// position that later panics in addEdgeToBucket.
+		swappedKey := keySlice[last]
+		keySlice[pos] = swappedKey
+		inner[swappedKey] = pos
 	}
 	slice = slice[:last]
+	keySlice = keySlice[:last]
 	delete(inner, k)
 	if len(inner) == 0 {
 		delete(idx, key)
 		delete(bucket, key)
+		delete(keys, key)
 	} else {
 		bucket[key] = slice
+		keys[key] = keySlice
 	}
 	return true
 }
@@ -423,8 +457,8 @@ func (g *Graph) AddEdge(e *Edge) {
 	defer unlock()
 	sFrom := g.shardFor(e.From)
 	sTo := g.shardFor(e.To)
-	addEdgeToBucket(sFrom.outEdges, sFrom.outEdgeIdx, e.From, e)
-	addEdgeToBucket(sTo.inEdges, sTo.inEdgeIdx, e.To, e)
+	addEdgeToBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, e.From, e)
+	addEdgeToBucket(sTo.inEdges, sTo.inEdgeKeys, sTo.inEdgeIdx, e.To, e)
 }
 
 // ReindexEdge updates the inEdges index after an edge's To field has
@@ -462,9 +496,9 @@ func (g *Graph) ReindexEdge(e *Edge, oldTo string) {
 
 	// Move from the old target's inEdges bucket to the new one.
 	sOld := g.shardFor(oldTo)
-	removeEdgeFromBucket(sOld.inEdges, sOld.inEdgeIdx, oldTo, oldKey)
+	removeEdgeFromBucket(sOld.inEdges, sOld.inEdgeKeys, sOld.inEdgeIdx, oldTo, oldKey)
 	sNew := g.shardFor(e.To)
-	addEdgeToBucket(sNew.inEdges, sNew.inEdgeIdx, e.To, e)
+	addEdgeToBucket(sNew.inEdges, sNew.inEdgeKeys, sNew.inEdgeIdx, e.To, e)
 }
 
 // GetNode returns a node by ID, or nil if not found.
@@ -588,18 +622,24 @@ func (g *Graph) EvictFile(filePath string) (nodesRemoved, edgesRemoved int) {
 func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 	removed := 0
 
-	// Phase 1: remove outgoing edges from every evicted node.
+	// Phase 1: remove outgoing edges from every evicted node. Use the
+	// parallel outEdgeKeys slice to look up each entry's insertion-time
+	// edgeKey rather than recomputing keyOf — the latter races with
+	// resolver-driven Edge.To mutations elsewhere in the graph and
+	// can yield a key that doesn't match the inEdges sidecar.
 	for id := range evictedIDs {
 		s := g.shardFor(id)
 		edges := s.outEdges[id]
+		keys := s.outEdgeKeys[id]
 		removed += len(edges)
-		for _, e := range edges {
+		for i, e := range edges {
 			if !evictedIDs[e.To] {
 				sTo := g.shardFor(e.To)
-				removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeIdx, e.To, keyOf(e))
+				removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeKeys, sTo.inEdgeIdx, e.To, keys[i])
 			}
 		}
 		delete(s.outEdges, id)
+		delete(s.outEdgeKeys, id)
 		delete(s.outEdgeIdx, id)
 	}
 
@@ -609,14 +649,16 @@ func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 	for id := range evictedIDs {
 		s := g.shardFor(id)
 		edges := s.inEdges[id]
-		for _, e := range edges {
+		keys := s.inEdgeKeys[id]
+		for i, e := range edges {
 			if !evictedIDs[e.From] {
 				removed++
 				sFrom := g.shardFor(e.From)
-				removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeIdx, e.From, keyOf(e))
+				removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, e.From, keys[i])
 			}
 		}
 		delete(s.inEdges, id)
+		delete(s.inEdgeKeys, id)
 		delete(s.inEdgeIdx, id)
 	}
 
@@ -633,21 +675,24 @@ func (g *Graph) RemoveEdge(from, to string, kind EdgeKind) bool {
 
 	sFrom := g.shardFor(from)
 	outList := sFrom.outEdges[from]
-	var target *Edge
-	for _, e := range outList {
+	outKeys := sFrom.outEdgeKeys[from]
+	targetIdx := -1
+	for i, e := range outList {
 		if e.To == to && e.Kind == kind {
-			target = e
+			targetIdx = i
 			break
 		}
 	}
-	if target == nil {
+	if targetIdx < 0 {
 		return false
 	}
 
-	k := keyOf(target)
-	removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeIdx, from, k)
+	// Use the stored insertion-time key rather than keyOf(target) so
+	// removal is robust against in-flight Edge.To mutations.
+	k := outKeys[targetIdx]
+	removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, from, k)
 	sTo := g.shardFor(to)
-	removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeIdx, to, k)
+	removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeKeys, sTo.inEdgeIdx, to, k)
 	return true
 }
 

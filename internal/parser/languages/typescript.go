@@ -7,6 +7,7 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/parser"
 	sitter "github.com/zzet/gortex/internal/parser/tsitter"
+	"github.com/zzet/gortex/internal/parser/tsitter/tsx"
 	"github.com/zzet/gortex/internal/parser/tsitter/typescript"
 )
 
@@ -74,21 +75,49 @@ const tsQAll = `
 `
 
 // TypeScriptExtractor extracts TypeScript/JavaScript source files.
+//
+// Two grammars share one extractor: the plain `typescript` grammar
+// (used for .ts) and the `tsx` grammar (used for .tsx). Both expose
+// the same node types for the patterns this extractor cares about
+// (function_declaration / method_definition / class_declaration /
+// arrow_function / etc.); TSX additionally exposes JSX nodes
+// (jsx_element, jsx_self_closing_element) that the EdgeRendersChild
+// walker matches against. We can't merge into one grammar because
+// TS and TSX disagree on `<T>x` (TSX treats it as a JSX opening element,
+// TS as a type assertion); per-extension dispatch keeps both honest.
 type TypeScriptExtractor struct {
-	lang *sitter.Language
-	qAll *parser.PreparedQuery
+	lang    *sitter.Language
+	qAll    *parser.PreparedQuery
+	tsxLang *sitter.Language
+	tsxQAll *parser.PreparedQuery
 }
 
 func NewTypeScriptExtractor() *TypeScriptExtractor {
 	lang := typescript.GetLanguage()
+	tsxLang := tsx.GetLanguage()
 	return &TypeScriptExtractor{
-		lang: lang,
-		qAll: parser.MustPreparedQuery(tsQAll, lang),
+		lang:    lang,
+		qAll:    parser.MustPreparedQuery(tsQAll, lang),
+		tsxLang: tsxLang,
+		tsxQAll: parser.MustPreparedQuery(tsQAll, tsxLang),
 	}
 }
 
 func (e *TypeScriptExtractor) Language() string     { return "typescript" }
 func (e *TypeScriptExtractor) Extensions() []string { return []string{".ts", ".tsx"} }
+
+// grammarFor returns the (language, prepared-query) pair appropriate
+// for filePath. .tsx files use the TSX grammar so JSX nodes
+// (jsx_element, jsx_self_closing_element) appear in the parse tree
+// for the EdgeRendersChild walker; .ts files use the plain TS
+// grammar to preserve the `<T>x` type-assertion semantics that the
+// TSX grammar would mis-parse as a JSX opening element.
+func (e *TypeScriptExtractor) grammarFor(filePath string) (*sitter.Language, *parser.PreparedQuery) {
+	if strings.HasSuffix(strings.ToLower(filePath), ".tsx") {
+		return e.tsxLang, e.tsxQAll
+	}
+	return e.lang, e.qAll
+}
 
 // deferredCall holds a call_expression match whose edge can only be
 // emitted after every function/method node exists (so funcRanges can
@@ -114,7 +143,8 @@ type deferredVar struct {
 }
 
 func (e *TypeScriptExtractor) Extract(filePath string, src []byte) (*parser.ExtractionResult, error) {
-	tree, err := parser.ParseFile(src, e.lang)
+	lang, qAll := e.grammarFor(filePath)
+	tree, err := parser.ParseFile(src, lang)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +177,7 @@ func (e *TypeScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 	// collectThisParamTypesInClass).
 	var classCarries []classCarry
 
-	parser.EachMatch(e.qAll, root, src, func(m parser.QueryResult) {
+	parser.EachMatch(qAll, root, src, func(m parser.QueryResult) {
 		switch {
 		case m.Captures["func.def"] != nil:
 			e.emitFunction(m, filePath, fileID, src, result)
@@ -352,6 +382,11 @@ func (e *TypeScriptExtractor) emitFunction(m parser.QueryResult, filePath, fileI
 		FilePath: filePath, Line: def.StartLine + 1,
 	})
 	emitTSFunctionShape(id, def.Node, src, filePath, def.StartLine+1, result)
+	// JSX child-component attribution — emits EdgeRendersChild for
+	// every uppercase-first-letter element rendered inside the body.
+	if body := tsFunctionBody(def.Node); body != nil {
+		emitJSXRenderEdges(id, body, src, filePath, result)
+	}
 }
 
 // tsFunctionBody returns the statement_block child of a function or
@@ -395,6 +430,7 @@ func (e *TypeScriptExtractor) emitArrow(m parser.QueryResult, filePath, fileID s
 	// Function-shape (params/returns/generics) on the arrow's body.
 	if body := m.Captures["arrow.body"]; body != nil && body.Node != nil {
 		emitTSFunctionShape(id, body.Node, src, filePath, def.StartLine+1, result)
+		emitJSXRenderEdges(id, body.Node, src, filePath, result)
 	}
 	return name
 }
@@ -449,6 +485,7 @@ func (e *TypeScriptExtractor) emitArrowField(m parser.QueryResult, filePath, fil
 	// shapes whose params/returns/generics weren't surfaced before.
 	if body := m.Captures["objfn.body"]; body != nil && body.Node != nil {
 		emitTSFunctionShape(id, body.Node, src, filePath, def.StartLine+1, result)
+		emitJSXRenderEdges(id, body.Node, src, filePath, result)
 	} else {
 		emitTSFunctionShape(id, def.Node, src, filePath, def.StartLine+1, result)
 	}
@@ -529,6 +566,8 @@ func (e *TypeScriptExtractor) emitClass(m parser.QueryResult, filePath, fileID s
 		// module factory providers are dispatched from walkClassMembers
 		// in the post-pass.
 		emitModuleBindings(def.Node, src, id, filePath, result)
+		// TypeORM model attribution: @Entity decorator → EdgeModelsTable.
+		detectTypeScriptORMModel(def.Node, src, id, name, filePath, result)
 		// Generic <T extends Y> on the class declaration.
 		emitTSGenericParamNodes(id, def.Node, src, filePath, def.StartLine+1, result)
 	}
@@ -765,6 +804,11 @@ func (e *TypeScriptExtractor) emitMethod(m parser.QueryResult, filePath string, 
 	})
 	// Function shape (params, return type, generics) for the method.
 	emitTSFunctionShape(id, def.Node, src, filePath, def.StartLine+1, result)
+	// JSX child rendering inside the method body (covers React class
+	// components' render() methods).
+	if body := tsFunctionBody(def.Node); body != nil {
+		emitJSXRenderEdges(id, body, src, filePath, result)
+	}
 	// NestJS-style dispatch decorators (@UseGuards/@UseInterceptors/...)
 	// are SIBLINGS of method_definition inside class_body — walk backward.
 	// Each decorator also produces an EdgeAnnotated → annotation node so

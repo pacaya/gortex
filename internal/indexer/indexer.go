@@ -1976,6 +1976,26 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 				FilePath: c.FilePath,
 				Line:     c.Line,
 			})
+			// Framework-layer EdgeHandlesRoute. Emitted alongside
+			// EdgeProvides for HTTP / gRPC / WS / GraphQL / topic
+			// providers so `analyze kind=routes` and other
+			// framework-aware tools walk one targeted edge instead
+			// of filtering EdgeProvides by contract type. Consumers
+			// (callers of routes) and non-route contract types (env,
+			// OpenAPI specs, DI tokens) intentionally skip this
+			// edge — they aren't route handlers.
+			if c.Role == contracts.RoleProvider && isRouteContractType(c.Type) {
+				idx.graph.AddEdge(&graph.Edge{
+					From:     c.SymbolID,
+					To:       c.ID,
+					Kind:     graph.EdgeHandlesRoute,
+					FilePath: c.FilePath,
+					Line:     c.Line,
+					Meta: map[string]any{
+						"contract_type": string(c.Type),
+					},
+				})
+			}
 		}
 	}
 
@@ -1987,6 +2007,24 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 	idx.logger.Info("contracts extracted",
 		zap.String("repo", repo),
 		zap.Int("count", len(reg.All())))
+}
+
+// isRouteContractType reports whether a ContractType corresponds to a
+// real network-route handler (HTTP / gRPC / WebSocket / GraphQL /
+// topic). Used to gate EdgeHandlesRoute emission so the framework-layer
+// edge stays focused on actual handlers and excludes env / OpenAPI /
+// dependency / DI-token contracts that share the EdgeProvides edge but
+// aren't routes in the agent-asks-which-handler-serves-X sense.
+func isRouteContractType(t contracts.ContractType) bool {
+	switch t {
+	case contracts.ContractHTTP,
+		contracts.ContractGRPC,
+		contracts.ContractGraphQL,
+		contracts.ContractTopic,
+		contracts.ContractWS:
+		return true
+	}
+	return false
 }
 
 // resolveProviderHandlers finds the actual handler for every HTTP
