@@ -19,6 +19,7 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/indexer"
 	"github.com/zzet/gortex/internal/search"
+	"github.com/zzet/gortex/internal/semantic/lsp"
 )
 
 // realController is the production daemon.Controller implementation. It
@@ -31,6 +32,7 @@ import (
 type realController struct {
 	mu            sync.Mutex
 	graph         *graph.Graph
+	indexer       *indexer.Indexer
 	multiIndexer  *indexer.MultiIndexer
 	configManager *config.ConfigManager
 	multiWatcher  *indexer.MultiWatcher
@@ -450,6 +452,7 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		Workspaces:        workspaces,
 		ConfiguredServers: c.collectConfiguredServers(),
 		LocalServerSlug:   c.localServerSlug(),
+		LSPRouter:         c.collectLSPRouterStatus(),
 	}, nil
 	// MCPSessions is populated by the daemon Server (it owns the
 	// SessionRegistry — the controller doesn't have a back-pointer).
@@ -493,6 +496,41 @@ func (c *realController) localServerSlug() string {
 		return def.Slug
 	}
 	return ""
+}
+
+// collectLSPRouterStatus reflects the daemon's LSP router (when
+// wired) into a status payload. Returns nil when no router is wired
+// (semantic enrichment disabled in `.gortex.yaml`).
+func (c *realController) collectLSPRouterStatus() *daemon.LSPRouterStatus {
+	if c.indexer == nil {
+		return nil
+	}
+	semMgr := c.indexer.SemanticManager()
+	if semMgr == nil {
+		return nil
+	}
+	router, ok := semMgr.LSPRouter().(*lsp.Router)
+	if !ok || router == nil {
+		return nil
+	}
+	out := &daemon.LSPRouterStatus{
+		DefaultWorkspace: router.DefaultWorkspace(),
+	}
+	for _, name := range router.EnabledSpecNames() {
+		out.EnabledSpecs = append(out.EnabledSpecs, daemon.LSPSpecStatus{
+			Name:      name,
+			Available: router.SpecAvailable(name),
+			Languages: strings.Join(router.SpecLanguages(name), ","),
+		})
+	}
+	for _, s := range router.Stats() {
+		out.ActiveProviders = append(out.ActiveProviders, daemon.LSPActiveProvider{
+			Spec:      s.Spec,
+			Workspace: s.Workspace,
+			LastUsed:  s.LastUsed.Format(time.RFC3339),
+		})
+	}
+	return out
 }
 
 // SearchSymbols runs a substring match over node names and returns the

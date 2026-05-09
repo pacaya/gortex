@@ -264,6 +264,10 @@ func (m statusTUI) View() string {
 		push(s)
 		gap(1)
 	}
+	if s := m.renderLSPRouter(); s != "" {
+		push(s)
+		gap(1)
+	}
 	push(m.renderFooter())
 	return strings.Join(lines, "\n")
 }
@@ -422,6 +426,38 @@ func (m statusTUI) renderServers() string {
 		}
 		line := "  " + tuiKey.Render(padRight(s.Slug, 12)) + "  " + tuiVal.Render(s.URL) + flagLine
 		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m statusTUI) renderLSPRouter() string {
+	if !m.hasStatus || m.status.LSPRouter == nil {
+		return ""
+	}
+	r := m.status.LSPRouter
+	specs := r.EnabledSpecs
+	active := r.ActiveProviders
+	if len(specs) == 0 && len(active) == 0 {
+		return ""
+	}
+	var lines []string
+	header := tuiHeading.Render("lsp router")
+	header += "   " + tuiCount.Render(fmt.Sprintf("· %d enabled · %d alive", len(specs), len(active)))
+	lines = append(lines, header)
+	for _, s := range specs {
+		state := "·"
+		stateRender := tuiSub
+		if s.Available {
+			state = "✓"
+			stateRender = tuiAccent
+		}
+		line := "  " + stateRender.Render(state) + " " +
+			tuiKey.Render(padRight(s.Name, 28)) + "  " +
+			tuiVal.Render(padRight(s.Languages, 28))
+		lines = append(lines, line)
+	}
+	for _, a := range active {
+		lines = append(lines, "  "+tuiHint.Render("alive: "+a.Spec+"@"+a.Workspace+"  last_used="+a.LastUsed))
 	}
 	return strings.Join(lines, "\n")
 }

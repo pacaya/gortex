@@ -151,6 +151,42 @@ type StatusResponse struct {
 	// when matching against ConfiguredServers — set from servers.toml
 	// `default` or the first entry. Empty when no servers.toml.
 	LocalServerSlug string `json:"local_server_slug,omitempty"`
+
+	// LSPRouter reports the daemon's LSP-router state — every
+	// registered spec, whether its binary resolves on PATH, and
+	// every alive (spec, workspace) subprocess. Empty when no LSP
+	// router is wired (`semantic.enabled: false` in `.gortex.yaml`).
+	LSPRouter *LSPRouterStatus `json:"lsp_router,omitempty"`
+}
+
+// LSPRouterStatus reflects one daemon's LSP-router state for the
+// daemon-status TUI / `gortex daemon status` JSON.
+type LSPRouterStatus struct {
+	// DefaultWorkspace is the rootURI used when callers don't supply
+	// a workspace (single-repo daemons).
+	DefaultWorkspace string `json:"default_workspace,omitempty"`
+	// EnabledSpecs lists every spec the user opted into via
+	// `.gortex.yaml`, with a flag indicating whether its command
+	// resolved on PATH at boot. Pure metadata — no spawn implied.
+	EnabledSpecs []LSPSpecStatus `json:"enabled_specs"`
+	// ActiveProviders lists every (spec, workspace) pair currently
+	// owning an alive LSP subprocess. May be empty even when several
+	// specs are enabled — the router lazy-spawns on first request.
+	ActiveProviders []LSPActiveProvider `json:"active_providers,omitempty"`
+}
+
+// LSPSpecStatus is one row in LSPRouterStatus.EnabledSpecs.
+type LSPSpecStatus struct {
+	Name      string `json:"name"`
+	Available bool   `json:"available"` // command on PATH right now
+	Languages string `json:"languages"` // comma-separated for readability
+}
+
+// LSPActiveProvider is one alive subprocess.
+type LSPActiveProvider struct {
+	Spec      string `json:"spec"`
+	Workspace string `json:"workspace"`
+	LastUsed  string `json:"last_used"` // RFC3339
 }
 
 // RuntimeStats captures Go runtime.MemStats fields users care about

@@ -26,6 +26,15 @@ type LSPRouter interface {
 	// spawn. Used by Manager.HasProviders.
 	SpecAvailable(name string) bool
 
+	// SpecLanguages returns the language codes the named spec
+	// serves. Pure metadata read — no spawn. Used by EnrichAll
+	// arbitration to compare candidate specs per language.
+	SpecLanguages(name string) []string
+
+	// SpecPriority returns the spec's default priority (lower = wins
+	// over higher). Pure metadata read — no spawn.
+	SpecPriority(name string) int
+
 	// ProviderForSpec lazy-spawns and returns the LSP provider for
 	// the given spec name as a semantic.Provider. Returns an error
 	// if the spec is not enabled or its command is not on PATH.
@@ -116,16 +125,48 @@ func (m *Manager) EnrichAll(g *graph.Graph, roots map[string]string) ([]*EnrichR
 		results = m.runEnrichForProvider(g, roots, lang, provider, results)
 	}
 
-	// Router-backed LSP providers: lazy-spawn via the router so the
-	// idle reaper can recover the subprocess after this run finishes.
-	// Skip any language already covered by a higher-priority eager
-	// provider (selectProviders already picked the winner there).
+	// Router-backed LSP providers: arbitrate by priority per language
+	// BEFORE spawning so unused candidates never start a subprocess.
+	// Two router specs claiming the same language pick the lowest
+	// priority number; ties break by spec-name lexicographic order.
+	// Eager providers from selectProviders already won their language;
+	// router specs may only fill gaps.
 	if m.lspRouter != nil {
-		covered := make(map[string]bool, len(langProviders))
-		for lang := range langProviders {
-			covered[lang] = true
-		}
+		// Pre-pass: pure metadata, no spawn.
+		bestSpec := make(map[string]string) // language → winning spec name
+		bestPrio := make(map[string]int)
 		for _, name := range m.lspRouter.EnabledSpecNames() {
+			if !m.lspRouter.SpecAvailable(name) {
+				continue
+			}
+			prio := m.lspRouter.SpecPriority(name)
+			if cfgPrio, ok := m.configPriorityFor(name); ok {
+				prio = cfgPrio
+			}
+			for _, lang := range m.lspRouter.SpecLanguages(name) {
+				if _, eagerCovered := langProviders[lang]; eagerCovered {
+					continue
+				}
+				cur, exists := bestSpec[lang]
+				if !exists || prio < bestPrio[lang] || (prio == bestPrio[lang] && name < cur) {
+					bestSpec[lang] = name
+					bestPrio[lang] = prio
+				}
+			}
+		}
+		// One spec may win multiple languages — dedup so Enrich runs
+		// once per spec, not once per (spec, language) pair.
+		runOrder := make([]string, 0)
+		seenSpec := make(map[string]bool)
+		for _, name := range bestSpec {
+			if seenSpec[name] {
+				continue
+			}
+			seenSpec[name] = true
+			runOrder = append(runOrder, name)
+		}
+		sort.Strings(runOrder)
+		for _, name := range runOrder {
 			provider, err := m.lspRouter.ProviderForSpec(name)
 			if err != nil {
 				m.logger.Debug("router-backed LSP provider unavailable, skipping",
@@ -138,26 +179,23 @@ func (m *Manager) EnrichAll(g *graph.Graph, roots map[string]string) ([]*EnrichR
 			if len(langs) == 0 {
 				continue
 			}
-			// If every language this spec serves is already covered
-			// by a higher-priority eager provider, skip the LSP run.
-			allCovered := true
-			for _, l := range langs {
-				if !covered[l] {
-					allCovered = false
-					break
-				}
-			}
-			if allCovered {
-				continue
-			}
-			// Use the first language as the report label; the
-			// provider.Enrich call covers every language the LSP
-			// owns in one pass.
 			results = m.runEnrichForProvider(g, roots, langs[0], provider, results)
 		}
 	}
 
 	return results, nil
+}
+
+// configPriorityFor returns the user's config-overridden priority for
+// the named provider, if any. Used to let `.gortex.yaml` take
+// precedence over the spec's built-in default.
+func (m *Manager) configPriorityFor(name string) (int, bool) {
+	for _, pc := range m.config.Providers {
+		if pc.Name == name && pc.Enabled {
+			return pc.Priority, true
+		}
+	}
+	return 0, false
 }
 
 // runEnrichForProvider executes Enrich for one provider against every
@@ -282,13 +320,19 @@ func (m *Manager) selectProviders() map[string]Provider {
 	return result
 }
 
-// Stats returns the current status of all providers.
+// Stats returns the current status of all providers — eager
+// (RegisterProvider) plus router-enabled LSP specs. Router specs are
+// reported as "lsp-<spec-name>" for discoverability; status is "ready"
+// when SpecAvailable is true and "unavailable" otherwise. No
+// subprocess is spawned by Stats — pure read.
 func (m *Manager) Stats() []ProviderStatus {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	seen := make(map[string]bool)
 	var statuses []ProviderStatus
 	for _, p := range m.providers {
+		seen[p.Name()] = true
 		for _, lang := range p.Languages() {
 			status := "unavailable"
 			if p.Available() {
@@ -307,6 +351,33 @@ func (m *Manager) Stats() []ProviderStatus {
 			}
 
 			statuses = append(statuses, ps)
+		}
+	}
+	if m.lspRouter != nil {
+		for _, name := range m.lspRouter.EnabledSpecNames() {
+			provName := "lsp-" + name
+			// Skip when the eager path already registered an
+			// identically-named provider (avoids double-counting
+			// in legacy boot configurations).
+			if seen[provName] {
+				continue
+			}
+			status := "unavailable"
+			if m.lspRouter.SpecAvailable(name) {
+				status = "ready"
+			}
+			for _, lang := range m.lspRouter.SpecLanguages(name) {
+				ps := ProviderStatus{
+					Name:     provName,
+					Language: lang,
+					Status:   status,
+				}
+				if lr, ok := m.lastResults[provName]; ok {
+					ps.CoveragePercent = lr.CoveragePercent
+					ps.LastResult = lr
+				}
+				statuses = append(statuses, ps)
+			}
 		}
 	}
 	return statuses

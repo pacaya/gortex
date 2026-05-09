@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -21,6 +22,10 @@ import (
 	"github.com/zzet/gortex/internal/progress"
 	"github.com/zzet/gortex/internal/query"
 	"github.com/zzet/gortex/internal/savings"
+	"github.com/zzet/gortex/internal/semantic"
+	"github.com/zzet/gortex/internal/semantic/goanalysis"
+	"github.com/zzet/gortex/internal/semantic/lsp"
+	"github.com/zzet/gortex/internal/semantic/scip"
 )
 
 // daemonState is the bundle of long-lived objects the daemon owns. One
@@ -97,6 +102,59 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 
 	idx := indexer.New(g, reg, cfg.Index, logger)
 
+	// Semantic enrichment (opt-in via .gortex.yaml `semantic.enabled:
+	// true`). Mirrors the wiring in `gortex mcp` / `gortex server`: a
+	// daemon-managed LSP router owns subprocess lifecycle, SCIP and
+	// goanalysis providers register eagerly, and Manager.SetLSPRouter
+	// installs the bridge so EnrichAll can lazy-spawn LSPs on demand.
+	if cfg.Semantic.Enabled {
+		semCfg := semantic.Config{
+			Enabled:           cfg.Semantic.Enabled,
+			TimeoutSeconds:    cfg.Semantic.TimeoutSeconds,
+			EnrichOnWatch:     cfg.Semantic.EnrichOnWatch,
+			RefuteUnconfirmed: cfg.Semantic.RefuteUnconfirmed,
+		}
+		for _, pc := range cfg.Semantic.Providers {
+			semCfg.Providers = append(semCfg.Providers, semantic.ProviderConfig{
+				Name:      pc.Name,
+				Languages: pc.Languages,
+				Command:   pc.Command,
+				Args:      pc.Args,
+				Daemon:    pc.Daemon,
+				Priority:  pc.Priority,
+				Enabled:   pc.Enabled,
+			})
+		}
+		semMgr := semantic.NewManager(semCfg, logger)
+
+		goProvider := goanalysis.NewProvider(goanalysis.ModeTypeCheck, false, logger)
+		semMgr.RegisterProvider(goProvider)
+		contracts.SetBindingResolver(goProvider)
+
+		lspWorkspace, _ := os.Getwd()
+		lspRouter := lsp.NewRouter(lspWorkspace, logger).
+			WithIdleTimeout(10 * time.Minute).
+			WithReaperInterval(time.Minute).
+			WithMaxAlive(6)
+		semMgr.SetLSPRouter(lspRouter)
+
+		for _, pc := range semCfg.Providers {
+			if !pc.Enabled {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(pc.Name, "scip-") && pc.Command != "":
+				semMgr.RegisterProvider(scip.NewProvider(pc.Command, pc.Args, pc.Languages, semCfg.TimeoutSeconds, logger))
+			case lsp.SpecByName(pc.Name) != nil:
+				lspRouter.RegisterSpec(lsp.SpecByName(pc.Name))
+			case pc.Daemon:
+				semMgr.RegisterProvider(lsp.NewProvider(pc.Command, pc.Args, pc.Languages, pc.Daemon, pc.MaxParallel, logger))
+			}
+		}
+		idx.SetSemanticManager(semMgr)
+		logger.Info("daemon: semantic enrichment enabled", zap.Int("providers", len(semCfg.Providers)))
+	}
+
 	// Embeddings are OPT-IN on the daemon. Enabled by any of:
 	//   --embeddings (CLI flag on `gortex daemon start`)
 	//   GORTEX_EMBEDDINGS=1 / true / yes / on (env var)
@@ -166,6 +224,7 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	// Semantic manager, feedback, savings — same wiring as runServe.
 	if semMgr := idx.SemanticManager(); semMgr != nil {
 		srv.SetSemanticManager(semMgr)
+		srv.SetLSPDiagnosticsBroadcasting()
 	}
 	srv.InitFeedback("", "")
 	srv.InitCombo("", "", gortexmcp.ModeAI)

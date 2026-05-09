@@ -514,6 +514,24 @@ func (p *Provider) SetDiagnosticsHook(hook func(absPath string, diags []Diagnost
 	p.diagHookMu.Unlock()
 }
 
+// DiagnosticsSnapshot returns a copy of the most recent
+// publishDiagnostics payload per absolute path. Used to replay current
+// state to a freshly-subscribed MCP client so it doesn't have to wait
+// for the next edit to learn what's currently broken.
+//
+// The map is a defensive copy — callers may mutate freely.
+func (p *Provider) DiagnosticsSnapshot() map[string][]Diagnostic {
+	p.docMu.RLock()
+	defer p.docMu.RUnlock()
+	out := make(map[string][]Diagnostic, len(p.lastDiag))
+	for path, diags := range p.lastDiag {
+		cp := make([]Diagnostic, len(diags))
+		copy(cp, diags)
+		out[path] = cp
+	}
+	return out
+}
+
 // uriToAbsPath converts a file:// URI to an absolute filesystem path.
 // Returns "" for non-file URIs or malformed input.
 func uriToAbsPath(uri string) string {

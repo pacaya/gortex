@@ -138,6 +138,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 
 	controller := &realController{
 		graph:         state.graph,
+		indexer:       state.indexer,
 		multiIndexer:  state.multiIndexer,
 		configManager: state.configManager,
 		logger:        logger,

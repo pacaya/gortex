@@ -149,10 +149,17 @@ func (s *Server) sessionFor(ctx context.Context) *sessionState {
 
 // ReleaseSession drops per-session state for id. Called by the daemon
 // when a proxy disconnects, so idle entries don't accumulate for the
-// lifetime of the daemon process.
+// lifetime of the daemon process. Cascades into the diagnostics
+// broadcaster so a disconnecting subscriber's slot is reclaimed.
 func (s *Server) ReleaseSession(id string) {
-	if s.sessions != nil && id != "" {
+	if id == "" {
+		return
+	}
+	if s.sessions != nil {
 		s.sessions.release(id)
+	}
+	if s.diagBroadcaster != nil {
+		s.diagBroadcaster.unsubscribe(id)
 	}
 }
 

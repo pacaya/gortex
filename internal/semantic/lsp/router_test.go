@@ -166,9 +166,10 @@ func TestRouter_SetDiagnosticsHook_PropagatesToExistingProvider(t *testing.T) {
 	// This bypasses the real spawn path (which needs an LSP binary).
 	p := NewProvider("noop-cmd", nil, []string{"go"}, false, 1, zap.NewNop())
 	r.mu.Lock()
-	r.providers["fake-spec"] = &routedProvider{
-		spec:     &ServerSpec{Name: "fake-spec", Languages: []string{"go"}},
-		provider: p,
+	r.providers[providerKey{specName: "fake-spec", workspace: "/tmp/test"}] = &routedProvider{
+		spec:      &ServerSpec{Name: "fake-spec", Languages: []string{"go"}},
+		workspace: "/tmp/test",
+		provider:  p,
 	}
 	r.mu.Unlock()
 
@@ -200,9 +201,10 @@ func TestRouter_SetDiagnosticsHook_Nil(t *testing.T) {
 
 	p := NewProvider("noop", nil, []string{"go"}, false, 1, zap.NewNop())
 	r.mu.Lock()
-	r.providers["fake-spec"] = &routedProvider{
-		spec:     &ServerSpec{Name: "fake-spec", Languages: []string{"go"}},
-		provider: p,
+	r.providers[providerKey{specName: "fake-spec", workspace: "/tmp/test"}] = &routedProvider{
+		spec:      &ServerSpec{Name: "fake-spec", Languages: []string{"go"}},
+		workspace: "/tmp/test",
+		provider:  p,
 	}
 	r.mu.Unlock()
 
@@ -232,3 +234,60 @@ func TestProvider_SetDiagnosticsHook_DirectPath(t *testing.T) {
 		t.Fatalf("expected exactly one call, got %d", calls)
 	}
 }
+
+// TestRouter_PerWorkspaceCacheIsolation — two requests for the same
+// spec from different workspaces produce two distinct cache entries.
+// Reusing the same workspace returns the same provider. Stats and
+// Names reflect both (spec, workspace) pairs.
+func TestRouter_PerWorkspaceCacheIsolation(t *testing.T) {
+	r := NewRouter(t.TempDir(), zap.NewNop())
+	defer r.Close()
+
+	specA := &ServerSpec{Name: "fake-spec", Languages: []string{"go"}}
+
+	pA := NewProvider("noop", nil, []string{"go"}, false, 1, zap.NewNop())
+	pB := NewProvider("noop", nil, []string{"go"}, false, 1, zap.NewNop())
+
+	// Inject two distinct providers under the SAME spec but different
+	// workspaces — bypasses the real spawn (no LSP binary in tests).
+	r.mu.Lock()
+	r.providers[providerKey{specName: specA.Name, workspace: "/repo/a"}] = &routedProvider{
+		spec:      specA,
+		workspace: "/repo/a",
+		provider:  pA,
+		lastUsed:  timeNow(),
+	}
+	r.providers[providerKey{specName: specA.Name, workspace: "/repo/b"}] = &routedProvider{
+		spec:      specA,
+		workspace: "/repo/b",
+		provider:  pB,
+		lastUsed:  timeNow(),
+	}
+	r.mu.Unlock()
+
+	if got := r.Names(); len(got) != 2 || got[0] != "fake-spec@/repo/a" || got[1] != "fake-spec@/repo/b" {
+		t.Fatalf("expected two workspace-keyed names, got %v", got)
+	}
+	stats := r.Stats()
+	if len(stats) != 2 {
+		t.Fatalf("expected two stats rows, got %d", len(stats))
+	}
+	if stats[0].Workspace != "/repo/a" || stats[1].Workspace != "/repo/b" {
+		t.Fatalf("expected stats sorted by spec then workspace, got %+v", stats)
+	}
+}
+
+// TestRouter_DefaultWorkspace — ForSpec without explicit workspace
+// uses the router's default. Used by Manager batch enrichment.
+func TestRouter_DefaultWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	r := NewRouter(tmp, zap.NewNop())
+	defer r.Close()
+	if got := r.DefaultWorkspace(); got == "" || got[len(got)-len(tmp):] != tmp {
+		t.Fatalf("DefaultWorkspace not resolved: got %q want suffix %q", got, tmp)
+	}
+}
+
+// timeNow is a tiny shim so the test file doesn't need the time
+// import for one call.
+func timeNow() (t time.Time) { return time.Now() }

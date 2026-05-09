@@ -273,22 +273,23 @@ func (s *Server) lspProviderForPath(path string) (*lsp.Provider, string, error) 
 	}
 
 	// Router-managed lifecycle wins when configured. The router
-	// returns a semantic.Provider through the interface contract; we
-	// type-assert to *lsp.Provider here because the LSP-action surface
-	// needs the concrete methods (LastDiagnostics, GetCodeActions, …).
+	// returns a *lsp.Provider directly; the LSP-action surface needs
+	// the concrete type for LastDiagnostics / GetCodeActions / etc.
 	if r := s.lspRouter(); r != nil {
 		// Router only knows about specs the user enabled via config
 		// — SpecAvailable filters to "enabled AND on PATH" without
 		// spawning. Probe before ForSpec so an opt-out spec or a
 		// missing binary returns a clean no_lsp_for error.
 		if r.SpecAvailable(spec.Name) {
-			lp, err := r.ForSpec(spec)
+			// Pass the per-file workspace root so the cache key
+			// is (spec, workspace) — separate subprocess per repo
+			// in a multi-repo daemon, each rooted correctly. A
+			// shared (spec, defaultWorkspace) reuse would corrupt
+			// rootURI for files outside the first-spawned repo.
+			root := s.workspaceRootFor(abs)
+			lp, err := r.ForSpecWorkspace(spec, root)
 			if err != nil {
 				return nil, abs, fmt.Errorf("router spawn %s: %w", spec.Name, err)
-			}
-			root := s.workspaceRootFor(abs)
-			if err := lp.EnsureClient(root); err != nil {
-				return nil, abs, fmt.Errorf("ensure client %s: %w", spec.Name, err)
 			}
 			return lp, abs, nil
 		}

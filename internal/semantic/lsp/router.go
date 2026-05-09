@@ -36,12 +36,15 @@ import (
 //     WithReaperInterval is set) closes providers idle longer than
 //     IdleTimeout.
 type Router struct {
-	workspaceRoot string
-	logger        *zap.Logger
+	// defaultWorkspace is the workspace root used by For / ForSpec
+	// when the caller doesn't supply one explicitly. Multi-repo
+	// daemons override per request via ForWorkspace / ForSpecWorkspace.
+	defaultWorkspace string
+	logger           *zap.Logger
 
 	mu        sync.Mutex
-	providers map[string]*routedProvider // spec.Name → cached provider
-	enabled   map[string]*ServerSpec     // spec.Name → spec marked enabled by config (no spawn until For/ForSpec)
+	providers map[providerKey]*routedProvider // (spec.Name, workspace) → cached provider
+	enabled   map[string]*ServerSpec          // spec.Name → spec marked enabled by config (no spawn until For/ForSpec)
 
 	// limits — zero means "no limit / no reaping".
 	idleTimeout    time.Duration
@@ -65,24 +68,37 @@ type Router struct {
 }
 
 type routedProvider struct {
-	spec     *ServerSpec
-	provider *Provider
-	lastUsed time.Time
+	spec      *ServerSpec
+	workspace string
+	provider  *Provider
+	lastUsed  time.Time
 }
 
-// NewRouter constructs an empty Router. workspaceRoot is the directory
-// passed to LSP servers as `rootUri`.
-func NewRouter(workspaceRoot string, logger *zap.Logger) *Router {
+// providerKey identifies a (spec, workspace) pair in the cache. Each
+// (spec, workspace) combination gets its own LSP subprocess so a
+// multi-repo daemon doesn't conflate which workspace a server was
+// initialised against (Provider.EnsureClient is idempotent — only the
+// first call's workspace root sticks).
+type providerKey struct {
+	specName  string
+	workspace string
+}
+
+// NewRouter constructs an empty Router. defaultWorkspace is the
+// directory passed to LSP servers as `rootUri` when the caller uses
+// For / ForSpec without specifying a workspace. Multi-repo daemons
+// override on a per-request basis via ForWorkspace / ForSpecWorkspace.
+func NewRouter(defaultWorkspace string, logger *zap.Logger) *Router {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	abs, _ := filepath.Abs(workspaceRoot)
+	abs, _ := filepath.Abs(defaultWorkspace)
 	return &Router{
-		workspaceRoot: abs,
-		logger:        logger,
-		providers:     make(map[string]*routedProvider),
-		enabled:       make(map[string]*ServerSpec),
-		avail:         make(map[string]bool),
+		defaultWorkspace: abs,
+		logger:           logger,
+		providers:        make(map[providerKey]*routedProvider),
+		enabled:          make(map[string]*ServerSpec),
+		avail:            make(map[string]bool),
 	}
 }
 
@@ -154,6 +170,34 @@ func (r *Router) SpecAvailable(name string) bool {
 	return r.specAvailable(spec)
 }
 
+// SpecLanguages returns the language codes the named spec serves.
+// Pure metadata read — never spawns a subprocess. Returns nil for
+// unregistered specs.
+func (r *Router) SpecLanguages(name string) []string {
+	r.mu.Lock()
+	spec, ok := r.enabled[name]
+	r.mu.Unlock()
+	if !ok || spec == nil {
+		return nil
+	}
+	out := make([]string, len(spec.Languages))
+	copy(out, spec.Languages)
+	return out
+}
+
+// SpecPriority returns the spec's default priority (lower number wins
+// when multiple specs serve the same language). Returns 99 (a
+// fallback "any provider beats unknown") for unregistered specs.
+func (r *Router) SpecPriority(name string) int {
+	r.mu.Lock()
+	spec, ok := r.enabled[name]
+	r.mu.Unlock()
+	if !ok || spec == nil {
+		return 99
+	}
+	return spec.Priority
+}
+
 // WithIdleTimeout sets how long a provider can be idle before Reap()
 // will shut it down.
 func (r *Router) WithIdleTimeout(d time.Duration) *Router {
@@ -187,25 +231,51 @@ func (r *Router) WithMaxAlive(n int) *Router {
 	return r
 }
 
-// For returns the provider responsible for the given file path. It
-// spawns the LSP subprocess on first call. relPath may be either an
-// absolute path or relative to the router's workspace root.
+// For returns the provider responsible for the given file path under
+// the router's defaultWorkspace. Convenience wrapper for single-
+// workspace callers; multi-repo daemons should use ForWorkspace and
+// pass the per-file workspace root.
 func (r *Router) For(relPath string) (*Provider, error) {
+	return r.ForWorkspace(relPath, r.defaultWorkspace)
+}
+
+// ForWorkspace returns the provider responsible for the given file
+// path under the given workspace root. Cache key is (spec, workspace)
+// so the same LSP spec gets a separate subprocess per workspace —
+// preventing the multi-repo bug where Provider.EnsureClient (which is
+// idempotent) would otherwise leave every workspace pinned to the
+// rootURI of whichever request happened to spawn the server first.
+func (r *Router) ForWorkspace(relPath, workspace string) (*Provider, error) {
 	spec := SpecForPath(relPath)
 	if spec == nil {
 		return nil, fmt.Errorf("no LSP server registered for %s", filepath.Ext(relPath))
 	}
-	return r.ForSpec(spec)
+	return r.ForSpecWorkspace(spec, workspace)
 }
 
-// ForSpec returns the provider for a named spec, spawning it on first
-// call.
+// ForSpec returns the provider for a named spec under the router's
+// defaultWorkspace. Convenience wrapper.
 func (r *Router) ForSpec(spec *ServerSpec) (*Provider, error) {
+	return r.ForSpecWorkspace(spec, r.defaultWorkspace)
+}
+
+// ForSpecWorkspace returns the provider for a named spec under the
+// given workspace root, spawning it on first call. The (spec,
+// workspace) tuple uniquely identifies the cached Provider.
+func (r *Router) ForSpecWorkspace(spec *ServerSpec, workspace string) (*Provider, error) {
 	if !r.specAvailable(spec) {
 		return nil, fmt.Errorf("LSP server %q not available on PATH", spec.Name)
 	}
+	if workspace == "" {
+		workspace = r.defaultWorkspace
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	key := providerKey{specName: spec.Name, workspace: workspace}
+
 	r.mu.Lock()
-	rp, ok := r.providers[spec.Name]
+	rp, ok := r.providers[key]
 	if ok {
 		rp.lastUsed = time.Now()
 		r.mu.Unlock()
@@ -215,7 +285,7 @@ func (r *Router) ForSpec(spec *ServerSpec) (*Provider, error) {
 
 	// Spawn outside the lock — initialize() blocks on stdio I/O.
 	p := NewProviderFromSpec(spec, r.logger)
-	if err := p.EnsureClient(r.workspaceRoot); err != nil {
+	if err := p.EnsureClient(workspace); err != nil {
 		return nil, fmt.Errorf("spawn %s: %w", spec.Name, err)
 	}
 	// Attach the diagnostics hook (if any) before publishing to the
@@ -227,15 +297,16 @@ func (r *Router) ForSpec(spec *ServerSpec) (*Provider, error) {
 	defer r.mu.Unlock()
 	// Race: another goroutine may have spawned it while we were
 	// initializing. Prefer the existing one and shut down our duplicate.
-	if existing, ok := r.providers[spec.Name]; ok {
+	if existing, ok := r.providers[key]; ok {
 		existing.lastUsed = time.Now()
 		go func() { _ = p.Close() }()
 		return existing.provider, nil
 	}
-	r.providers[spec.Name] = &routedProvider{
-		spec:     spec,
-		provider: p,
-		lastUsed: time.Now(),
+	r.providers[key] = &routedProvider{
+		spec:      spec,
+		workspace: workspace,
+		provider:  p,
+		lastUsed:  time.Now(),
 	}
 	r.maybeEvictLRULocked()
 	return p, nil
@@ -284,6 +355,38 @@ func (r *Router) attachDiagnosticsHook(specName string, p *Provider) {
 	p.SetDiagnosticsHook(func(absPath string, diags []Diagnostic) {
 		hook(specName, absPath, diags)
 	})
+}
+
+// DiagnosticsEntry is one (spec, file, diagnostics) row in a snapshot.
+type DiagnosticsEntry struct {
+	SpecName    string
+	AbsPath     string
+	Diagnostics []Diagnostic
+}
+
+// DiagnosticsSnapshot returns the most recent publishDiagnostics
+// payload across every alive provider, flattened into a single slice.
+// Used to replay current state to a freshly-subscribed MCP client.
+func (r *Router) DiagnosticsSnapshot() []DiagnosticsEntry {
+	r.mu.Lock()
+	live := make([]*routedProvider, 0, len(r.providers))
+	for _, rp := range r.providers {
+		live = append(live, rp)
+	}
+	r.mu.Unlock()
+
+	var out []DiagnosticsEntry
+	for _, rp := range live {
+		snap := rp.provider.DiagnosticsSnapshot()
+		for path, diags := range snap {
+			out = append(out, DiagnosticsEntry{
+				SpecName:    rp.spec.Name,
+				AbsPath:     path,
+				Diagnostics: diags,
+			})
+		}
+	}
+	return out
 }
 
 // Available reports whether at least one of the spec's commands is on
@@ -340,7 +443,7 @@ func (r *Router) specAvailable(spec *ServerSpec) bool {
 func (r *Router) LanguageIDForPath(path string) string { return LanguageIDForPath(path) }
 
 // Reap closes any provider idle for longer than IdleTimeout. Returns
-// the names of reaped specs.
+// "spec@workspace" identifiers for reaped entries.
 func (r *Router) Reap() []string {
 	if r.idleTimeout <= 0 {
 		return nil
@@ -348,16 +451,16 @@ func (r *Router) Reap() []string {
 	cut := time.Now().Add(-r.idleTimeout)
 	r.mu.Lock()
 	var victims []*routedProvider
-	for name, rp := range r.providers {
+	for key, rp := range r.providers {
 		if rp.lastUsed.Before(cut) {
 			victims = append(victims, rp)
-			delete(r.providers, name)
+			delete(r.providers, key)
 		}
 	}
 	r.mu.Unlock()
 	names := make([]string, 0, len(victims))
 	for _, v := range victims {
-		names = append(names, v.spec.Name)
+		names = append(names, formatProviderKey(v.spec.Name, v.workspace))
 		_ = v.provider.Close()
 	}
 	if len(names) > 0 {
@@ -373,18 +476,28 @@ func (r *Router) maybeEvictLRULocked() {
 		return
 	}
 	var oldest *routedProvider
-	var oldestName string
-	for name, rp := range r.providers {
+	var oldestKey providerKey
+	for key, rp := range r.providers {
 		if oldest == nil || rp.lastUsed.Before(oldest.lastUsed) {
 			oldest = rp
-			oldestName = name
+			oldestKey = key
 		}
 	}
 	if oldest != nil {
-		delete(r.providers, oldestName)
+		delete(r.providers, oldestKey)
 		go func() { _ = oldest.provider.Close() }()
-		r.logger.Info("LSP router evicted LRU provider", zap.String("name", oldestName))
+		r.logger.Info("LSP router evicted LRU provider",
+			zap.String("name", formatProviderKey(oldestKey.specName, oldestKey.workspace)))
 	}
+}
+
+// formatProviderKey renders a (spec, workspace) pair into a stable
+// human-readable identifier used in logs, Stats, and Names.
+func formatProviderKey(specName, workspace string) string {
+	if workspace == "" {
+		return specName
+	}
+	return specName + "@" + workspace
 }
 
 func (r *Router) reaperLoop(d time.Duration, stop chan struct{}) {
@@ -408,7 +521,7 @@ func (r *Router) Close() error {
 		r.stopReaper = nil
 	}
 	provs := r.providers
-	r.providers = make(map[string]*routedProvider)
+	r.providers = make(map[providerKey]*routedProvider)
 	r.mu.Unlock()
 
 	var firstErr error
@@ -421,31 +534,43 @@ func (r *Router) Close() error {
 }
 
 // Stats reports the live provider names and their last-used times.
-// Intended for debug / status endpoints.
+// Intended for debug / status endpoints. Spec is the LSP server name;
+// Workspace is the rootURI the server is initialised against.
 type RouterStat struct {
-	Spec     string    `json:"spec"`
-	LastUsed time.Time `json:"last_used"`
+	Spec      string    `json:"spec"`
+	Workspace string    `json:"workspace"`
+	LastUsed  time.Time `json:"last_used"`
 }
 
-// Stats returns one entry per live provider.
+// Stats returns one entry per live (spec, workspace) provider.
 func (r *Router) Stats() []RouterStat {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]RouterStat, 0, len(r.providers))
-	for name, rp := range r.providers {
-		out = append(out, RouterStat{Spec: name, LastUsed: rp.lastUsed})
+	for key, rp := range r.providers {
+		out = append(out, RouterStat{
+			Spec:      key.specName,
+			Workspace: key.workspace,
+			LastUsed:  rp.lastUsed,
+		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Spec < out[j].Spec })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Spec != out[j].Spec {
+			return out[i].Spec < out[j].Spec
+		}
+		return out[i].Workspace < out[j].Workspace
+	})
 	return out
 }
 
-// Names returns just the names of live providers (helper for tests).
+// Names returns "spec@workspace" identifiers for live providers
+// (helper for tests + status output). Sorted for stable output.
 func (r *Router) Names() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.providers))
-	for n := range r.providers {
-		names = append(names, n)
+	for k := range r.providers {
+		names = append(names, formatProviderKey(k.specName, k.workspace))
 	}
 	sort.Strings(names)
 	return names
@@ -474,9 +599,14 @@ func (r *Router) SupportedLanguages() []string {
 func (r *Router) MarshalDescription() string {
 	stats := r.Stats()
 	var b strings.Builder
-	fmt.Fprintf(&b, "lsp-router workspace=%s alive=%d\n", r.workspaceRoot, len(stats))
+	fmt.Fprintf(&b, "lsp-router default=%s alive=%d\n", r.defaultWorkspace, len(stats))
 	for _, s := range stats {
-		fmt.Fprintf(&b, "  %s last_used=%s\n", s.Spec, s.LastUsed.Format(time.RFC3339))
+		fmt.Fprintf(&b, "  %s@%s last_used=%s\n", s.Spec, s.Workspace, s.LastUsed.Format(time.RFC3339))
 	}
 	return b.String()
 }
+
+// DefaultWorkspace returns the workspace root used by For / ForSpec
+// when the caller doesn't supply one explicitly. Exposed for status /
+// debug surfaces.
+func (r *Router) DefaultWorkspace() string { return r.defaultWorkspace }

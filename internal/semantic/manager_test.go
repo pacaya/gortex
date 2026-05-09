@@ -170,6 +170,8 @@ func TestManager_Close(t *testing.T) {
 type fakeRouter struct {
 	specs        []string
 	available    map[string]bool
+	languages    map[string][]string // spec name → languages
+	priorities   map[string]int      // spec name → priority
 	providers    map[string]Provider
 	closeCalls   int
 	providerErrs map[string]error
@@ -185,7 +187,32 @@ func (f *fakeRouter) EnabledSpecNames() []string {
 
 func (f *fakeRouter) SpecAvailable(name string) bool {
 	f.calls = append(f.calls, "SpecAvailable:"+name)
+	if f.available == nil {
+		// Default-true so tests that don't set the map still get
+		// the spec exercised by the router code path.
+		return true
+	}
 	return f.available[name]
+}
+
+func (f *fakeRouter) SpecLanguages(name string) []string {
+	f.calls = append(f.calls, "SpecLanguages:"+name)
+	if langs, ok := f.languages[name]; ok {
+		out := make([]string, len(langs))
+		copy(out, langs)
+		return out
+	}
+	// Sensible fallback so tests that don't bother setting languages
+	// still get a non-empty list (matching mockProvider's "go" default).
+	return []string{"go"}
+}
+
+func (f *fakeRouter) SpecPriority(name string) int {
+	f.calls = append(f.calls, "SpecPriority:"+name)
+	if p, ok := f.priorities[name]; ok {
+		return p
+	}
+	return 99
 }
 
 func (f *fakeRouter) ProviderForSpec(name string) (Provider, error) {
@@ -319,6 +346,152 @@ func TestManager_Close_ShutsDownRouter(t *testing.T) {
 	mgr.SetLSPRouter(r)
 	require.NoError(t, mgr.Close())
 	assert.Equal(t, 1, r.closeCalls)
+}
+
+// TestManager_EnrichAll_ArbitratesRouterDupes — two router-backed
+// specs serving the same language: only the lower-priority spec runs.
+// The losing spec is never spawned (ProviderForSpec is not called for
+// it).
+func TestManager_EnrichAll_ArbitratesRouterDupes(t *testing.T) {
+	logger := zap.NewNop()
+	mgr := NewManager(Config{Enabled: true}, logger)
+
+	pyrightProvider := &mockProvider{name: "lsp-pyright", languages: []string{"python"}, available: true}
+	jediProvider := &mockProvider{name: "lsp-jedi", languages: []string{"python"}, available: true}
+
+	r := &fakeRouter{
+		specs:      []string{"pyright", "jedi-language-server"},
+		available:  map[string]bool{"pyright": true, "jedi-language-server": true},
+		languages:  map[string][]string{"pyright": {"python"}, "jedi-language-server": {"python"}},
+		priorities: map[string]int{"pyright": 5, "jedi-language-server": 6},
+		providers:  map[string]Provider{"pyright": pyrightProvider, "jedi-language-server": jediProvider},
+	}
+	mgr.SetLSPRouter(r)
+
+	g := graph.New()
+	roots := map[string]string{"default": "/tmp/test"}
+	results, err := mgr.EnrichAll(g, roots)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "exactly one provider should run for python")
+	assert.Equal(t, "lsp-pyright", results[0].Provider, "pyright wins the lower-priority arbitration")
+
+	// Spawn must NOT have happened for the loser.
+	for _, c := range r.calls {
+		if c == "ProviderForSpec:jedi-language-server" {
+			t.Fatalf("loser spec was spawned — calls: %v", r.calls)
+		}
+	}
+}
+
+// TestManager_EnrichAll_RouterTieBreakerByName — equal priorities tie-
+// break alphabetically by spec name (deterministic).
+func TestManager_EnrichAll_RouterTieBreakerByName(t *testing.T) {
+	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	pa := &mockProvider{name: "lsp-aaa", languages: []string{"go"}, available: true}
+	pb := &mockProvider{name: "lsp-bbb", languages: []string{"go"}, available: true}
+	r := &fakeRouter{
+		specs:      []string{"bbb", "aaa"},
+		available:  map[string]bool{"aaa": true, "bbb": true},
+		languages:  map[string][]string{"aaa": {"go"}, "bbb": {"go"}},
+		priorities: map[string]int{"aaa": 5, "bbb": 5},
+		providers:  map[string]Provider{"aaa": pa, "bbb": pb},
+	}
+	mgr.SetLSPRouter(r)
+
+	results, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "lsp-aaa", results[0].Provider)
+}
+
+// TestManager_EnrichAll_RouterDedupAcrossLanguages — one spec serving
+// two languages runs Enrich exactly once, not once per language.
+func TestManager_EnrichAll_RouterDedupAcrossLanguages(t *testing.T) {
+	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	tsProvider := &mockProvider{
+		name:      "lsp-typescript-language-server",
+		languages: []string{"typescript", "javascript"},
+		available: true,
+	}
+	r := &fakeRouter{
+		specs:      []string{"typescript-language-server"},
+		available:  map[string]bool{"typescript-language-server": true},
+		languages:  map[string][]string{"typescript-language-server": {"typescript", "javascript"}},
+		priorities: map[string]int{"typescript-language-server": 5},
+		providers:  map[string]Provider{"typescript-language-server": tsProvider},
+	}
+	mgr.SetLSPRouter(r)
+
+	results, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"})
+	require.NoError(t, err)
+	assert.Len(t, results, 1, "spec serving 2 languages should still run Enrich once")
+}
+
+// TestManager_Stats_IncludesRouterSpecs — Stats() reports
+// router-enabled LSP specs alongside eagerly-registered providers.
+// Router specs show up as "lsp-<spec>" with status driven by
+// SpecAvailable, no spawn triggered.
+func TestManager_Stats_IncludesRouterSpecs(t *testing.T) {
+	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr.RegisterProvider(&mockProvider{
+		name:      "scip-go",
+		languages: []string{"go"},
+		available: true,
+	})
+	r := &fakeRouter{
+		specs:     []string{"rust-analyzer", "pyright"},
+		available: map[string]bool{"rust-analyzer": true, "pyright": false},
+		languages: map[string][]string{
+			"rust-analyzer": {"rust"},
+			"pyright":       {"python"},
+		},
+	}
+	mgr.SetLSPRouter(r)
+
+	stats := mgr.Stats()
+	byName := make(map[string]string)
+	for _, s := range stats {
+		byName[s.Name+"/"+s.Language] = s.Status
+	}
+	assert.Equal(t, "ready", byName["scip-go/go"])
+	assert.Equal(t, "ready", byName["lsp-rust-analyzer/rust"])
+	assert.Equal(t, "unavailable", byName["lsp-pyright/python"])
+
+	// Router specs should not have triggered a spawn.
+	for _, c := range r.calls {
+		if c == "ProviderForSpec:rust-analyzer" || c == "ProviderForSpec:pyright" {
+			t.Fatalf("Stats spawned an LSP provider — calls: %v", r.calls)
+		}
+	}
+}
+
+// TestManager_ConfigPriority_Override — config Priority overrides the
+// spec's built-in default in arbitration. User boosts jedi to win
+// over pyright.
+func TestManager_ConfigPriority_Override(t *testing.T) {
+	cfg := Config{
+		Enabled: true,
+		Providers: []ProviderConfig{
+			{Name: "jedi-language-server", Priority: 1, Enabled: true},
+			{Name: "pyright", Priority: 5, Enabled: true},
+		},
+	}
+	mgr := NewManager(cfg, zap.NewNop())
+	pyrightProvider := &mockProvider{name: "lsp-pyright", languages: []string{"python"}, available: true}
+	jediProvider := &mockProvider{name: "lsp-jedi", languages: []string{"python"}, available: true}
+	r := &fakeRouter{
+		specs:      []string{"pyright", "jedi-language-server"},
+		available:  map[string]bool{"pyright": true, "jedi-language-server": true},
+		languages:  map[string][]string{"pyright": {"python"}, "jedi-language-server": {"python"}},
+		priorities: map[string]int{"pyright": 5, "jedi-language-server": 6},
+		providers:  map[string]Provider{"pyright": pyrightProvider, "jedi-language-server": jediProvider},
+	}
+	mgr.SetLSPRouter(r)
+
+	results, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "lsp-jedi", results[0].Provider, "config priority should beat spec default")
 }
 
 func TestManager_Stats(t *testing.T) {
