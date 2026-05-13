@@ -281,33 +281,31 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		totalNodes               int
 	)
 	if c.multiIndexer != nil {
-		// Prefer the live byRepo bucket counts from graph.RepoStats()
-		// when the prefix is present there — that's the authoritative
-		// view. Fall back to meta.NodeCount / meta.EdgeCount when it
-		// isn't: indexer.repoNodeEdgeCount writes per-repo counts at
-		// TrackRepo time, so meta is now safe to use directly (no longer
-		// a leaked workspace total). Empty repos legitimately have no
-		// byRepo entry; keeping the meta fallback also keeps the table
-		// stable across post-warmup graph mutations that drop a prefix
-		// from byRepo without touching meta.
-		var repoStats map[string]graph.GraphStats
+		// Pull every repo's running counters (node/edge counts + byte
+		// estimates) in one pass — O(shard count · repo count), no
+		// graph walk. This used to call c.graph.RepoStats() which
+		// walked every edge to attribute by source-repo (the per-edge
+		// fromNode lookup), and then c.graph.RepoMemoryEstimate(prefix)
+		// inside the per-repo loop — combined cost ~1.2s on a 1.1M-edge
+		// graph and the single biggest source of writer-lock blocking
+		// during warmup.
+		var memEstimates map[string]graph.RepoMemoryEstimate
 		if c.graph != nil {
-			repoStats = c.graph.RepoStats()
+			memEstimates = c.graph.AllRepoMemoryEstimates()
 		}
 
-		// Diagnostic: when AllMetadata has tracked repos but RepoStats
-		// returns nothing (or a much smaller set), some path has cleared
-		// byRepo without clearing the underlying nodes. Logged once per
-		// status call so the warning fires every poll until the cause
-		// is found and fixed; the meta fallback below keeps the table
-		// usable in the meantime.
+		// Diagnostic: when AllMetadata has tracked repos but
+		// AllRepoMemoryEstimates returns nothing (or a much smaller
+		// set), some path has cleared the per-repo counters without
+		// clearing the underlying nodes. The meta fallback below keeps
+		// the table usable in the meantime.
 		if c.logger != nil {
 			tracked := len(c.multiIndexer.AllMetadata())
-			bucketed := len(repoStats)
-			if tracked > 0 && bucketed < tracked {
-				c.logger.Warn("daemon: byRepo bucket count below tracked-repo count — graph mutation cleared per-repo index?",
+			counted := len(memEstimates)
+			if tracked > 0 && counted < tracked {
+				c.logger.Warn("daemon: per-repo counters below tracked-repo count — graph mutation cleared per-repo index?",
 					zap.Int("tracked_repos", tracked),
-					zap.Int("byrepo_buckets", bucketed),
+					zap.Int("counter_buckets", counted),
 					zap.Int("graph_total_nodes", c.graph.NodeCount()))
 			}
 		}
@@ -319,14 +317,14 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		// per-repo which would double storage for the sake of a status
 		// breakdown.
 		backendStats := resolveSearchBackend(c.multiIndexer.Search())
-		for _, s := range repoStats {
-			totalNodes += s.TotalNodes
+		for _, est := range memEstimates {
+			totalNodes += est.NodeCount
 		}
 		// totalNodes drives the SearchBytes share split below. When
-		// byRepo is empty for every prefix (the post-warmup-wipe case
-		// described above), fall back to summing per-repo meta so the
-		// share denominator stays nonzero and the search budget gets
-		// attributed instead of falling on the floor.
+		// the per-repo counters are empty for every prefix (the
+		// post-warmup-wipe case described above), fall back to summing
+		// per-repo meta so the share denominator stays nonzero and the
+		// search budget gets attributed instead of falling on the floor.
 		if totalNodes == 0 {
 			for _, meta := range c.multiIndexer.AllMetadata() {
 				if meta != nil {
@@ -338,14 +336,10 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		for prefix, meta := range c.multiIndexer.AllMetadata() {
 			nodes := meta.NodeCount
 			edges := meta.EdgeCount
-			if s, ok := repoStats[prefix]; ok {
-				nodes = s.TotalNodes
-				edges = s.TotalEdges
-			}
-
 			var mem daemon.MemoryBreakdown
-			if c.graph != nil {
-				est := c.graph.RepoMemoryEstimate(prefix)
+			if est, ok := memEstimates[prefix]; ok {
+				nodes = est.NodeCount
+				edges = est.EdgeCount
 				mem.NodesBytes = est.NodeBytes
 				mem.EdgesBytes = est.EdgeBytes
 			}

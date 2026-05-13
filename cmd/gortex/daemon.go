@@ -348,17 +348,29 @@ func spawnDetachedDaemon() error {
 	// Don't wait — the child inherits the log file handle.
 
 	// Wait until the socket is live or a timeout hits, so we fail fast
-	// if the child died on startup.
-	deadline := time.Now().Add(5 * time.Second)
+	// if the child died on startup. The socket opens after buildDaemonState
+	// decodes the snapshot; on a multi-hundred-MB snapshot that decode
+	// can take 10–20 s, so 5 s used to time out a perfectly healthy
+	// daemon mid-load. 60 s comfortably covers ~1 GiB snapshots while
+	// still failing fast on a child that crashed outright (those die
+	// in well under a second).
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if daemon.IsRunning() {
 			fmt.Fprintf(os.Stderr, "[gortex daemon] detached (pid %d, log: %s)\n",
 				child.Process.Pid, daemon.LogFilePath())
 			return nil
 		}
+		// Bail out early if the child has already exited — no point
+		// waiting another 59 seconds for a corpse.
+		var ws syscall.WaitStatus
+		if pid, _ := syscall.Wait4(child.Process.Pid, &ws, syscall.WNOHANG, nil); pid == child.Process.Pid {
+			return fmt.Errorf("daemon exited during startup (status %d); check %s",
+				ws.ExitStatus(), daemon.LogFilePath())
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("daemon did not come up within 5s; check %s", daemon.LogFilePath())
+	return fmt.Errorf("daemon did not come up within 60s; check %s", daemon.LogFilePath())
 }
 
 func runDaemonStop(_ *cobra.Command, _ []string) error {

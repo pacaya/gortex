@@ -765,7 +765,7 @@ func (mi *MultiIndexer) ReconcileRepoCtx(ctx context.Context, entry config.RepoE
 
 	mi.logger.Info("daemon: reconciled repo from snapshot",
 		zap.String("prefix", prefix),
-		zap.Int("stale_files_reindexed", result.FileCount),
+		zap.Int("stale_files_reindexed", result.StaleFileCount),
 		zap.Duration("elapsed", time.Since(start)))
 
 	return result, nil
@@ -814,10 +814,10 @@ func (mi *MultiIndexer) ReconcileAll() map[string]*IndexResult {
 				zap.String("prefix", prefix), zap.Error(err))
 			continue
 		}
-		if result != nil && result.FileCount > 0 {
+		if result != nil && result.StaleFileCount > 0 {
 			mi.logger.Info("janitor: reconciled repo",
 				zap.String("prefix", prefix),
-				zap.Int("stale_files_reindexed", result.FileCount))
+				zap.Int("stale_files_reindexed", result.StaleFileCount))
 			reindexed++
 		}
 		results[prefix] = result

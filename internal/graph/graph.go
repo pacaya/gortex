@@ -106,24 +106,106 @@ type shard struct {
 	// independent of live Edge state.
 	outEdgeKeys map[string][]edgeKey // fromID → position → key
 	inEdgeKeys  map[string][]edgeKey // toID   → position → key
+
+	// Running per-repo memory totals maintained under the shard's
+	// existing write lock. Reading them out of RepoMemoryEstimate is
+	// O(shard count) instead of the O(repo nodes + total edges) walk
+	// the function used to do — and AllRepoMemoryEstimates collapses
+	// R repo-by-repo queries into one O(R · S) sum. Edges are charged
+	// to the source node's RepoPrefix; the shard owning the source
+	// edge bucket owns the counter, so accounting matches what the
+	// old AllEdges walk attributed.
+	repoNodeBytes map[string]uint64
+	repoNodeCount map[string]int
+	repoEdgeBytes map[string]uint64
+	repoEdgeCount map[string]int
 }
 
 func newShard() *shard {
 	return &shard{
-		nodes:       make(map[string]*Node),
-		outEdges:    make(map[string][]*Edge),
-		inEdges:     make(map[string][]*Edge),
-		byFile:      make(map[string][]*Node),
-		byName:      make(map[string][]*Node),
-		byQual:      make(map[string]*Node),
-		byRepo:      make(map[string][]*Node),
-		byFileIdx:   make(map[string]map[string]int),
-		byNameIdx:   make(map[string]map[string]int),
-		byRepoIdx:   make(map[string]map[string]int),
-		outEdgeIdx:  make(map[string]map[edgeKey]int),
-		inEdgeIdx:   make(map[string]map[edgeKey]int),
-		outEdgeKeys: make(map[string][]edgeKey),
-		inEdgeKeys:  make(map[string][]edgeKey),
+		nodes:         make(map[string]*Node),
+		outEdges:      make(map[string][]*Edge),
+		inEdges:       make(map[string][]*Edge),
+		byFile:        make(map[string][]*Node),
+		byName:        make(map[string][]*Node),
+		byQual:        make(map[string]*Node),
+		byRepo:        make(map[string][]*Node),
+		byFileIdx:     make(map[string]map[string]int),
+		byNameIdx:     make(map[string]map[string]int),
+		byRepoIdx:     make(map[string]map[string]int),
+		outEdgeIdx:    make(map[string]map[edgeKey]int),
+		inEdgeIdx:     make(map[string]map[edgeKey]int),
+		outEdgeKeys:   make(map[string][]edgeKey),
+		inEdgeKeys:    make(map[string][]edgeKey),
+		repoNodeBytes: make(map[string]uint64),
+		repoNodeCount: make(map[string]int),
+		repoEdgeBytes: make(map[string]uint64),
+		repoEdgeCount: make(map[string]int),
+	}
+}
+
+// repoNodeAdd registers a node under its RepoPrefix bucket. Caller
+// must hold s.mu.Lock. No-op for nodes without a prefix (single-repo
+// mode and synthetic nodes that intentionally skip byRepo accounting).
+func (s *shard) repoNodeAdd(n *Node) {
+	if n == nil || n.RepoPrefix == "" {
+		return
+	}
+	s.repoNodeBytes[n.RepoPrefix] += nodeBytes(n)
+	s.repoNodeCount[n.RepoPrefix]++
+}
+
+// repoNodeRemove undoes repoNodeAdd. Clamps to zero on underflow so a
+// stale counter cannot wrap a uint64.
+func (s *shard) repoNodeRemove(n *Node) {
+	if n == nil || n.RepoPrefix == "" {
+		return
+	}
+	b := nodeBytes(n)
+	if cur := s.repoNodeBytes[n.RepoPrefix]; cur >= b {
+		s.repoNodeBytes[n.RepoPrefix] = cur - b
+	} else {
+		s.repoNodeBytes[n.RepoPrefix] = 0
+	}
+	if s.repoNodeCount[n.RepoPrefix] > 0 {
+		s.repoNodeCount[n.RepoPrefix]--
+	}
+	if s.repoNodeBytes[n.RepoPrefix] == 0 && s.repoNodeCount[n.RepoPrefix] == 0 {
+		delete(s.repoNodeBytes, n.RepoPrefix)
+		delete(s.repoNodeCount, n.RepoPrefix)
+	}
+}
+
+// repoEdgeAdd attributes an edge to its source repo. repoPrefix is the
+// source node's RepoPrefix as resolved at the time the edge is
+// inserted; storing it here means a later swap of Edge.To (ReindexEdge)
+// doesn't have to walk the source-node lookup again.
+func (s *shard) repoEdgeAdd(repoPrefix string, e *Edge) {
+	if repoPrefix == "" || e == nil {
+		return
+	}
+	s.repoEdgeBytes[repoPrefix] += edgeBytes(e)
+	s.repoEdgeCount[repoPrefix]++
+}
+
+// repoEdgeRemove undoes repoEdgeAdd. Same clamp-to-zero discipline as
+// repoNodeRemove.
+func (s *shard) repoEdgeRemove(repoPrefix string, e *Edge) {
+	if repoPrefix == "" || e == nil {
+		return
+	}
+	b := edgeBytes(e)
+	if cur := s.repoEdgeBytes[repoPrefix]; cur >= b {
+		s.repoEdgeBytes[repoPrefix] = cur - b
+	} else {
+		s.repoEdgeBytes[repoPrefix] = 0
+	}
+	if s.repoEdgeCount[repoPrefix] > 0 {
+		s.repoEdgeCount[repoPrefix]--
+	}
+	if s.repoEdgeBytes[repoPrefix] == 0 && s.repoEdgeCount[repoPrefix] == 0 {
+		delete(s.repoEdgeBytes, repoPrefix)
+		delete(s.repoEdgeCount, repoPrefix)
 	}
 }
 
@@ -396,6 +478,12 @@ func (g *Graph) AddNode(n *Node) {
 	defer s.mu.Unlock()
 
 	prev, hadPrev := s.nodes[n.ID]
+	// Subtract the previous size/count before overwriting; the new
+	// node's contribution is re-added after the RepoPrefix-preservation
+	// logic below has settled on the final prefix.
+	if hadPrev {
+		s.repoNodeRemove(prev)
+	}
 	s.nodes[n.ID] = n
 
 	if hadPrev {
@@ -443,6 +531,7 @@ func (g *Graph) AddNode(n *Node) {
 	if n.RepoPrefix != "" {
 		addNodeToBucket(s.byRepo, s.byRepoIdx, n.RepoPrefix, n.ID, n)
 	}
+	s.repoNodeAdd(n)
 }
 
 // AddEdge inserts or updates a directed edge in the graph. Locks both
@@ -457,8 +546,19 @@ func (g *Graph) AddEdge(e *Edge) {
 	defer unlock()
 	sFrom := g.shardFor(e.From)
 	sTo := g.shardFor(e.To)
-	addEdgeToBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, e.From, e)
+	// Only charge the source-repo counter on a brand-new insert.
+	// Idempotent re-adds (same edgeKey) replace the slot in place and
+	// would otherwise double-count. addEdgeToBucket returns true when
+	// it actually appended.
+	inserted := addEdgeToBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, e.From, e)
 	addEdgeToBucket(sTo.inEdges, sTo.inEdgeKeys, sTo.inEdgeIdx, e.To, e)
+	if inserted {
+		var srcRepo string
+		if src, ok := sFrom.nodes[e.From]; ok && src != nil {
+			srcRepo = src.RepoPrefix
+		}
+		sFrom.repoEdgeAdd(srcRepo, e)
+	}
 }
 
 // ReindexEdge updates the inEdges index after an edge's To field has
@@ -600,13 +700,17 @@ func (g *Graph) EvictFile(filePath string) (nodesRemoved, edgesRemoved int) {
 	if len(nodes) == 0 {
 		return 0, 0
 	}
-	evictedIDs := make(map[string]bool, len(nodes))
+	// id → source-repo captured BEFORE we delete the node from
+	// s.nodes; evictEdgesLocked needs the repo to debit per-repo
+	// edge counters and the live node would already be gone.
+	evictedIDs := make(map[string]string, len(nodes))
 	for _, n := range nodes {
-		evictedIDs[n.ID] = true
+		evictedIDs[n.ID] = n.RepoPrefix
 	}
 
 	for _, n := range nodes {
 		s := g.shardFor(n.ID)
+		s.repoNodeRemove(n)
 		delete(s.nodes, n.ID)
 		if n.QualName != "" {
 			if cur, ok := s.byQual[n.QualName]; ok && cur.ID == n.ID {
@@ -632,7 +736,7 @@ func (g *Graph) EvictFile(filePath string) (nodesRemoved, edgesRemoved int) {
 // clean the reverse index on non-evicted endpoints we do a swap-with-
 // last removal via sidecar, which is O(1) per edge instead of the
 // O(slice-size) filterEdge scan the older implementation used.
-func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
+func (g *Graph) evictEdgesLocked(evictedIDs map[string]string) int {
 	removed := 0
 
 	// Phase 1: remove outgoing edges from every evicted node. Use the
@@ -640,13 +744,14 @@ func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 	// edgeKey rather than recomputing keyOf — the latter races with
 	// resolver-driven Edge.To mutations elsewhere in the graph and
 	// can yield a key that doesn't match the inEdges sidecar.
-	for id := range evictedIDs {
+	for id, srcRepo := range evictedIDs {
 		s := g.shardFor(id)
 		edges := s.outEdges[id]
 		keys := s.outEdgeKeys[id]
 		removed += len(edges)
 		for i, e := range edges {
-			if !evictedIDs[e.To] {
+			s.repoEdgeRemove(srcRepo, e)
+			if _, evicted := evictedIDs[e.To]; !evicted {
 				sTo := g.shardFor(e.To)
 				removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeKeys, sTo.inEdgeIdx, e.To, keys[i])
 			}
@@ -658,16 +763,23 @@ func (g *Graph) evictEdgesLocked(evictedIDs map[string]bool) int {
 
 	// Phase 2: remove incoming edges to every evicted node (from
 	// non-evicted sources — same-direction edges were already handled
-	// in phase 1 and counted).
+	// in phase 1 and counted). Each surviving source's repo is read
+	// from its live node — sFrom.nodes[e.From] is still present in
+	// this phase because that source wasn't evicted.
 	for id := range evictedIDs {
 		s := g.shardFor(id)
 		edges := s.inEdges[id]
 		keys := s.inEdgeKeys[id]
 		for i, e := range edges {
-			if !evictedIDs[e.From] {
+			if _, evicted := evictedIDs[e.From]; !evicted {
 				removed++
 				sFrom := g.shardFor(e.From)
+				var srcRepo string
+				if src, ok := sFrom.nodes[e.From]; ok && src != nil {
+					srcRepo = src.RepoPrefix
+				}
 				removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, e.From, keys[i])
+				sFrom.repoEdgeRemove(srcRepo, e)
 			}
 		}
 		delete(s.inEdges, id)
@@ -700,12 +812,22 @@ func (g *Graph) RemoveEdge(from, to string, kind EdgeKind) bool {
 		return false
 	}
 
+	// Snapshot the edge plus its source-repo before mutating the
+	// buckets — once removeEdgeFromBucket swaps the tail in, outList[i]
+	// is no longer the edge we're removing.
+	removed := outList[targetIdx]
+	var srcRepo string
+	if src, ok := sFrom.nodes[from]; ok && src != nil {
+		srcRepo = src.RepoPrefix
+	}
+
 	// Use the stored insertion-time key rather than keyOf(target) so
 	// removal is robust against in-flight Edge.To mutations.
 	k := outKeys[targetIdx]
 	removeEdgeFromBucket(sFrom.outEdges, sFrom.outEdgeKeys, sFrom.outEdgeIdx, from, k)
 	sTo := g.shardFor(to)
 	removeEdgeFromBucket(sTo.inEdges, sTo.inEdgeKeys, sTo.inEdgeIdx, to, k)
+	sFrom.repoEdgeRemove(srcRepo, removed)
 	return true
 }
 
@@ -826,13 +948,14 @@ func (g *Graph) EvictRepo(repoPrefix string) (nodesRemoved, edgesRemoved int) {
 	if len(nodes) == 0 {
 		return 0, 0
 	}
-	evictedIDs := make(map[string]bool, len(nodes))
+	evictedIDs := make(map[string]string, len(nodes))
 	for _, n := range nodes {
-		evictedIDs[n.ID] = true
+		evictedIDs[n.ID] = repoPrefix
 	}
 
 	for _, n := range nodes {
 		s := g.shardFor(n.ID)
+		s.repoNodeRemove(n)
 		delete(s.nodes, n.ID)
 		if n.QualName != "" {
 			if cur, ok := s.byQual[n.QualName]; ok && cur.ID == n.ID {
@@ -934,37 +1057,51 @@ const nodeStructOverhead = 240
 // list, so the amortised overhead is ~2× slice-element + map-bucket).
 const edgeStructOverhead = 144
 
-// RepoMemoryEstimate walks the per-repo partition and sums node and
-// edge byte estimates. Approximate but cheap (O(repo size) with one
-// read lock across all shards).
+// RepoMemoryEstimate sums the running per-shard counters maintained
+// by AddNode / AddEdge / RemoveEdge / EvictFile / EvictRepo. O(shard
+// count) instead of the O(repo nodes + total edges) walk this used to
+// do — relevant because daemon-status queries call this once per
+// tracked repo, and on a 488-repo / 1.9M-edge graph the old
+// implementation was the single biggest source of writer contention
+// during warmup.
 func (g *Graph) RepoMemoryEstimate(repoPrefix string) RepoMemoryEstimate {
 	g.lockAllRead()
 	defer g.unlockAllRead()
 
 	var est RepoMemoryEstimate
-	evictedIDs := make(map[string]struct{})
 	for _, s := range g.shards {
-		nodes := s.byRepo[repoPrefix]
-		for _, n := range nodes {
-			est.NodeBytes += nodeBytes(n)
-			est.NodeCount++
-			evictedIDs[n.ID] = struct{}{}
-		}
-	}
-	// Edges whose source lives in this repo. Same accounting rule as
-	// RepoStats so the numbers stay consistent.
-	for _, s := range g.shards {
-		for srcID, edges := range s.outEdges {
-			if _, ok := evictedIDs[srcID]; !ok {
-				continue
-			}
-			for _, e := range edges {
-				est.EdgeBytes += edgeBytes(e)
-				est.EdgeCount++
-			}
-		}
+		est.NodeBytes += s.repoNodeBytes[repoPrefix]
+		est.NodeCount += s.repoNodeCount[repoPrefix]
+		est.EdgeBytes += s.repoEdgeBytes[repoPrefix]
+		est.EdgeCount += s.repoEdgeCount[repoPrefix]
 	}
 	return est
+}
+
+// AllRepoMemoryEstimates returns the per-repo estimate for every
+// repo with a tracked counter — one pass across shards, one read lock
+// acquisition. Callers driving a per-repo loop (daemon status) should
+// prefer this over the single-repo variant.
+func (g *Graph) AllRepoMemoryEstimates() map[string]RepoMemoryEstimate {
+	g.lockAllRead()
+	defer g.unlockAllRead()
+
+	out := make(map[string]RepoMemoryEstimate)
+	for _, s := range g.shards {
+		for prefix, bytes := range s.repoNodeBytes {
+			est := out[prefix]
+			est.NodeBytes += bytes
+			est.NodeCount += s.repoNodeCount[prefix]
+			out[prefix] = est
+		}
+		for prefix, bytes := range s.repoEdgeBytes {
+			est := out[prefix]
+			est.EdgeBytes += bytes
+			est.EdgeCount += s.repoEdgeCount[prefix]
+			out[prefix] = est
+		}
+	}
+	return out
 }
 
 // nodeBytes estimates the memory footprint of a single graph.Node.

@@ -39,11 +39,22 @@ import (
 
 // IndexResult holds the outcome of an indexing operation.
 type IndexResult struct {
-	NodeCount  int          `json:"node_count"`
-	EdgeCount  int          `json:"edge_count"`
-	FileCount  int          `json:"file_count"`
-	DurationMs int64        `json:"duration_ms"`
-	Errors     []IndexError `json:"errors,omitempty"`
+	NodeCount int `json:"node_count"`
+	EdgeCount int `json:"edge_count"`
+	// FileCount is the total number of language files the indexer
+	// observed for this repo — i.e. how big the repo is on disk, not
+	// how much work this pass did. Stamped onto RepoMetadata so
+	// `daemon status` shows a stable file count across both full-track
+	// and incremental-reconcile paths.
+	FileCount int `json:"file_count"`
+	// StaleFileCount is the number of files that were actually
+	// re-indexed in this pass (only populated by IncrementalReindex
+	// — full-index passes treat every file as stale and would
+	// duplicate FileCount). Used by the janitor / reconcile log to
+	// report "how much work did the snapshot delta require".
+	StaleFileCount int          `json:"stale_file_count,omitempty"`
+	DurationMs     int64        `json:"duration_ms"`
+	Errors         []IndexError `json:"errors,omitempty"`
 }
 
 // IndexError records a per-file parsing failure.
@@ -1884,10 +1895,11 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 
 	nodes, edges := idx.repoNodeEdgeCount()
 	return &IndexResult{
-		NodeCount:  nodes,
-		EdgeCount:  edges,
-		FileCount:  len(staleFiles),
-		DurationMs: time.Since(start).Milliseconds(),
+		NodeCount:      nodes,
+		EdgeCount:      edges,
+		FileCount:      len(diskFiles),
+		StaleFileCount: len(staleFiles),
+		DurationMs:     time.Since(start).Milliseconds(),
 	}, nil
 }
 
