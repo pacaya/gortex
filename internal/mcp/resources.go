@@ -189,6 +189,7 @@ func (s *Server) handleResourceSchema(_ context.Context, req mcp.ReadResourceReq
 - references   — symbol A references type/variable B
 - member_of    — method/field A belongs to type B
 - instantiates — function A creates instance of type B
+- similar_to   — function/method A is a near-duplicate (clone) of B
 
 ## Node ID Format
   file_path::SymbolName

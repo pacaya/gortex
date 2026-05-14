@@ -298,6 +298,21 @@ const (
 	// infra-side declaration and code-side consumption materialises
 	// for free via shared node IDs. Origin: ast_resolved.
 	EdgeUsesEnv EdgeKind = "uses_env"
+	// EdgeSimilarTo links two function/method nodes whose bodies are
+	// near-duplicates ("clones"). Materialised by the graph-wide
+	// MinHash + LSH clone-detection pass: each function body is reduced
+	// to a 64-slot MinHash signature at index time (stored on
+	// Node.Meta["clone_sig"]), LSH banding produces candidate pairs,
+	// and a Jaccard-similarity threshold filter keeps the true clones.
+	// Emitted symmetrically — both fA→fB and fB→fA — so "what are the
+	// clones of X" is a single out-edge walk from either endpoint.
+	// Meta["similarity"] carries the estimated Jaccard score (0..1);
+	// Confidence mirrors it. Origin: ast_inferred — the relationship is
+	// a statistical estimate over normalised tokens, not a structural
+	// fact. Pairs with dead-code analysis to surface "dead duplicates
+	// of live code" — a near-duplicate of a live function that itself
+	// has zero callers.
+	EdgeSimilarTo EdgeKind = "similar_to"
 )
 
 type Edge struct {

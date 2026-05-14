@@ -295,6 +295,7 @@ type IndexConfig struct {
 //   - SQL:           false (Phase 3 — noisy and slow)
 //   - Fixtures:      true  (testdata path detection)
 //   - CrossLanguage: false (cgo / wasm-bindgen)
+//   - Clones:        true  (MinHash + LSH near-duplicate detection)
 //
 // Setting any leaf Enabled explicitly overrides the default.
 type CoverageConfig struct {
@@ -313,6 +314,22 @@ type CoverageConfig struct {
 	SQL           SQLConfig       `mapstructure:"sql"            yaml:"sql,omitempty"`
 	Fixtures      DomainToggle    `mapstructure:"fixtures"       yaml:"fixtures,omitempty"`
 	CrossLanguage DomainToggle    `mapstructure:"cross_language" yaml:"cross_language,omitempty"`
+	Clones        ClonesConfig    `mapstructure:"clones"         yaml:"clones,omitempty"`
+}
+
+// ClonesConfig gates MinHash + LSH near-duplicate ("clone") detection.
+// When enabled, the indexer stamps a 64-slot MinHash signature on every
+// substantial function/method node at parse time and a graph-wide pass
+// emits EdgeSimilarTo edges between bodies whose estimated Jaccard
+// similarity is at or above Threshold. Default-on: signature
+// computation is a cheap per-function tokenise + hash, and the LSH pass
+// is near-linear.
+type ClonesConfig struct {
+	Enabled *bool `mapstructure:"enabled" yaml:"enabled,omitempty"`
+	// Threshold is the Jaccard similarity at or above which a candidate
+	// pair is recorded as a clone. Zero (unset) falls back to the
+	// clones package default (0.82). Values are clamped to (0, 1].
+	Threshold float64 `mapstructure:"threshold" yaml:"threshold,omitempty"`
 }
 
 // DomainToggle is the minimal config for a domain whose only knob is
@@ -397,6 +414,7 @@ var coverageDomainDefault = map[string]bool{
 	"sql":            false,
 	"fixtures":       true,
 	"cross_language": false,
+	"clones":         true,
 }
 
 // resolveDomainEnabled returns the effective Enabled flag for a
@@ -453,8 +471,25 @@ func (cov CoverageConfig) IsEnabled(domain string) bool {
 		return resolveDomainEnabled(cov.Fixtures.Enabled, domain)
 	case "cross_language":
 		return resolveDomainEnabled(cov.CrossLanguage.Enabled, domain)
+	case "clones":
+		return resolveDomainEnabled(cov.Clones.Enabled, domain)
 	}
 	return false
+}
+
+// ClonesThreshold returns the configured Jaccard similarity threshold
+// for clone detection, or 0 when the user has not set one (callers
+// then fall back to the clones package default). Out-of-range values
+// are clamped to (0, 1].
+func (cov CoverageConfig) ClonesThreshold() float64 {
+	t := cov.Clones.Threshold
+	if t <= 0 {
+		return 0
+	}
+	if t > 1 {
+		return 1
+	}
+	return t
 }
 
 // TodoTags returns the configured TODO tag set, or the default set

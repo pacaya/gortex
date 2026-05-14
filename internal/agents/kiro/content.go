@@ -110,6 +110,13 @@ Gortex is running as an MCP server. It indexes this repository into an in-memory
 | Hand-tracing a value through helpers  | ` + "`flow_between(source_id, sink_id, max_depth=8)`" + ` — ranked dataflow paths over ` + "`value_flow`" + ` ∪ ` + "`arg_of`" + ` ∪ ` + "`returns_to`" + ` |
 | Grepping for sources / sinks          | ` + "`taint_paths(source_pattern, sink_pattern)`" + ` — pattern sweep. Patterns: bare = name substring; ` + "`exact:Foo`" + `; ` + "`path:dir/`" + `; ` + "`kind:method`" + `. Sinks auto-expand functions to params. |
 
+### Clone Detection
+
+| Instead of...                         | Use...                                   |
+|---------------------------------------|------------------------------------------|
+| Eyeballing the repo for copy-paste    | ` + "`find_clones`" + ` — near-duplicate function/method clusters from the ` + "`similar_to`" + ` graph layer (MinHash + LSH; catches renamed-variable clones) |
+| Finding safe-to-delete duplicates     | ` + "`find_clones`" + ` with ` + "`dead_only: true`" + ` — clusters containing a dead-code symbol ("dead duplicates of live code") |
+
 ### Multi-Repo Management
 
 | Instead of...                         | Use...                                   |

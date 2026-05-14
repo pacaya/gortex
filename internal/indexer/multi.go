@@ -193,6 +193,29 @@ func (mi *MultiIndexer) RunGlobalGraphPasses() {
 			zap.Int("edges", emitted),
 		)
 	}
+	if clonePairs, cloneEdges := detectClonesAndEmitEdges(mi.graph, mi.cloneThreshold()); clonePairs > 0 {
+		mi.logger.Info("clone edges emitted (global)",
+			zap.Int("clone_pairs", clonePairs),
+			zap.Int("edges", cloneEdges),
+		)
+	}
+}
+
+// cloneThreshold resolves the graph-wide Jaccard similarity cutoff for
+// clone detection. Thresholds are configured per-repo but the LSH pass
+// is graph-wide, so the strictest (highest) configured value across
+// tracked repos wins — fewer false-positive EdgeSimilarTo edges. Zero
+// (no repo set one) falls through to the clones package default.
+func (mi *MultiIndexer) cloneThreshold() float64 {
+	mi.mu.RLock()
+	defer mi.mu.RUnlock()
+	best := 0.0
+	for _, idx := range mi.indexers {
+		if t := idx.cloneThreshold(); t > best {
+			best = t
+		}
+	}
+	return best
 }
 
 // NewMultiIndexer creates a MultiIndexer.

@@ -58,6 +58,7 @@ var alwaysAllow = []string{
 	"diff_context", "index_health", "get_symbol_history",
 	"scaffold", "batch_edit",
 	"flow_between", "taint_paths",
+	"find_clones",
 }
 
 func (a *Adapter) Detect(env agents.Env) (bool, error) {

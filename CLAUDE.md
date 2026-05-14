@@ -172,6 +172,15 @@ The `flow_between` and `taint_paths` MCP tools answer **"where does this value f
 | Grepping for sources / sinks         | `taint_paths` — pattern-driven sweep returning every flow from a matching source to a matching sink. Pattern syntax: bare token = case-insensitive substring on name; `exact:Foo` = exact match; `path:dir/` = file-path prefix; `kind:method` = node-kind filter; combine clauses with spaces (AND). Sinks expand functions to their params automatically. |
 | Reading callers to verify a refactor | `flow_between` from the changed return symbol to a downstream consumer's param to find every consumer site, including those reached through helper functions. |
 
+### Clone Detection
+
+The `find_clones` MCP tool surfaces near-duplicate ("clone") function/method clusters from the `similar_to` graph layer. At index time every substantial function body is reduced to a 64-slot MinHash signature (token-normalised so renamed-variable copies still match), LSH banding produces candidate pairs, and a Jaccard-similarity threshold filter keeps the true clones — emitted as symmetric `EdgeSimilarTo` edges. Gated behind the `clones` coverage domain (default on; tune `index.coverage.clones.threshold` in `.gortex.yaml`).
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Grepping / eyeballing for copy-paste  | `find_clones` — near-duplicate clusters; scope with `min_similarity`, `path_prefix`, `repo`, `limit`; supports `format: "gcx"` |
+| Hunting safe-to-delete duplicates     | `find_clones` with `dead_only: true` — clusters containing a dead-code symbol ("dead duplicates of live code"); every member is flagged `is_dead` in the default view |
+
 ### Config Hygiene
 
 | Instead of...                         | You MUST use...                          |
@@ -243,3 +252,4 @@ Analyzer-backed rollups (read-only summaries; the only "argument" is the current
 - Dataflow (CPG-lite, `flow_between` / `taint_paths`): `value_flow` (intra-procedural assignment / return / range), `arg_of` (caller arg → callee param), `returns_to` (callee → assignment LHS)
 - Metadata: `annotated` (decorators), `emits` (events), `throws` (errors), `queries` (SQL), `reads_col` / `writes_col`, `toggles_flag`, `depends_on_module`, `matches` (fixtures), `generated_by`, `tests` (test → tested symbol), `covered_by`, `owns` (CODEOWNERS), `authored`, `licensed_as`
 - Infrastructure (K8s / Kustomize / Dockerfile): `configures` (workload → ConfigMap/Secret via env/envFrom), `mounts` (workload → volume source: ConfigMap/Secret/PVC), `exposes` (Resource/Image → `port::<proto>::<n>`), `depends_on` (Ingress→Service / stage→base image / overlay→base / Resource→Image), `uses_env` (Resource/Image → `cfg::env::<NAME>` config_key — shared ID with `os.Getenv` so cross-ref between infra declaration and code-side reads is automatic)
+- Similarity (`find_clones`): `similar_to` (function/method near-duplicate — MinHash + LSH clone detection; symmetric; `Meta["similarity"]` carries the estimated Jaccard score)

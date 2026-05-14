@@ -119,6 +119,15 @@ The ` + "`flow_between`" + ` and ` + "`taint_paths`" + ` MCP tools answer **"whe
 | Grep for a code shape (e.g. ` + "`.Get(_, nil)`" + `) | ` + "`search_ast`" + ` with ` + "`pattern: \"...\"`" + ` (raw tree-sitter S-expression) + ` + "`language`" + `. Capture nodes with ` + "`@name`" + `, anchor with ` + "`@match`" + `, predicates ` + "`(#eq? @x \"…\")`" + ` / ` + "`(#match? @x \"…\")`" + `. |
 | Scoping the audit to load-bearing code   | Pass ` + "`min_fan_in_of_enclosing_func: <N>`" + ` — drops matches in functions with fewer than N callers. |
 
+### Clone Detection
+
+` + "`find_clones`" + ` surfaces near-duplicate function/method clusters from the ` + "`similar_to`" + ` graph layer — a MinHash + LSH pass over normalised tokens that catches copy-paste and renamed-variable (Type-1/Type-2) clones.
+
+| Instead of...                            | You MUST use...                          |
+|------------------------------------------|------------------------------------------|
+| Eyeballing the repo for copy-paste       | ` + "`find_clones`" + ` — near-duplicate clusters; filter with ` + "`min_similarity`" + ` / ` + "`path_prefix`" + ` / ` + "`repo`" + `. |
+| Hunting safe-to-delete duplicates        | ` + "`find_clones`" + ` with ` + "`dead_only: true`" + ` — clusters containing a dead symbol: "dead duplicates of live code". |
+
 ### Code Quality and Analysis
 
 The ` + "`analyze`" + ` MCP tool is a unified dispatcher. Pass ` + "`kind: \"<name>\"`" + ` for one of:
@@ -335,6 +344,15 @@ The ` + "`flow_between`" + ` and ` + "`taint_paths`" + ` MCP tools answer **"whe
 | Grepping for sources / sinks         | ` + "`taint_paths`" + ` — pattern-driven sweep returning every flow from a matching source to a matching sink. Pattern syntax: bare token = case-insensitive substring on name; ` + "`exact:Foo`" + ` = exact match; ` + "`path:dir/`" + ` = file-path prefix; ` + "`kind:method`" + ` = node-kind filter; combine clauses with spaces (AND). Sinks expand functions to their params automatically. |
 | Reading callers to verify a refactor | ` + "`flow_between`" + ` from the changed return symbol to a downstream consumer's param to find every consumer site, including those reached through helper functions. |
 
+### Clone Detection
+
+` + "`find_clones`" + ` materialises the ` + "`similar_to`" + ` graph layer — a MinHash + LSH pass that hashes every function/method body into a 64-slot signature, LSH-bands the signatures into candidate pairs, and keeps the pairs whose estimated Jaccard similarity crosses the index-time threshold. Catches copy-paste and renamed-variable (Type-1/Type-2) clones.
+
+| Instead of...                         | You MUST use...                          |
+|---------------------------------------|------------------------------------------|
+| Eyeballing the repo for copy-paste    | ` + "`find_clones`" + ` — near-duplicate function/method clusters; pass ` + "`min_similarity`" + ` / ` + "`path_prefix`" + ` / ` + "`repo`" + ` / ` + "`limit`" + ` to scope |
+| Finding safe-to-delete duplicates     | ` + "`find_clones`" + ` with ` + "`dead_only: true`" + ` — clusters containing a dead-code symbol ("dead duplicates of live code"); each member is also flagged ` + "`is_dead`" + ` in the default view |
+
 ### Multi-Repo Management
 
 | Instead of...                         | You MUST use...                          |
@@ -399,6 +417,7 @@ Analyzer-backed rollups (read-only summaries; the only "argument" is the current
 - Dataflow (CPG-lite, ` + "`flow_between`" + ` / ` + "`taint_paths`" + `): ` + "`value_flow`" + ` (intra-procedural assignment / return / range), ` + "`arg_of`" + ` (caller arg → callee param), ` + "`returns_to`" + ` (callee → assignment LHS)
 - Metadata: ` + "`annotated`" + ` (decorators), ` + "`emits`" + ` (events), ` + "`throws`" + ` (errors), ` + "`queries`" + ` (SQL), ` + "`reads_col`" + ` / ` + "`writes_col`" + `, ` + "`toggles_flag`" + `, ` + "`depends_on_module`" + `, ` + "`matches`" + ` (fixtures), ` + "`generated_by`" + `, ` + "`tests`" + ` (test → tested symbol), ` + "`covered_by`" + `, ` + "`owns`" + ` (CODEOWNERS), ` + "`authored`" + `, ` + "`licensed_as`" + `
 - Infrastructure (K8s / Kustomize / Dockerfile): ` + "`configures`" + ` (workload → ConfigMap/Secret via env/envFrom), ` + "`mounts`" + ` (workload → volume source: ConfigMap/Secret/PVC), ` + "`exposes`" + ` (Resource/Image → ` + "`port::<proto>::<n>`" + `), ` + "`depends_on`" + ` (Ingress→Service / stage→base / overlay→base / Resource→Image), ` + "`uses_env`" + ` (Resource/Image → ` + "`cfg::env::<NAME>`" + ` config_key — shared ID with ` + "`os.Getenv`" + ` so the cross-ref between infra declaration and code-side reads is automatic)
+- Similarity (` + "`find_clones`" + `): ` + "`similar_to`" + ` (function/method near-duplicate — MinHash + LSH clone detection; symmetric; ` + "`Meta[\"similarity\"]`" + ` carries the estimated Jaccard score)
 `
 
 // AppendInstructions appends body to path, creating the file if

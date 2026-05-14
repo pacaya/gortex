@@ -377,6 +377,18 @@ func (idx *Indexer) RunGlobalGraphPasses() {
 			zap.Int("edges", emitted),
 		)
 	}
+	if clonePairs, cloneEdges := detectClonesAndEmitEdges(idx.graph, idx.cloneThreshold()); clonePairs > 0 {
+		idx.logger.Info("clone edges emitted (global)",
+			zap.Int("clone_pairs", clonePairs),
+			zap.Int("edges", cloneEdges),
+		)
+	}
+}
+
+// cloneThreshold returns the configured Jaccard similarity cutoff for
+// clone detection (0 = use the clones package default).
+func (idx *Indexer) cloneThreshold() float64 {
+	return idx.config.Coverage.ClonesThreshold()
 }
 
 // RunDeferredPasses runs the per-repo cross-cutting passes that IndexCtx
@@ -694,6 +706,9 @@ func (idx *Indexer) applyCoverageDomains(relPath, lang string, src []byte, resul
 	}
 	if !idx.config.Coverage.IsEnabled("sql") {
 		stripSQLArtifacts(result)
+	}
+	if idx.config.Coverage.IsEnabled("clones") {
+		applyCloneSignatures(src, result)
 	}
 }
 
@@ -1361,6 +1376,13 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 					zap.Int("edges", emitted),
 				)
 			}
+			reporter.Report("clone detection pass", 0, 0)
+			if clonePairs, cloneEdges := detectClonesAndEmitEdges(idx.graph, idx.cloneThreshold()); clonePairs > 0 {
+				idx.logger.Info("clone edges emitted",
+					zap.Int("clone_pairs", clonePairs),
+					zap.Int("edges", cloneEdges),
+				)
+			}
 		}
 	}
 
@@ -1503,6 +1525,15 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 		// to keep arg_of / returns_to edges in sync with the
 		// freshly resolved EdgeCalls graph.
 		idx.materializeDataflowParams()
+		// Clone detection. EvictFile above removed this file's
+		// EdgeSimilarTo edges in both directions; a full recompute
+		// restores the correct set against the freshly stamped
+		// signatures. Skipped under deferGlobalPasses — a batch
+		// caller (ReconcileAll, warmup) runs the global pass once at
+		// the end instead of paying the O(functions) walk per file.
+		if !idx.deferGlobalPasses {
+			detectClonesAndEmitEdges(idx.graph, idx.cloneThreshold())
+		}
 	}
 
 	// Update mtime for this file (uses raw relPath for disk-based tracking).
@@ -1878,6 +1909,12 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 	if !idx.deferGlobalPasses {
 		idx.resolver.InferImplements()
 		idx.resolver.InferOverrides()
+		// Clone detection is not re-run here: each stale file was
+		// re-indexed through IndexFile above, whose resolve pass
+		// already recomputed EdgeSimilarTo against the fresh graph,
+		// and deleted files self-clean via EvictFile's bidirectional
+		// edge removal. Under deferGlobalPasses the batch caller runs
+		// the global clone pass once at the end.
 	}
 
 	// Rebuild search index to ensure consistency.

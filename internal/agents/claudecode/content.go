@@ -205,6 +205,11 @@ Quick reference for all Gortex MCP tools and the knowledge graph schema.
 | search_ast (raw pattern) | Tree-sitter S-expression queries. Pass ` + "`pattern: \"...\"`" + ` + ` + "`language: \"...\"`" + `. Capture nodes with ` + "`@name`" + `, anchor with ` + "`@match`" + `, predicates ` + "`(#eq? @x \"literal\")`" + ` / ` + "`(#match? @x \"regex\")`" + `. Example: ` + "`((call_expression function: (identifier) @fn) @match (#eq? @fn \"panic\"))`" + ` finds every direct ` + "`panic()`" + ` call. |
 | search_ast (graph filters) | Combine the structural match with graph predicates ast-grep can't express: ` + "`path_prefix`" + ` / ` + "`repo`" + ` / ` + "`project`" + ` / ` + "`ref`" + ` / ` + "`min_fan_in_of_enclosing_func`" + `. The last narrows results to load-bearing code by dropping matches in functions with few callers. |
 
+### Clone Detection
+| Tool | What it gives you |
+|------|-------------------|
+| find_clones | Near-duplicate function/method clusters from the ` + "`similar_to`" + ` graph layer (MinHash + LSH over normalised tokens — catches copy-paste and renamed-variable clones). Every member is flagged ` + "`is_dead`" + `; pass ` + "`dead_only: true`" + ` for the "dead duplicates of live code" diagnostic. Filters: ` + "`min_similarity`" + `, ` + "`path_prefix`" + `, ` + "`repo`" + `, ` + "`limit`" + `. |
+
 ### Diagnostics & Code Actions
 | Tool | What it gives you |
 |------|-------------------|
@@ -297,6 +302,7 @@ Quick reference for all Gortex MCP tools and the knowledge graph schema.
 - Mutation: reads / writes (fields), reads_config / writes_config
 - Dataflow (CPG-lite, ` + "`flow_between`" + ` / ` + "`taint_paths`" + `): value_flow (intra-procedural assignment / return / range), arg_of (caller arg → callee param), returns_to (callee → assignment LHS)
 - Metadata: annotated (decorators), emits (events), throws (errors), queries (SQL), reads_col / writes_col, toggles_flag, depends_on_module, matches (fixtures), generated_by, tests (test → tested symbol), covered_by, owns (CODEOWNERS), authored, licensed_as
+- Similarity: similar_to (function/method near-duplicate — MinHash + LSH clone detection, ` + "`find_clones`" + `)
 `
 
 const commandExplore = `# Exploring Codebases with Gortex
