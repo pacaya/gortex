@@ -178,7 +178,7 @@ func TestOverlay_BaseSHA_MatchProceeds(t *testing.T) {
 	data, err := os.ReadFile(targetFile)
 	require.NoError(t, err)
 	h := sha1.New()
-	fmt.Fprintf(h, "blob %d\x00", len(data))
+	_, _ = fmt.Fprintf(h, "blob %d\x00", len(data))
 	_, _ = h.Write(data)
 	baseSHA := hex.EncodeToString(h.Sum(nil))
 

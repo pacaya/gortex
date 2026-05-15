@@ -105,7 +105,7 @@ func (s *Server) handleOverlayRegister(ctx context.Context, req mcp.CallToolRequ
 	}
 	if err := s.overlays.RegisterWithID(id, workspace); err != nil {
 		if errors.Is(err, daemon.ErrSessionExists) {
-			return mcp.NewToolResultError(fmt.Sprintf("overlay session is already registered for a different workspace; call overlay_drop first")), nil
+			return mcp.NewToolResultError("overlay session is already registered for a different workspace; call overlay_drop first"), nil
 		}
 		return mcp.NewToolResultError(err.Error()), nil
 	}

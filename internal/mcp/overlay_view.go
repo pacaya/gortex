@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"go.uber.org/zap"
-
 	"github.com/zzet/gortex/internal/daemon"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/indexer"
@@ -521,7 +519,7 @@ func hashOverlayFiles(files []daemon.OverlayFile) string {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
 	h := sha256.New()
 	for _, f := range sorted {
-		fmt.Fprintf(h, "%s\x00%t\x00%s\x00", f.Path, f.Deleted, f.BaseSHA)
+		_, _ = fmt.Fprintf(h, "%s\x00%t\x00%s\x00", f.Path, f.Deleted, f.BaseSHA)
 		_, _ = h.Write([]byte(f.Content))
 		_, _ = h.Write([]byte{0})
 	}
@@ -575,16 +573,6 @@ func (s *Server) overlayCacheInvalidate(sessID string) {
 		return
 	}
 	s.overlayLayerCache.Delete(sessID)
-}
-
-// loggerForOverlay returns s.logger if non-nil, else a no-op logger.
-// Helper so the overlay path can emit structured diagnostics without
-// gating every emit on a nil check.
-func (s *Server) loggerForOverlay() *zap.Logger {
-	if s == nil || s.logger == nil {
-		return zap.NewNop()
-	}
-	return s.logger
 }
 
 // Compile-time sanity: a sync.Mutex usage placeholder so future

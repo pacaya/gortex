@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -194,23 +193,23 @@ func TestOverlayManager_StatusForReportsExpiryMetadata(t *testing.T) {
 
 // TestOverlayIdleTTLFromEnv covers the three branches of the
 // configuration resolution: explicit override > env var > default.
+// t.Setenv auto-restores the original value on test completion, so
+// the test never leaks env state into sibling tests in the package.
 func TestOverlayIdleTTLFromEnv(t *testing.T) {
-	original := os.Getenv("GORTEX_OVERLAY_IDLE_TTL")
-	defer os.Setenv("GORTEX_OVERLAY_IDLE_TTL", original)
-
 	// Explicit non-zero override wins over env.
-	os.Setenv("GORTEX_OVERLAY_IDLE_TTL", "1h")
+	t.Setenv("GORTEX_OVERLAY_IDLE_TTL", "1h")
 	require.Equal(t, 7*time.Minute, OverlayIdleTTLFromEnv(7*time.Minute))
 
 	// Env var (no override).
-	os.Setenv("GORTEX_OVERLAY_IDLE_TTL", "45m")
+	t.Setenv("GORTEX_OVERLAY_IDLE_TTL", "45m")
 	require.Equal(t, 45*time.Minute, OverlayIdleTTLFromEnv(0))
 
 	// Garbage env: fall through to default (don't fail startup).
-	os.Setenv("GORTEX_OVERLAY_IDLE_TTL", "garbage")
+	t.Setenv("GORTEX_OVERLAY_IDLE_TTL", "garbage")
 	require.Equal(t, DefaultOverlayIdleTTL, OverlayIdleTTLFromEnv(0))
 
-	// Unset env: default.
-	os.Unsetenv("GORTEX_OVERLAY_IDLE_TTL")
+	// Empty env (t.Setenv to "" is the documented way to model "unset"
+	// in a test-scoped way): default.
+	t.Setenv("GORTEX_OVERLAY_IDLE_TTL", "")
 	require.Equal(t, DefaultOverlayIdleTTL, OverlayIdleTTLFromEnv(0))
 }

@@ -103,7 +103,12 @@ func overlaySHAMatches(absPath, expected string) bool {
 		return false
 	}
 	h := sha1.New()
-	fmt.Fprintf(h, "blob %d\x00", len(data))
+	// hash.Hash.Write never errors; fmt.Fprintf returns (n, err)
+	// because it's the io.Writer interface, but the underlying
+	// hash.Hash's Write contract forbids non-nil errors. Discard
+	// both to keep the linter happy without inventing fake error
+	// handling.
+	_, _ = fmt.Fprintf(h, "blob %d\x00", len(data))
 	_, _ = h.Write(data)
 	return hex.EncodeToString(h.Sum(nil)) == expected
 }

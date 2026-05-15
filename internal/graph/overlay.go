@@ -366,14 +366,12 @@ func (v *OverlaidView) FindNodesByName(name string) []*Node {
 	for _, n := range v.base.FindNodesByName(name) {
 		if v.layer != nil {
 			if v.layer.HasFile(IDFile(n.ID)) {
-				// Overlaid file. Surface base node only if the
-				// overlay re-emitted it (same ID). Otherwise the
-				// overlay has either replaced it (already in `out`
-				// via the layer) or deleted it.
-				if _, kept := v.layer.nodeByID[n.ID]; !kept {
-					continue
-				}
-				// kept — but it's already in out via the layer path.
+				// Overlaid file: base's node for this name is
+				// always hidden. If the overlay re-emitted the same
+				// ID it's already in `out` from the layer's
+				// nodesByName prepend above; if the overlay deleted
+				// the symbol it must not surface at all. Either way
+				// we skip — no need to discriminate.
 				continue
 			}
 			if v.layer.nameRemoved[name] != nil && v.layer.nameRemoved[name][n.ID] {
