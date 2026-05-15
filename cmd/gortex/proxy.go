@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/zzet/gortex/internal/daemon"
@@ -20,17 +21,9 @@ import (
 // (false, nil) when the daemon isn't reachable — the caller should fall
 // back to embedded mode. Any other error is a real problem.
 func runProxy(ctx context.Context) (ran bool, err error) {
-	cwd, wdErr := os.Getwd()
+	cwd, wdErr := resolveLaunchCWD()
 	if wdErr != nil {
 		return false, fmt.Errorf("cwd: %w", wdErr)
-	}
-
-	// Antigravity (and some other IDEs) spawn the MCP server with a working directory of "/"
-	// even though the project is loaded. Fall back to PWD if available.
-	if cwd == "/" {
-		if pwd := os.Getenv("PWD"); pwd != "" {
-			cwd = pwd
-		}
 	}
 	h := daemon.Handshake{
 		Mode:       daemon.ModeMCP,
@@ -138,6 +131,73 @@ func detectClientName() string {
 		return "zed"
 	}
 	return "unknown"
+}
+
+// resolveLaunchCWD picks the most plausible project cwd for an MCP
+// launch, defending against editors that spawn the MCP server with
+// cwd unset or set to a non-project directory:
+//
+//   - Antigravity sometimes spawns with cwd=`/`.
+//   - Cursor launches user-level `~/.cursor/mcp.json` entries with
+//     cwd=$HOME (see gortexhq/gortex#19).
+//
+// Resolution order:
+//  1. os.Getwd() when it looks like a project root (not `/` or $HOME).
+//  2. $PWD when it differs and isn't `/` or $HOME.
+//  3. The first non-empty editor workspace env var (CURSOR_WORKSPACE,
+//     CLAUDE_CODE_WORKSPACE, WINDSURF_WORKSPACE, KIRO_WORKSPACE,
+//     CODEX_WORKSPACE, ANTIGRAVITY_WORKSPACE, VSCODE_WORKSPACE).
+//  4. Fall through to whatever Getwd() returned — the daemon (or the
+//     embedded handshake) will surface a clear entry-point error.
+func resolveLaunchCWD() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if !isAmbiguousLaunchCWD(cwd) {
+		return cwd, nil
+	}
+	if pwd := os.Getenv("PWD"); pwd != cwd && !isAmbiguousLaunchCWD(pwd) {
+		return pwd, nil
+	}
+	for _, key := range []string{
+		"CURSOR_WORKSPACE",
+		"CLAUDE_CODE_WORKSPACE",
+		"WINDSURF_WORKSPACE",
+		"KIRO_WORKSPACE",
+		"CODEX_WORKSPACE",
+		"ANTIGRAVITY_WORKSPACE",
+		"VSCODE_WORKSPACE",
+	} {
+		if v := os.Getenv(key); !isAmbiguousLaunchCWD(v) {
+			return v, nil
+		}
+	}
+	return cwd, nil
+}
+
+// isAmbiguousLaunchCWD returns true when `p` is an editor-launch cwd
+// we can't trust to point at the active project — empty, `/`, or the
+// user's home directory.
+//
+// The home comparison goes through filepath.EvalSymlinks so the
+// macOS `/var → /private/var` redirect (and similar symlinks) don't
+// cause a false negative when an editor sets cwd via os.Chdir and
+// then Getwd reports the resolved form.
+func isAmbiguousLaunchCWD(p string) bool {
+	if p == "" || p == "/" {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	if p == home {
+		return true
+	}
+	resP, errP := filepath.EvalSymlinks(p)
+	resH, errH := filepath.EvalSymlinks(home)
+	return errP == nil && errH == nil && resP == resH
 }
 
 // shouldTryProxy returns true when `gortex mcp` should attempt to

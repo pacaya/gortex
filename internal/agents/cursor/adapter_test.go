@@ -49,6 +49,126 @@ func TestCursorCreatesMergesAndSkips(t *testing.T) {
 	agentstest.AssertIdempotent(t, a, env)
 }
 
+// TestCursorGlobalWritesProxyEntry confirms that user-level installs
+// (`gortex install`, env.Mode == ModeGlobal) emit the daemon-proxy
+// entry — never the legacy `--index . --watch` shape that resolves
+// against the launch cwd and fails Cursor's global-config handshake.
+// See gortexhq/gortex#19.
+func TestCursorGlobalWritesProxyEntry(t *testing.T) {
+	env, _ := agentstest.NewEnv(t)
+	env.Mode = agents.ModeGlobal
+	// Sentinel: ~/.cursor exists so Detect succeeds in global mode.
+	if err := os.MkdirAll(filepath.Join(env.Home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := New().Apply(env, agents.ApplyOpts{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !res.Configured {
+		t.Fatal("expected Configured=true for global install")
+	}
+
+	mcp := agentstest.ReadJSON(t, filepath.Join(env.Home, ".cursor", "mcp.json"))
+	servers := mcp["mcpServers"].(map[string]any)
+	entry, ok := servers["gortex"].(map[string]any)
+	if !ok {
+		t.Fatalf("gortex entry missing in global mcp.json: %v", servers)
+	}
+	args, _ := entry["args"].([]any)
+	if len(args) == 0 || args[0] != "mcp" {
+		t.Fatalf("args[0] = %v, want \"mcp\"; full args=%v", args, args)
+	}
+	sawProxy := false
+	for _, a := range args {
+		s, _ := a.(string)
+		if s == "--index" {
+			t.Errorf("global cursor entry must not pass --index: %v", args)
+		}
+		if s == "--proxy" {
+			sawProxy = true
+		}
+	}
+	if !sawProxy {
+		t.Errorf("global cursor entry must use --proxy: %v", args)
+	}
+}
+
+// TestCursorGlobalMigratesLegacyIndexEntry exercises the migration
+// path. A user upgrading from a version that wrote the legacy
+// `--index . --watch` shape should get their global config rewritten
+// to the daemon-proxy form on the next `gortex install`, without
+// having to pass --force.
+func TestCursorGlobalMigratesLegacyIndexEntry(t *testing.T) {
+	env, _ := agentstest.NewEnv(t)
+	env.Mode = agents.ModeGlobal
+	cursorDir := filepath.Join(env.Home, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Seed the legacy entry that issue 19 reported in the wild.
+	mcpPath := filepath.Join(cursorDir, "mcp.json")
+	agentstest.WriteJSON(t, mcpPath, map[string]any{
+		"mcpServers": map[string]any{
+			"gortex": map[string]any{
+				"command": "gortex",
+				"args":    []any{"mcp", "--index", ".", "--watch"},
+				"env":     map[string]any{"GORTEX_INDEX_WORKERS": "8"},
+			},
+		},
+	})
+
+	res, err := New().Apply(env, agents.ApplyOpts{})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !res.Configured {
+		t.Fatal("expected Configured=true after migration")
+	}
+
+	after := agentstest.ReadJSON(t, mcpPath)
+	servers := after["mcpServers"].(map[string]any)
+	entry := servers["gortex"].(map[string]any)
+	args, _ := entry["args"].([]any)
+	for _, a := range args {
+		if s, _ := a.(string); s == "--index" {
+			t.Fatalf("migration left legacy --index in args: %v", args)
+		}
+	}
+}
+
+// TestCursorGlobalPreservesUserCustomization keeps the migration
+// honest: a user who pointed their global gortex entry at a custom
+// wrapper script must not have it silently overwritten.
+func TestCursorGlobalPreservesUserCustomization(t *testing.T) {
+	env, _ := agentstest.NewEnv(t)
+	env.Mode = agents.ModeGlobal
+	cursorDir := filepath.Join(env.Home, ".cursor")
+	if err := os.MkdirAll(cursorDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mcpPath := filepath.Join(cursorDir, "mcp.json")
+	agentstest.WriteJSON(t, mcpPath, map[string]any{
+		"mcpServers": map[string]any{
+			"gortex": map[string]any{
+				"command": "/opt/wrappers/my-gortex.sh",
+				"args":    []any{"mcp"},
+			},
+		},
+	})
+
+	if _, err := New().Apply(env, agents.ApplyOpts{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	after := agentstest.ReadJSON(t, mcpPath)
+	servers := after["mcpServers"].(map[string]any)
+	entry := servers["gortex"].(map[string]any)
+	if entry["command"] != "/opt/wrappers/my-gortex.sh" {
+		t.Fatalf("user-customized command was overwritten: %v", entry)
+	}
+}
+
 // TestCursorMergeIntoExistingPreservesUserKeys confirms that the
 // adapter writes alongside — not over — a user's pre-existing MCP
 // server entry. This is the load-bearing property of MergeJSON.

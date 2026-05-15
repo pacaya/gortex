@@ -1,0 +1,121 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestResolveLaunchCWDFallsBackFromHome exercises the gortexhq/gortex#19
+// path: Cursor launches the user-level MCP entry with cwd=$HOME. The
+// resolver should prefer the editor-provided CURSOR_WORKSPACE env var
+// over the ambiguous home cwd.
+func TestResolveLaunchCWDFallsBackFromHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no resolvable home directory in test env")
+	}
+
+	// Make a real directory we can chdir into and treat as $HOME for
+	// the duration of the test, so isAmbiguousLaunchCWD sees the same
+	// path os.Getwd() reports.
+	fakeHome := t.TempDir()
+	project := filepath.Join(t.TempDir(), "myproject")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("PWD", "") // clear so we exercise the editor-env path
+	t.Setenv("CURSOR_WORKSPACE", project)
+	t.Setenv("CLAUDE_CODE_WORKSPACE", "")
+	t.Setenv("WINDSURF_WORKSPACE", "")
+	t.Setenv("KIRO_WORKSPACE", "")
+	t.Setenv("CODEX_WORKSPACE", "")
+	t.Setenv("ANTIGRAVITY_WORKSPACE", "")
+	t.Setenv("VSCODE_WORKSPACE", "")
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	if err := os.Chdir(fakeHome); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveLaunchCWD()
+	if err != nil {
+		t.Fatalf("resolveLaunchCWD: %v", err)
+	}
+	if got != project {
+		t.Errorf("resolveLaunchCWD = %q, want %q (the CURSOR_WORKSPACE env)", got, project)
+	}
+}
+
+// TestResolveLaunchCWDPrefersGetwdWhenSafe confirms the resolver
+// doesn't second-guess a normal cwd. When os.Getwd() returns a
+// project directory (not `/`, not $HOME), the env-var fallbacks must
+// not override it — otherwise a user with a stale CURSOR_WORKSPACE
+// would be pinned to the wrong project.
+func TestResolveLaunchCWDPrefersGetwdWhenSafe(t *testing.T) {
+	project := t.TempDir()
+	stale := t.TempDir()
+	t.Setenv("CURSOR_WORKSPACE", stale)
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveLaunchCWD()
+	if err != nil {
+		t.Fatalf("resolveLaunchCWD: %v", err)
+	}
+	// On macOS t.TempDir() lives under /private/var/... but Getwd may
+	// return /var/... after resolving the /var → /private/var symlink
+	// (or vice versa). Compare by resolved path.
+	wantResolved, _ := filepath.EvalSymlinks(project)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Errorf("resolveLaunchCWD = %q, want %q (real cwd, not stale CURSOR_WORKSPACE)", got, project)
+	}
+}
+
+// TestResolveLaunchCWDFallsBackToPWDFromRoot covers the Antigravity
+// `cwd=/` case the previous code special-cased: when Getwd() is `/`
+// and PWD points at a real directory, use PWD.
+func TestResolveLaunchCWDFallsBackToPWDFromRoot(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("PWD", project)
+	t.Setenv("CURSOR_WORKSPACE", "")
+	t.Setenv("CLAUDE_CODE_WORKSPACE", "")
+	t.Setenv("WINDSURF_WORKSPACE", "")
+	t.Setenv("KIRO_WORKSPACE", "")
+	t.Setenv("CODEX_WORKSPACE", "")
+	t.Setenv("ANTIGRAVITY_WORKSPACE", "")
+	t.Setenv("VSCODE_WORKSPACE", "")
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	if err := os.Chdir("/"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveLaunchCWD()
+	if err != nil {
+		t.Fatalf("resolveLaunchCWD: %v", err)
+	}
+	wantResolved, _ := filepath.EvalSymlinks(project)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Errorf("resolveLaunchCWD from / = %q, want %q (the PWD fallback)", got, project)
+	}
+}

@@ -139,6 +139,14 @@ func (a *Adapter) Apply(env agents.Env, opts agents.ApplyOpts) (*agents.Result, 
 
 	path := mcpConfigPath(env)
 	action, err := agents.MergeJSON(env.Stderr, path, func(root map[string]any, _ bool) (bool, error) {
+		// Global ~/.cursor/mcp.json is read by Cursor across every
+		// project, so cwd at MCP-launch time is unrelated to the open
+		// repo (typically $HOME). Use the daemon-proxy entry; never
+		// the legacy `--index .` shape that fails the entry-point
+		// handshake on home. See gortexhq/gortex#19.
+		if env.Mode == agents.ModeGlobal {
+			return agents.UpsertMCPServerWithMigration(root, "gortex", agents.GlobalGortexMCPEntry(), opts), nil
+		}
 		return agents.UpsertMCPServer(root, "gortex", agents.DefaultGortexMCPEntry(), opts), nil
 	}, opts)
 	if err != nil {

@@ -116,13 +116,21 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// cwd) or a single-project root (`.gortex/` directory in cwd).
 	// Anywhere else fails the handshake with a clear message naming
 	// both supported entry points — there is no walk-up.
-	cwd, cwdErr := os.Getwd()
+	cwd, cwdErr := resolveLaunchCWD()
 	if cwdErr != nil {
 		return fmt.Errorf("resolving cwd for MCP handshake: %w", cwdErr)
 	}
 	bind, bindErr := workspace.Resolve(cwd)
 	if bindErr != nil {
 		fmt.Fprintf(os.Stderr, "[gortex] MCP handshake failed: %v\n", bindErr)
+		if home, _ := os.UserHomeDir(); home != "" && cwd == home {
+			fmt.Fprintf(os.Stderr,
+				"[gortex] hint: the MCP process was launched with cwd=%s. "+
+					"Likely a user-level (global) MCP config that invokes `gortex mcp --index .`. "+
+					"Run `gortex install` to migrate that entry to the daemon-proxy shape, "+
+					"or replace its args with `[\"mcp\", \"--proxy\"]` and start the daemon "+
+					"(`gortex daemon start --detach`).\n", cwd)
+		}
 		return bindErr
 	}
 	for _, w := range workspace.FormatMarkerWarnings(bind.Marker) {
