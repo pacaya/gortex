@@ -7,7 +7,9 @@
 // tool-call object — is enforced by the llm.Provider via
 // CompletionRequest.Shape == ShapeToolCall: a GBNF grammar for the
 // local llama.cpp provider, json-schema / forced-tool for the HTTP
-// providers. The loop carries the conversation as a provider-neutral
+// providers, and a JSON-Schema rider injected into the system prompt
+// plus a robust JSON extractor for the claudecli subprocess provider.
+// The loop carries the conversation as a provider-neutral
 // []llm.Message, so the same agent drives every provider.
 package agent
 

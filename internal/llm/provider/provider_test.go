@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"os"
 	"testing"
 
 	"github.com/zzet/gortex/internal/llm"
@@ -58,5 +59,31 @@ func TestNew_OllamaOK(t *testing.T) {
 	defer func() { _ = p.Close() }()
 	if p.Name() != "ollama" {
 		t.Errorf("Name()=%q want ollama", p.Name())
+	}
+}
+
+func TestNew_ClaudeCLIMissingBinary(t *testing.T) {
+	cfg := llm.Config{Provider: "claudecli", ClaudeCLI: llm.ClaudeCLIConfig{Binary: "definitely-not-on-path-claude-xyz"}}.ApplyDefaults()
+	if _, err := New(cfg); err == nil {
+		t.Fatal("expected error when claudecli binary is not on PATH")
+	}
+}
+
+func TestNew_ClaudeCLIOK(t *testing.T) {
+	// Use a real binary that exists on every Unix to satisfy the
+	// PATH lookup — the factory only verifies presence, it doesn't
+	// invoke the binary.
+	bin := "/bin/echo"
+	if _, err := os.Stat(bin); err != nil {
+		t.Skip("/bin/echo not available — skipping claudecli factory test")
+	}
+	cfg := llm.Config{Provider: "claudecli", ClaudeCLI: llm.ClaudeCLIConfig{Binary: bin}}.ApplyDefaults()
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() { _ = p.Close() }()
+	if p.Name() != "claudecli" {
+		t.Errorf("Name()=%q want claudecli", p.Name())
 	}
 }

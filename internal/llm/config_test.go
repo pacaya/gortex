@@ -1,6 +1,9 @@
 package llm
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestConfig_ProviderName_DefaultsToLocal(t *testing.T) {
 	if got := (Config{}).ProviderName(); got != "local" {
@@ -25,6 +28,8 @@ func TestConfig_IsEnabled(t *testing.T) {
 		{"openai with model", Config{Provider: "openai", OpenAI: RemoteConfig{Model: "gpt"}}, true},
 		{"ollama with model", Config{Provider: "ollama", Ollama: OllamaConfig{Model: "qwen"}}, true},
 		{"ollama no model", Config{Provider: "ollama"}, false},
+		{"claudecli no model", Config{Provider: "claudecli"}, true},
+		{"claudecli with model", Config{Provider: "claudecli", ClaudeCLI: ClaudeCLIConfig{Model: "sonnet"}}, true},
 		{"unknown provider", Config{Provider: "bogus", Local: LocalConfig{Model: "/m.gguf"}}, false},
 	}
 	for _, tc := range cases {
@@ -56,12 +61,52 @@ func TestConfig_ApplyDefaults(t *testing.T) {
 	if c.Ollama.Host != defaultOllamaHost {
 		t.Errorf("ollama host=%q want %q", c.Ollama.Host, defaultOllamaHost)
 	}
+	if c.ClaudeCLI.Binary != defaultClaudeCLIBinary {
+		t.Errorf("claudecli binary=%q want %q", c.ClaudeCLI.Binary, defaultClaudeCLIBinary)
+	}
+}
+
+func TestConfig_MergeEnv_ClaudeCLIModel(t *testing.T) {
+	t.Setenv("GORTEX_LLM_PROVIDER", "claudecli")
+	t.Setenv("GORTEX_LLM_MODEL", "opus")
+	t.Setenv("GORTEX_LLM_CLAUDECLI_BINARY", "/opt/anthropic/claude")
+	c := Config{}.MergeEnv()
+	if c.ClaudeCLI.Model != "opus" {
+		t.Errorf("claudecli model=%q want opus", c.ClaudeCLI.Model)
+	}
+	if c.ClaudeCLI.Binary != "/opt/anthropic/claude" {
+		t.Errorf("claudecli binary=%q want /opt/anthropic/claude", c.ClaudeCLI.Binary)
+	}
+}
+
+func TestConfig_MergedWith_ClaudeCLI(t *testing.T) {
+	global := Config{
+		Provider:  "claudecli",
+		ClaudeCLI: ClaudeCLIConfig{Binary: "/usr/local/bin/claude", Args: []string{"--allowed-tools", ""}, TimeoutSeconds: 60},
+	}
+	local := Config{ClaudeCLI: ClaudeCLIConfig{Model: "sonnet"}}
+	got := local.MergedWith(global)
+	if got.Provider != "claudecli" {
+		t.Errorf("provider=%q want claudecli", got.Provider)
+	}
+	if got.ClaudeCLI.Binary != "/usr/local/bin/claude" {
+		t.Errorf("binary=%q — global should fill", got.ClaudeCLI.Binary)
+	}
+	if got.ClaudeCLI.Model != "sonnet" {
+		t.Errorf("model=%q want sonnet (local should win)", got.ClaudeCLI.Model)
+	}
+	if len(got.ClaudeCLI.Args) != 2 {
+		t.Errorf("args=%v — global should fill when local is empty", got.ClaudeCLI.Args)
+	}
+	if got.ClaudeCLI.TimeoutSeconds != 60 {
+		t.Errorf("timeout=%d — global should fill", got.ClaudeCLI.TimeoutSeconds)
+	}
 }
 
 func TestConfig_ApplyDefaults_Idempotent(t *testing.T) {
 	once := Config{Provider: "anthropic", Anthropic: RemoteConfig{Model: "m"}}.ApplyDefaults()
 	twice := once.ApplyDefaults()
-	if once != twice {
+	if !reflect.DeepEqual(once, twice) {
 		t.Fatalf("ApplyDefaults not idempotent:\n once=%+v\n twice=%+v", once, twice)
 	}
 }

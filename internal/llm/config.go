@@ -3,6 +3,8 @@
 // This file is pure Go (no build tag) so every build can compile it.
 // The actual provider construction lives under internal/llm/provider/
 // — the `local` provider is the only one that needs `-tags llama`.
+// `claudecli` shells out to the user's `claude` binary, so it only
+// needs that binary on $PATH.
 //
 // Resolution order: file values are populated by the gortex config
 // loader; MergeEnv overlays any GORTEX_LLM_* env var that's set (env
@@ -23,7 +25,8 @@ import (
 type Config struct {
 	// Provider selects the inference backend: "local" (llama.cpp,
 	// in-process, requires a `-tags llama` build), "anthropic",
-	// "openai", or "ollama". Empty defaults to "local".
+	// "openai", "ollama", or "claudecli" (subprocess against the
+	// user's `claude` binary). Empty defaults to "local".
 	Provider string `mapstructure:"provider" yaml:"provider,omitempty"`
 
 	// MaxSteps caps the agent tool-loop. Provider-agnostic. Defaults
@@ -38,6 +41,8 @@ type Config struct {
 	OpenAI RemoteConfig `mapstructure:"openai" yaml:"openai,omitempty"`
 	// Ollama configures a local/remote Ollama daemon provider.
 	Ollama OllamaConfig `mapstructure:"ollama" yaml:"ollama,omitempty"`
+	// ClaudeCLI configures the Claude Code CLI subprocess provider.
+	ClaudeCLI ClaudeCLIConfig `mapstructure:"claudecli" yaml:"claudecli,omitempty"`
 }
 
 // LocalConfig is the `llm.local:` sub-block — settings for the
@@ -81,6 +86,26 @@ type OllamaConfig struct {
 	Host string `mapstructure:"host" yaml:"host,omitempty"`
 }
 
+// ClaudeCLIConfig is the `llm.claudecli:` sub-block — settings for
+// the subprocess provider that shells out to the user's local
+// Claude Code CLI. The binary must already be installed and signed
+// in; gortex never touches credentials directly.
+type ClaudeCLIConfig struct {
+	// Binary is the executable name or absolute path. Empty defaults
+	// to "claude" (resolved via $PATH).
+	Binary string `mapstructure:"binary" yaml:"binary,omitempty"`
+	// Model is the Claude model alias forwarded as `--model` (e.g.
+	// "sonnet", "opus", "claude-sonnet-4-6"). Empty lets the CLI
+	// pick its own default.
+	Model string `mapstructure:"model" yaml:"model,omitempty"`
+	// Args is a list of extra arguments appended after the provider's
+	// own flags. Useful for `--allowed-tools ""` to disable tools, or
+	// `--permission-mode plan` for a read-only profile.
+	Args []string `mapstructure:"args" yaml:"args,omitempty"`
+	// TimeoutSeconds caps one Complete call. 0 → 120s.
+	TimeoutSeconds int `mapstructure:"timeout_seconds" yaml:"timeout_seconds,omitempty"`
+}
+
 // Default endpoints / key env vars, applied by ApplyDefaults.
 const (
 	defaultAnthropicModel   = "claude-sonnet-4-6"
@@ -92,6 +117,8 @@ const (
 	defaultOpenAIKeyEnv  = "OPENAI_API_KEY"
 
 	defaultOllamaHost = "http://localhost:11434"
+
+	defaultClaudeCLIBinary = "claude"
 )
 
 // ProviderName returns the effective provider, applying the "local"
@@ -107,7 +134,9 @@ func (c Config) ProviderName() string {
 // active provider. A provider is enabled once its required fields are
 // set: the local and Ollama providers need a model; the hosted
 // providers need a model (defaulted) — the API key is validated at
-// provider-construction time, not here.
+// provider-construction time, not here. The Claude CLI provider has
+// no required field — `binary` defaults to "claude" and `model` is
+// optional — so selecting it via Provider is sufficient.
 func (c Config) IsEnabled() bool {
 	switch c.ProviderName() {
 	case "local":
@@ -118,6 +147,8 @@ func (c Config) IsEnabled() bool {
 		return strings.TrimSpace(c.OpenAI.Model) != ""
 	case "ollama":
 		return strings.TrimSpace(c.Ollama.Model) != ""
+	case "claudecli":
+		return true
 	default:
 		return false
 	}
@@ -144,9 +175,14 @@ func (c Config) MergeEnv() Config {
 			c.OpenAI.Model = v
 		case "ollama":
 			c.Ollama.Model = v
+		case "claudecli":
+			c.ClaudeCLI.Model = v
 		default:
 			c.Local.Model = v
 		}
+	}
+	if v := os.Getenv("GORTEX_LLM_CLAUDECLI_BINARY"); v != "" {
+		c.ClaudeCLI.Binary = v
 	}
 	if v := os.Getenv("GORTEX_LLM_CTX"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -217,6 +253,11 @@ func (c Config) ApplyDefaults() Config {
 		c.Ollama.Host = defaultOllamaHost
 	}
 
+	// claudecli
+	if c.ClaudeCLI.Binary == "" {
+		c.ClaudeCLI.Binary = defaultClaudeCLIBinary
+	}
+
 	return c
 }
 
@@ -236,6 +277,7 @@ func (c Config) MergedWith(fb Config) Config {
 	c.Anthropic = c.Anthropic.mergedWith(fb.Anthropic)
 	c.OpenAI = c.OpenAI.mergedWith(fb.OpenAI)
 	c.Ollama = c.Ollama.mergedWith(fb.Ollama)
+	c.ClaudeCLI = c.ClaudeCLI.mergedWith(fb.ClaudeCLI)
 	return c
 }
 
@@ -276,4 +318,20 @@ func (o OllamaConfig) mergedWith(fb OllamaConfig) OllamaConfig {
 		o.Host = fb.Host
 	}
 	return o
+}
+
+func (c ClaudeCLIConfig) mergedWith(fb ClaudeCLIConfig) ClaudeCLIConfig {
+	if c.Binary == "" {
+		c.Binary = fb.Binary
+	}
+	if c.Model == "" {
+		c.Model = fb.Model
+	}
+	if len(c.Args) == 0 {
+		c.Args = fb.Args
+	}
+	if c.TimeoutSeconds == 0 {
+		c.TimeoutSeconds = fb.TimeoutSeconds
+	}
+	return c
 }

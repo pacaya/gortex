@@ -14,6 +14,7 @@ import (
 
 	"github.com/zzet/gortex/internal/llm"
 	"github.com/zzet/gortex/internal/llm/provider/anthropic"
+	"github.com/zzet/gortex/internal/llm/provider/claudecli"
 	"github.com/zzet/gortex/internal/llm/provider/local"
 	"github.com/zzet/gortex/internal/llm/provider/ollama"
 	"github.com/zzet/gortex/internal/llm/provider/openai"
@@ -24,7 +25,8 @@ import (
 // HTTP providers rely on the defaulted model / endpoint / key-env
 // values. Returns an error when the provider is unknown or
 // misconfigured (missing model, unset API key) or, for "local", when
-// the binary was built without `-tags llama`.
+// the binary was built without `-tags llama`; for "claudecli", when
+// the `claude` binary is not on $PATH.
 func New(cfg llm.Config) (llm.Provider, error) {
 	switch cfg.ProviderName() {
 	case "local":
@@ -35,7 +37,9 @@ func New(cfg llm.Config) (llm.Provider, error) {
 		return openai.New(cfg.OpenAI)
 	case "ollama":
 		return ollama.New(cfg.Ollama)
+	case "claudecli":
+		return claudecli.New(cfg.ClaudeCLI)
 	default:
-		return nil, fmt.Errorf("llm: unknown provider %q (want local|anthropic|openai|ollama)", cfg.ProviderName())
+		return nil, fmt.Errorf("llm: unknown provider %q (want local|anthropic|openai|ollama|claudecli)", cfg.ProviderName())
 	}
 }

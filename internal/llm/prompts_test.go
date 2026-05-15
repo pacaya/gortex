@@ -6,6 +6,7 @@ func TestProfileForProvider(t *testing.T) {
 	cases := map[string]PromptProfile{
 		"anthropic": ProfileFrontier,
 		"openai":    ProfileFrontier,
+		"claudecli": ProfileFrontier,
 		"local":     ProfileSmall,
 		"ollama":    ProfileSmall,
 		"":          ProfileSmall,

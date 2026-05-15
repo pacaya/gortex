@@ -30,8 +30,9 @@ The `ask` tool and the `search_symbols` `assist` modes are backed by an LLM prov
 | `anthropic` | Anthropic Messages API | `llm.anthropic.model` + `ANTHROPIC_API_KEY` |
 | `openai` | OpenAI Chat Completions | `llm.openai.model` + `OPENAI_API_KEY` |
 | `ollama` | Ollama daemon | `llm.ollama.model` (+ `llm.ollama.host`, default `localhost:11434`) |
+| `claudecli` | Claude Code CLI subprocess | `claude` binary on `$PATH` (signed in once); optional `llm.claudecli.model` (e.g. `sonnet`/`opus`/`claude-sonnet-4-6`). Reuses the user's Claude Code subscription — no API key. |
 
-The HTTP providers are pure Go — available without `-tags llama`. `GORTEX_LLM_PROVIDER` / `GORTEX_LLM_MODEL` env vars override the file config. If the active provider can't be constructed (missing model / API key, or `local` without `-tags llama`), the daemon logs a warning and the LLM features stay absent.
+The HTTP and subprocess providers are pure Go — available without `-tags llama`. `GORTEX_LLM_PROVIDER` / `GORTEX_LLM_MODEL` env vars override the file config; `GORTEX_LLM_CLAUDECLI_BINARY` overrides the `claude` binary location. If the active provider can't be constructed (missing model / API key, `local` without `-tags llama`, or `claudecli` without `claude` on `$PATH`), the daemon logs a warning and the LLM features stay absent.
 
 ### Optional: delegate research to the `ask` agent
 

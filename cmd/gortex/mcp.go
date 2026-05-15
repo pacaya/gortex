@@ -357,7 +357,8 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// LLM service — same wiring as the daemon path: repo config wins
 	// per non-zero field, global ~/.config/gortex/config.yaml fills the
 	// rest, env vars override last inside SetupLLM. The active provider
-	// is chosen by `llm.provider` (local / anthropic / openai / ollama).
+	// is chosen by `llm.provider` (local / anthropic / openai / ollama /
+	// claudecli).
 	gc, _ := config.LoadGlobal()
 	srv.SetupLLM(gc.MergeLLMInto(cfg.LLM))
 

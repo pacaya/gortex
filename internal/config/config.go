@@ -243,8 +243,8 @@ type Config struct {
 	// the search-assist passes. Empty by default — daemon skips LLM
 	// wiring entirely when the active provider has no model configured.
 	// The `llm.provider` key selects the backend (local / anthropic /
-	// openai / ollama); env vars GORTEX_LLM_* override file values; see
-	// internal/llm/config.go::Config.MergeEnv.
+	// openai / ollama / claudecli); env vars GORTEX_LLM_* override file
+	// values; see internal/llm/config.go::Config.MergeEnv.
 	LLM llm.Config `mapstructure:"llm" yaml:"llm,omitempty"`
 }
 

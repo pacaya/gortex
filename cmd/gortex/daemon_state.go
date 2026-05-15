@@ -317,10 +317,11 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	// Repo-local config wins per non-zero field; the global config
 	// fills the rest; env overrides land last inside SetupLLM via
 	// MergeEnv. The active provider is chosen by `llm.provider`
-	// (local / anthropic / openai / ollama). No-op when the active
-	// provider has no model configured; a provider that fails to
-	// construct (e.g. "local" without `-tags llama`, or a missing API
-	// key) is logged and the service stays disabled.
+	// (local / anthropic / openai / ollama / claudecli). No-op when the
+	// active provider has no model configured; a provider that fails to
+	// construct (e.g. "local" without `-tags llama`, a missing API key,
+	// or "claudecli" without the `claude` binary on PATH) is logged and
+	// the service stays disabled.
 	gc, _ := config.LoadGlobal()
 	srv.SetupLLM(gc.MergeLLMInto(cfg.LLM))
 
