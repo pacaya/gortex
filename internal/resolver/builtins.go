@@ -137,7 +137,7 @@ func langFromFilePath(p string) string {
 	switch filepath.Ext(p) {
 	case ".js", ".jsx", ".mjs", ".cjs":
 		return "js"
-	case ".ts", ".tsx":
+	case ".ts", ".tsx", ".mts", ".cts":
 		return "ts"
 	case ".py":
 		return "py"

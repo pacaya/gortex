@@ -72,7 +72,9 @@ func NewJavaScriptExtractor() *JavaScriptExtractor {
 }
 
 func (e *JavaScriptExtractor) Language() string     { return "javascript" }
-func (e *JavaScriptExtractor) Extensions() []string { return []string{".js", ".jsx", ".mjs"} }
+func (e *JavaScriptExtractor) Extensions() []string {
+	return []string{".js", ".jsx", ".mjs", ".cjs"}
+}
 
 // --- Deferred match buffers ----------------------------------------
 

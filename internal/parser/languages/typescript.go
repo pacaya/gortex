@@ -104,7 +104,11 @@ func NewTypeScriptExtractor() *TypeScriptExtractor {
 }
 
 func (e *TypeScriptExtractor) Language() string     { return "typescript" }
-func (e *TypeScriptExtractor) Extensions() []string { return []string{".ts", ".tsx"} }
+// .mts (ES module TS) and .cts (CommonJS TS) parse with the plain TS
+// grammar; grammarFor only selects TSX for the .tsx suffix.
+func (e *TypeScriptExtractor) Extensions() []string {
+	return []string{".ts", ".tsx", ".mts", ".cts"}
+}
 
 // grammarFor returns the (language, prepared-query) pair appropriate
 // for filePath. .tsx files use the TSX grammar so JSX nodes
