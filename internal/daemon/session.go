@@ -123,6 +123,61 @@ func (r *SessionRegistry) Register(conn net.Conn, h Handshake) *Session {
 	return s
 }
 
+// RegisterDetached creates a session that isn't bound to a net.Conn —
+// used by HTTP-side transports (Streamable HTTP, future SSE/WebSocket
+// adapters) where the daemon doesn't own a persistent socket. The
+// supplied id becomes the session ID verbatim so the transport's own
+// session-id space (e.g. streamable.SessionStore) lines up with the
+// daemon's status/metrics surface; pass "" to auto-generate one.
+func (r *SessionRegistry) RegisterDetached(id string, h Handshake) *Session {
+	if id == "" {
+		id = newSessionID()
+	}
+	s := &Session{
+		ID:               id,
+		Mode:             h.Mode,
+		CWD:              h.CWD,
+		ClientName:       h.ClientName,
+		ClientNameSource: "handshake",
+		ClientPID:        h.PID,
+		StartedAt:        time.Now(),
+	}
+	r.mu.Lock()
+	r.sessions[s.ID] = s
+	r.mu.Unlock()
+	return s
+}
+
+// RemoveByID deletes a session by id (used by detached sessions which
+// have no net.Conn to key off). Idempotent.
+func (r *SessionRegistry) RemoveByID(id string) *Session {
+	if id == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.sessions[id]
+	if s == nil {
+		return nil
+	}
+	delete(r.sessions, id)
+	if s.Conn != nil {
+		delete(r.byConn, s.Conn)
+	}
+	return s
+}
+
+// GetByID returns a session by its id, or nil when no session is
+// registered under that id. Used by detached-session lookup paths.
+func (r *SessionRegistry) GetByID(id string) *Session {
+	if id == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.sessions[id]
+}
+
 // Remove deletes the session for a connection. Idempotent — safe to call
 // from both the accept-loop's defer and the shutdown path.
 func (r *SessionRegistry) Remove(conn net.Conn) *Session {

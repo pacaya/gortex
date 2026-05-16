@@ -28,6 +28,8 @@ var (
 	daemonEmbeddings     bool
 	daemonStatusWatch    bool
 	daemonStatusInterval time.Duration
+	daemonHTTPAddr       string
+	daemonHTTPAuthToken  string
 )
 
 var daemonCmd = &cobra.Command{
@@ -82,6 +84,10 @@ func init() {
 		"fork to background after starting (writes to ~/.cache/gortex/daemon.log)")
 	daemonStartCmd.Flags().BoolVar(&daemonEmbeddings, "embeddings", false,
 		"load a semantic embedding provider (opt-in — adds ~87 MB model download on first use and ~60 ms/symbol warmup)")
+	daemonStartCmd.Flags().StringVar(&daemonHTTPAddr, "http-addr", "",
+		"also expose the MCP 2026 Streamable HTTP transport on this TCP address (e.g. 127.0.0.1:7411); empty disables")
+	daemonStartCmd.Flags().StringVar(&daemonHTTPAuthToken, "http-auth-token", "",
+		"bearer token required on every Streamable HTTP request (default: read $GORTEX_DAEMON_HTTP_TOKEN; empty allows unauthenticated localhost binds)")
 	daemonLogsCmd.Flags().IntVarP(&daemonTail, "tail", "n", 50,
 		"show only the last N log lines")
 	daemonStatusCmd.Flags().BoolVarP(&daemonStatusWatch, "watch", "w", false,
@@ -185,6 +191,38 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 		logger.Warn("daemon: servers.toml load error (running single-server)", zap.Error(scfgErr))
 	}
 	srv.MCPDispatcher = disp
+
+	// Optional MCP 2026 Streamable HTTP transport. Off by default
+	// (--http-addr unset) so a fresh `gortex daemon start` keeps
+	// the unix-socket-only behaviour every existing client already
+	// expects. When set, the daemon mounts /mcp on the supplied
+	// TCP address using the in-process streamable.Transport;
+	// per-request session state is replayed out of an in-memory
+	// store so multiple workers / reverse-proxies could later share
+	// it. The auth token is mandatory for non-localhost binds —
+	// exposing an unauthenticated MCP server on an external
+	// interface is a footgun, not a feature.
+	if daemonHTTPAddr != "" {
+		token := daemonHTTPAuthToken
+		if token == "" {
+			token = os.Getenv("GORTEX_DAEMON_HTTP_TOKEN")
+		}
+		if !isLocalhostBind(daemonHTTPAddr) && token == "" {
+			return fmt.Errorf("--http-addr %q is non-localhost; --http-auth-token (or $GORTEX_DAEMON_HTTP_TOKEN) is required", daemonHTTPAddr)
+		}
+		// Router was already wired into the dispatcher above; reuse
+		// it here so the streamable transport sees the same proxy
+		// fan-out for cross-workspace tool calls.
+		var router *daemon.Router
+		if r := disp.Router(); r != nil {
+			router = r
+		}
+		srv.HTTPHandler = buildDaemonStreamableHandler(disp, srv.Sessions(), router, logger, token)
+		srv.HTTPAddr = daemonHTTPAddr
+		logger.Info("daemon: streamable HTTP transport configured",
+			zap.String("addr", daemonHTTPAddr),
+			zap.Bool("authenticated", token != ""))
+	}
 
 	// Opt-in pprof endpoint. No-op unless GORTEX_DAEMON_PPROF_ADDR is
 	// set — keeps profiling off by default so the daemon doesn't hand

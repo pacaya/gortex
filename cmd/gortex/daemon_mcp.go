@@ -43,6 +43,11 @@ func newMCPDispatcher(srv *gortexmcp.Server, mi *indexer.MultiIndexer, logger *z
 // MCPServer.HandleMessage path unchanged.
 func (d *mcpDispatcher) SetRouter(r *daemon.Router) { d.router = r }
 
+// Router returns the currently-wired router (or nil). Exposed so the
+// HTTP-side Streamable transport can share the same router instance
+// without rebuilding it from servers.toml a second time.
+func (d *mcpDispatcher) Router() *daemon.Router { return d.router }
+
 // Dispatch implements daemon.MCPDispatcher. It hands the raw JSON-RPC
 // frame to MCPServer.HandleMessage and returns the response bytes.
 // Empty return value means the client sent a notification (no response).

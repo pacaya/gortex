@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -36,9 +37,22 @@ type Server struct {
 	// Controller handles control-mode RPCs (track/untrack/reload/status/shutdown).
 	Controller Controller
 
-	sessions *SessionRegistry
-	listener net.Listener
-	started  time.Time
+	// HTTPHandler, when non-nil, is mounted on a TCP listener at
+	// HTTPAddr alongside the unix-socket dispatcher. This is how the
+	// MCP 2026 Streamable HTTP transport reaches the daemon —
+	// internal/mcp/streamable.Transport plugs in here. Nil disables
+	// the HTTP face entirely; the unix-socket transport keeps
+	// working unchanged. HTTPAddr accepts standard net.Listen
+	// addresses; "127.0.0.1:7411" is the recommended default for a
+	// single-user dev box.
+	HTTPHandler http.Handler
+	HTTPAddr    string
+
+	sessions     *SessionRegistry
+	listener     net.Listener
+	httpListener net.Listener
+	httpServer   *http.Server
+	started      time.Time
 
 	shutdown chan struct{}
 	doneOnce sync.Once
@@ -130,6 +144,27 @@ func (s *Server) Listen() error {
 	s.listener = l
 	s.started = time.Now()
 
+	// Optional HTTP listener for the MCP 2026 Streamable transport.
+	// We bring it up alongside the unix-socket listener so both
+	// transports share the same shutdown / lifecycle plumbing. A
+	// listen failure here is fatal — running the unix-socket
+	// transport silently while HTTP is down would mask the operator
+	// misconfiguration that pointed clients at a port that never
+	// answered.
+	if s.HTTPHandler != nil && s.HTTPAddr != "" {
+		httpLn, herr := net.Listen("tcp", s.HTTPAddr)
+		if herr != nil {
+			_ = l.Close()
+			_ = os.Remove(PIDFilePath())
+			return fmt.Errorf("listen http: %w", herr)
+		}
+		s.httpListener = httpLn
+		s.httpServer = &http.Server{
+			Handler:           s.HTTPHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+	}
+
 	// Install signal handlers once the listener is live.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -142,10 +177,22 @@ func (s *Server) Listen() error {
 }
 
 // Serve runs the accept loop. Blocks until Shutdown is called or the
-// listener returns an unrecoverable error.
+// listener returns an unrecoverable error. When an HTTP listener was
+// brought up by Listen it runs concurrently in its own goroutine; an
+// HTTP-side failure pushes onto the same shutdown channel so the
+// unix-socket loop tears down too.
 func (s *Server) Serve() error {
 	if s.listener == nil {
 		return errors.New("daemon: Listen must be called before Serve")
+	}
+	if s.httpListener != nil && s.httpServer != nil {
+		go func() {
+			if err := s.httpServer.Serve(s.httpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.Logger.Warn("daemon: http serve exited", zap.Error(err))
+			}
+		}()
+		s.Logger.Info("daemon: http listener active",
+			zap.String("addr", s.httpListener.Addr().String()))
 	}
 	s.Logger.Info("daemon: serving", zap.String("socket", s.SocketPath))
 	var emfileBackoff time.Duration
@@ -473,6 +520,18 @@ func (s *Server) Shutdown() error {
 		close(s.shutdown)
 		if s.listener != nil {
 			first = s.listener.Close()
+		}
+		// Tear down the HTTP listener with a short grace window so
+		// in-flight Streamable responses can finish flushing. We
+		// don't propagate the http error unless the unix-socket
+		// listener succeeded — the operator already sees a
+		// unix-socket close error in the same path.
+		if s.httpServer != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if herr := s.httpServer.Shutdown(ctx); herr != nil && first == nil {
+				first = herr
+			}
+			cancel()
 		}
 		// Close all live conns so per-conn goroutines exit their read loops.
 		s.connsMu.Lock()

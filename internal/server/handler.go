@@ -22,6 +22,7 @@ import (
 	"github.com/zzet/gortex/internal/daemon"
 	"github.com/zzet/gortex/internal/graph"
 	gortexmcp "github.com/zzet/gortex/internal/mcp"
+	"github.com/zzet/gortex/internal/mcp/streamable"
 	"github.com/zzet/gortex/internal/server/hub"
 	"go.uber.org/zap"
 )
@@ -60,6 +61,7 @@ type Handler struct {
 	activity      *activityBuffer        // ring buffer of recent graph events
 	overlays      *daemon.OverlayManager // nil when overlay support is off
 	router        *daemon.Router         // nil when single-server (no servers.toml)
+	streamable    *streamable.Transport  // nil when the MCP 2026 Streamable HTTP path is off
 }
 
 // NewHandler creates an HTTP handler that dispatches to MCP tools.
@@ -164,6 +166,32 @@ func (h *Handler) SetOverlayManager(m *daemon.OverlayManager) { h.overlays = m }
 // ones fall through to the in-process MCP tool dispatch. Nil
 // disables routing (the legacy single-server behaviour).
 func (h *Handler) SetRouter(r *daemon.Router) { h.router = r }
+
+// Router returns the currently-wired router (or nil). Exposed so
+// composite wire-ups can share a single router instance across the
+// /v1/tools/* surface and the new /mcp Streamable HTTP transport.
+func (h *Handler) Router() *daemon.Router { return h.router }
+
+// SetStreamableTransport wires the MCP 2026 Streamable HTTP transport
+// onto /mcp (POST/GET/DELETE). The same Handler still serves the
+// legacy /v1/tools/<name> shape so existing clients keep working;
+// new clients negotiate the stateless transport on the canonical
+// endpoint. Passing nil hides the route (returns 404).
+func (h *Handler) SetStreamableTransport(t *streamable.Transport) {
+	h.streamable = t
+	if t == nil {
+		return
+	}
+	h.mux.Handle("POST /mcp", t)
+	h.mux.Handle("GET /mcp", t)
+	h.mux.Handle("DELETE /mcp", t)
+	h.mux.Handle("OPTIONS /mcp", t)
+}
+
+// StreamableTransport returns the wired transport, or nil. Exposed so
+// callers can register diagnostics push notifications onto the SSE
+// stream via Transport.Push.
+func (h *Handler) StreamableTransport() *streamable.Transport { return h.streamable }
 
 // peekRouteContext sniffs the `workspace` / `cwd` arg overrides out
 // of an MCP tool-call body without disturbing it. The body is left

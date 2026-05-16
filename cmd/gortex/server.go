@@ -20,6 +20,7 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/indexer"
 	gortexmcp "github.com/zzet/gortex/internal/mcp"
+	"github.com/zzet/gortex/internal/mcp/streamable"
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/contracts"
 	"github.com/zzet/gortex/internal/parser/languages"
@@ -463,6 +464,23 @@ func runServer(_ *cobra.Command, _ []string) error {
 	} else if scfgErr != nil {
 		fmt.Fprintf(os.Stderr, "[gortex] server: servers.toml load error (running single-server): %v\n", scfgErr)
 	}
+
+	// MCP 2026 Streamable HTTP transport on /mcp (POST/GET/DELETE).
+	// Stateless from the network's perspective: every request
+	// carries `Mcp-Session-Id`; the per-request worker replays
+	// state out of an in-memory store. Behind a load balancer
+	// the store moves to a shared backend (Redis, …) — the
+	// streamable.SessionStore interface keeps the transport
+	// itself decoupled from that choice. Reuses the multi-server
+	// router we just wired so tools/call frames still proxy
+	// across the federation when their workspace lives elsewhere.
+	streamableTransport := streamable.New(streamable.Config{
+		Dispatcher: streamable.MCPServerDispatcher{Server: srv.MCPServer()},
+		Logger:     logger,
+		Router:     serverHandler.Router(),
+	})
+	serverHandler.SetStreamableTransport(streamableTransport)
+	fmt.Fprintf(os.Stderr, "[gortex] server: streamable HTTP transport active on /mcp\n")
 
 	// Watch mode: set up the event hub so /v1/events has a source.
 	if serverWatch {

@@ -268,6 +268,18 @@ Editor extensions push in-flight (unsaved) buffers as **overlays**. Gortex compo
 
 **HTTP transport.** `gortex server` exposes the same surface at `POST /v1/overlay/sessions` (optional `session_id` binds an overlay to a known MCP session), `PUT /v1/overlay/sessions/{id}/files`, `DELETE /v1/overlay/sessions/{id}/files`, `GET /v1/overlay/sessions/{id}/files`, `DELETE /v1/overlay/sessions/{id}`. The `/v1/tools/<name>` HTTP entry point reads the active session from `Mcp-Session-Id` (preferred), `X-Gortex-Overlay-Session`, or `?session_id=` (test fallback).
 
+### MCP 2026 Streamable HTTP transport (`/mcp`)
+
+`gortex server` and `gortex daemon --http-addr <addr>` both expose the **MCP 2026 Streamable HTTP transport** on `POST /mcp`, `GET /mcp` (SSE upstream for server-initiated notifications), `DELETE /mcp` (session termination), `OPTIONS /mcp` (CORS preflight). One endpoint, one wire format — the spec the June 2026 MCP release locks in.
+
+- **Stateless per request.** Every POST carries `Mcp-Session-Id`; the transport replays the matching state out of an in-memory `streamable.SessionStore` (TTL-evicted). Behind a load balancer the store moves to a shared backend (Redis, …) — the interface keeps the transport itself decoupled.
+- **Session lifecycle.** `initialize` mints the id and returns it on the response header; subsequent calls echo it. An unknown id replies with a JSON-RPC `-32001 session not found` envelope (HTTP 200 by JSON-RPC convention). `DELETE /mcp` is the spec's teardown — idempotent (204 even for unknown ids).
+- **Batch + notifications.** JSON-RPC arrays preserve frame ordering; notification-only batches return HTTP 202 with empty body.
+- **Origin allowlist.** `streamable.Config.AllowedOrigins` defends against DNS-rebinding when configured; localhost-only binds skip the check.
+- **Multi-server routing reuses the existing roster.** `tools/call` frames go through the same `daemon.Router` that already proxies `/v1/tools/<name>` calls — workspace scoping works the same way it did on the legacy surface.
+- **Daemon enablement.** `gortex daemon start --http-addr 127.0.0.1:7411 [--http-auth-token <token>]` brings the transport up alongside the unix-socket dispatcher. Non-localhost binds require an auth token (or `$GORTEX_DAEMON_HTTP_TOKEN`). `/healthz` is exempt from auth so liveness probes work.
+- **Server enablement.** `gortex server` always mounts `/mcp` — no flag needed (legacy `/v1/*` keeps working alongside it). The session store is process-local by default; swap in a custom `streamable.SessionStore` to share state across replicas.
+
 **Lifecycle and lease.** The overlay is **bound to the MCP session that registered it.** When the MCP session ends — for any reason (clean disconnect, dropped TCP, daemon proxy teardown) — the overlay is dropped synchronously. That closes the "abandoned buffer pinned in the daemon, reachable by anyone who learns the session ID" attack surface that a pure-TTL lifecycle would expose.
 
 The idle TTL is a fail-safe for the case where the daemon never observes the disconnect (e.g. the process was killed -9 mid-stream). Default **30 minutes**, configurable via `GORTEX_OVERLAY_IDLE_TTL` (`30m` / `1h` / `45s` / `0` to disable for tests). Every tool call against a live overlay session refreshes the idle timer (`SnapshotFor` bumps `LastUsed`), so an editor that's actively querying never trips the TTL. The MCP `overlay_keepalive` tool exists for genuine idle gaps (debugger pause, IDE wizard) — it bumps the timer without re-pushing content. `overlay_list` returns `expires_at` / `idle_seconds` / `idle_ttl_seconds` so the extension can schedule keepalives proactively.

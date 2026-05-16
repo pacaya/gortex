@@ -45,6 +45,7 @@ For Homebrew, package managers (`.deb` / `.rpm` / `.apk`), direct binary downloa
 - **Type-aware resolution** — infers receiver types from variable declarations, composite literals, and Go constructor conventions to disambiguate same-named methods across types
 - **On-disk persistence** — snapshots the graph on shutdown, restores on startup with incremental re-indexing of only changed files (~200ms vs 3-5s full re-index)
 - **HTTP server (`gortex server`)** — versioned `/v1/*` JSON API exposing all MCP tools (`/v1/health`, `/v1/tools`, `/v1/tools/{name}`, `/v1/stats`, `/v1/graph`, `/v1/events` SSE) for IDE plugins, CI, and the Next.js web UI. Localhost bind + bearer-token auth (`--auth-token` / `$GORTEX_SERVER_TOKEN`) by default; CORS configurable for separate frontend origins
+- **MCP 2026 Streamable HTTP transport (`/mcp`)** — the wire format the June 2026 MCP spec locks in. One endpoint (`POST/GET/DELETE /mcp`), per-request session replay via `Mcp-Session-Id` and an in-memory `streamable.SessionStore` (swap for Redis to run multiple workers behind a load balancer), JSON-RPC batching, SSE upstream for server-initiated notifications, multi-server router reuse so `tools/call` frames still proxy across the federation. Always-on for `gortex server`; opt-in on the daemon via `gortex daemon start --http-addr 127.0.0.1:7411 [--http-auth-token <token>]`
 - **Semantic enrichment** — pluggable SCIP, go/types, and LSP providers upgrade edge confidence from ~70-85% (tree-sitter) to 95-100% (compiler-verified). Additive — graceful degradation when external tools unavailable
 - **Agent feedback loop** — unified `feedback` tool (`action: "record"` / `"query"`) lets agents report which symbols were useful/missing. Cross-session persistence improves future `smart_context` quality via feedback-aware reranking
 - **Context export** — `export_context` tool + `gortex context` CLI render graph context as portable markdown/JSON briefings for sharing outside MCP (Slack, PRs, docs, non-MCP AI tools)
@@ -455,6 +456,21 @@ Editor extensions push in-flight (unsaved) buffers as **overlays**. Gortex compo
 | `compare_with_overlay` | Run `find_usages` / `get_callers` / `get_call_chain` / `get_dependencies` / `get_dependents` against base AND overlay; returns added / removed / common ID sets |
 
 HTTP transport mirrors the surface at `/v1/overlay/sessions/*`; the `/v1/tools/<name>` entry point reads the overlay session from `Mcp-Session-Id` (preferred), `X-Gortex-Overlay-Session`, or `?session_id=`. **Overlays are bound to their MCP session** — when the session ends the overlay is dropped synchronously, so abandoned buffers never linger. Idle TTL is a fail-safe (default 30 min, configurable via `GORTEX_OVERLAY_IDLE_TTL`); every tool call against a live overlay refreshes it.
+
+### MCP 2026 Streamable HTTP transport (`/mcp`)
+
+`gortex server` and `gortex daemon --http-addr <addr>` both expose the **MCP 2026 Streamable HTTP transport** — the wire format the June 2026 MCP release locks in.
+
+| Verb | Path | Behaviour |
+|------|------|-----------|
+| `POST` | `/mcp` | One or more JSON-RPC frames in, one or a JSON-RPC array out. Notification-only batches return 202. |
+| `GET` | `/mcp` | Opens an SSE stream the server uses to push server-initiated notifications (progress, sampling) onto the bound session. |
+| `DELETE` | `/mcp` | Terminates a session. Idempotent — returns 204 even when the id is unknown. |
+| `OPTIONS` | `/mcp` | CORS preflight; advertises the allowed methods. |
+
+**Stateless per request.** Every POST carries `Mcp-Session-Id`; the transport replays the matching state out of a `streamable.SessionStore` (the default in-memory `MemoryStore` is TTL-evicted; swap for a Redis-backed adapter to share state across replicas behind a load balancer). `initialize` mints the id and returns it on the response header; an unknown id replies with a JSON-RPC `-32001 session not found` envelope. The `Mcp-Protocol-Version` header is echoed when provided; absent, the transport advertises its default. `tools/call` frames flow through the same multi-server router that serves `/v1/tools/<name>`, so workspace scoping carries over unchanged.
+
+**Daemon enablement.** `gortex daemon start --http-addr 127.0.0.1:7411 [--http-auth-token <token>]` brings the transport up alongside the unix-socket dispatcher. Non-localhost binds require an auth token (or `$GORTEX_DAEMON_HTTP_TOKEN`). `/healthz` is exempt so liveness probes work. `gortex server` mounts `/mcp` unconditionally alongside the legacy `/v1/*` surface — no flag needed.
 
 ### Speculative Execution (Simulation Sessions)
 
