@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/zzet/gortex/internal/graph"
 	"pgregory.net/rapid"
 )
@@ -253,12 +254,22 @@ func TestPropertyDeadCode_Completeness(t *testing.T) {
 		// For every node in the graph, if it meets all dead code criteria,
 		// it must be in the result.
 		for _, node := range tc.Graph.AllNodes() {
-			if node.Kind == graph.KindFile || node.Kind == graph.KindImport || node.Kind == graph.KindPackage {
+			// Never-reported kinds (file/package/import + the broader
+			// noise set: param/closure/module/string/etc).
+			if neverDeadCodeKinds[node.Kind] {
 				continue
 			}
 
-			// Variables excluded by default
+			// Variables / fields / constants excluded by default — same
+			// reasoning the analyzer uses (graph lacks intra-function
+			// data flow, so a non-opt-in scan must skip them).
 			if node.Kind == graph.KindVariable {
+				continue
+			}
+			if node.Kind == graph.KindField {
+				continue
+			}
+			if node.Kind == graph.KindConstant {
 				continue
 			}
 
@@ -282,14 +293,18 @@ func TestPropertyDeadCode_Completeness(t *testing.T) {
 				continue
 			}
 
-			// Check incoming edges (calls, references, member_of, implements, instantiates)
+			// Per-kind incoming-edge allowlist — mirror what the
+			// analyzer does. Functions/methods need Calls/References;
+			// types need References/Instantiates/MemberOf/...; etc.
+			allowed := incomingUsageKinds(node.Kind)
 			inEdges := tc.Graph.GetInEdges(node.ID)
 			hasIncoming := false
 			for _, e := range inEdges {
-				switch e.Kind {
-				case graph.EdgeCalls, graph.EdgeReferences,
-					graph.EdgeMemberOf, graph.EdgeImplements, graph.EdgeInstantiates:
-					hasIncoming = true
+				for _, k := range allowed {
+					if e.Kind == k {
+						hasIncoming = true
+						break
+					}
 				}
 				if hasIncoming {
 					break
@@ -321,7 +336,7 @@ func TestPropertyDeadCode_Completeness(t *testing.T) {
 			if isTestFilePath(node.FilePath) {
 				continue
 			}
-			if isExportedSymbol(node.Name, node.Language) {
+			if isExportedSymbol(node.Name, node.Language) && !isPackagePrivateByConvention(node.FilePath, node.Language) {
 				continue
 			}
 
@@ -868,4 +883,147 @@ func TestDeadCode_ExportedInsideInternalIsSurfaced(t *testing.T) {
 		"exported function outside internal/ stays excluded — could be called externally")
 	assert.True(t, ids["gortex/internal/helpers.go::helper"],
 		"unexported function inside internal/ stays surfaced (no regression)")
+}
+
+// TestDeadCode_NeverDeadCodeKinds verifies that the never-reported kinds
+// (param, closure, module, string, enum_member, todo, etc) are NEVER
+// returned, even when they have zero incoming edges and look "dead"
+// structurally. Without this filter, a typical workspace surfaces
+// ~18k noise rows (params, fields, npm modules) that drown out the
+// ~300 real function-level dead-code signals.
+func TestDeadCode_NeverDeadCodeKinds(t *testing.T) {
+	g := graph.New()
+
+	// One example per never-reported kind, all unexported and
+	// edge-less so they'd otherwise look dead.
+	cases := []struct {
+		id   string
+		kind graph.NodeKind
+	}{
+		{"pkg/a.go::func#param:x", graph.KindParam},
+		{"pkg/a.go::func#closure@10", graph.KindClosure},
+		{"pkg/a.go::Foo#tparam:T", graph.KindGenericParam},
+		{"module::npm:lodash@4.17.21", graph.KindModule},
+		{"string::error_msg::oops", graph.KindString},
+		{"pkg/a.go::Color.Red", graph.KindEnumMember},
+		{"db::pg::public.users.email", graph.KindColumn},
+		{"db::pg::public.users", graph.KindTable},
+		{"cfg::env::API_KEY", graph.KindConfigKey},
+		{"flag::launchdarkly::beta", graph.KindFlag},
+		{"event::metric::requests_total", graph.KindEvent},
+		{"migration::pg::001_init", graph.KindMigration},
+		{"fixture::testdata/sample.json", graph.KindFixture},
+		{"todo::pkg/a.go:42", graph.KindTodo},
+		{"team::@platform", graph.KindTeam},
+		{"release::v1.2.3", graph.KindRelease},
+		{"license::MIT", graph.KindLicense},
+		{"k8s::Deployment::default::api", graph.KindResource},
+		{"kustomize::overlays/prod", graph.KindKustomization},
+		{"image::nginx:1.25", graph.KindImage},
+		{"contract::Request::POST::/v1/foo", graph.KindContract},
+	}
+	for _, c := range cases {
+		g.AddNode(&graph.Node{
+			ID: c.id, Kind: c.kind, Name: "x", FilePath: "pkg/a.go",
+			StartLine: 1, EndLine: 1, Language: "go",
+		})
+	}
+
+	result := FindDeadCode(g, nil, nil, FindDeadCodeOptions{
+		// Enable the broadest opt-ins; never-dead kinds must still
+		// stay suppressed even with every flag flipped.
+		IncludeVariables: true, IncludeFields: true, IncludeConstants: true,
+	})
+	for _, e := range result {
+		t.Errorf("never-reported kind %s leaked into dead_code: %s", e.Kind, e.ID)
+	}
+}
+
+// TestDeadCode_FieldsAndConstantsOptIn verifies fields and constants
+// are excluded by default and only appear when their opt-in flags
+// fire. Mirrors the existing IncludeVariables contract.
+func TestDeadCode_FieldsAndConstantsOptIn(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{
+		ID: "pkg/a.go::User.email", Kind: graph.KindField, Name: "email",
+		FilePath: "pkg/a.go", StartLine: 5, Language: "go",
+	})
+	g.AddNode(&graph.Node{
+		ID: "pkg/a.go::maxRetries", Kind: graph.KindConstant, Name: "maxRetries",
+		FilePath: "pkg/a.go", StartLine: 10, Language: "go",
+	})
+
+	// Default: both excluded.
+	def := FindDeadCode(g, nil, nil)
+	assert.Empty(t, def, "fields and constants excluded by default")
+
+	// Fields opt-in: only the field surfaces.
+	withFields := FindDeadCode(g, nil, nil, FindDeadCodeOptions{IncludeFields: true})
+	require.Len(t, withFields, 1)
+	assert.Equal(t, "field", withFields[0].Kind)
+
+	// Constants opt-in: only the constant surfaces.
+	withConsts := FindDeadCode(g, nil, nil, FindDeadCodeOptions{IncludeConstants: true})
+	require.Len(t, withConsts, 1)
+	assert.Equal(t, "constant", withConsts[0].Kind)
+
+	// Both flags: both surface.
+	both := FindDeadCode(g, nil, nil, FindDeadCodeOptions{IncludeFields: true, IncludeConstants: true})
+	assert.Len(t, both, 2)
+}
+
+// TestDeadCode_FieldWithReadIsAlive — fields are exercised by EdgeReads,
+// not EdgeCalls. The pre-fix global allowlist {Calls,References,...}
+// missed every field read, so every field-with-readers also looked
+// "dead" once IncludeFields was on. The per-kind allowlist must count
+// EdgeReads (and EdgeWrites) for KindField, KindVariable, KindConstant.
+func TestDeadCode_FieldWithReadIsAlive(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{
+		ID: "pkg/a.go::User.email", Kind: graph.KindField, Name: "email",
+		FilePath: "pkg/a.go", StartLine: 5, Language: "go",
+	})
+	g.AddNode(&graph.Node{
+		ID: "pkg/a.go::printUser", Kind: graph.KindFunction, Name: "printUser",
+		FilePath: "pkg/a.go", StartLine: 20, Language: "go",
+	})
+	// printUser reads User.email — EdgeReads, exactly what the
+	// resolver lands on a field selector.
+	g.AddEdge(&graph.Edge{
+		From: "pkg/a.go::printUser", To: "pkg/a.go::User.email",
+		Kind: graph.EdgeReads, FilePath: "pkg/a.go", Line: 21,
+	})
+
+	result := FindDeadCode(g, nil, nil, FindDeadCodeOptions{IncludeFields: true})
+	for _, e := range result {
+		assert.NotEqual(t, "pkg/a.go::User.email", e.ID,
+			"field with an incoming Reads edge must not be reported as dead")
+	}
+}
+
+// TestDeadCode_TypeReferencedAsParamIsAlive — types are exercised by
+// References / TypedAs / Instantiates. The pre-fix global allowlist
+// caught References but not TypedAs, so a type used only as a
+// parameter declaration (no constructor, no method receivers) would
+// have been reported dead. The per-kind allowlist covers it.
+func TestDeadCode_TypeReferencedAsParamIsAlive(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{
+		ID: "pkg/a.go::Config", Kind: graph.KindType, Name: "Config",
+		FilePath: "pkg/a.go", StartLine: 5, Language: "go",
+	})
+	g.AddNode(&graph.Node{
+		ID: "pkg/a.go::Run#param:cfg", Kind: graph.KindParam, Name: "cfg",
+		FilePath: "pkg/a.go", StartLine: 20, Language: "go",
+	})
+	g.AddEdge(&graph.Edge{
+		From: "pkg/a.go::Run#param:cfg", To: "pkg/a.go::Config",
+		Kind: graph.EdgeTypedAs, FilePath: "pkg/a.go", Line: 20,
+	})
+
+	result := FindDeadCode(g, nil, nil)
+	for _, e := range result {
+		assert.NotEqual(t, "pkg/a.go::Config", e.ID,
+			"type referenced as a param type must not be reported as dead")
+	}
 }

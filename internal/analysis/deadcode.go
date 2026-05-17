@@ -33,6 +33,23 @@ type HotspotEntry struct {
 }
 
 // FindDeadCodeOptions controls filtering behavior for dead code analysis.
+//
+// Default behaviour ships only the high-signal kinds: function, method,
+// type, interface. The opt-in flags below let callers pull in the
+// lower-signal kinds (fields, variables, constants) that the graph can
+// represent but can't reliably evaluate due to the absence of intra-
+// function data-flow edges.
+//
+// Kinds that the dead-code analyzer never reports (regardless of flags):
+// param, closure, generic_param, string, enum_member, module, column,
+// table, config_key, flag, event, migration, fixture, todo, team,
+// release, license, resource, kustomization, image, contract,
+// file, package, import. These are either structural (file/package/
+// import), extracted metadata (todo/team/release/license/fixture),
+// infra (resource/kustomization/image/table/column/config_key/flag/
+// event/migration), or function-shape (param/closure/generic_param)
+// — none of them have a meaningful "is this code dead?" answer, and
+// surfacing them drowns the real dead-function signal in noise.
 type FindDeadCodeOptions struct {
 	// IncludeVariables includes variable nodes in the results. Default false.
 	// Variables are excluded by default because the graph does not track
@@ -40,6 +57,21 @@ type FindDeadCodeOptions struct {
 	// though Go's compiler enforces their usage. Package-level variables
 	// cannot be reliably distinguished from locals in the current graph model.
 	IncludeVariables bool
+
+	// IncludeFields includes struct/class field nodes in the results.
+	// Default false. Same graph limitation as variables: a field read
+	// inside a function body is captured as EdgeReads on the field node,
+	// but the analyzer can't tell a real "field never read" from "graph
+	// doesn't see the read because the resolver couldn't pick a
+	// candidate." Fields are opt-in for callers that have manually
+	// audited their resolver coverage.
+	IncludeFields bool
+
+	// IncludeConstants includes constant nodes (Go const, language
+	// constants). Default false — same rationale as variables; the
+	// graph can't distinguish "unused constant" from "constant read
+	// inside a function body the resolver couldn't trace."
+	IncludeConstants bool
 
 	// IncludeCgoExports includes functions annotated with //export pragma.
 	// Default false — CGo-exported functions are called from C, not Go,
@@ -57,6 +89,107 @@ type FindDeadCodeOptions struct {
 	// Useful when cross-repo linking is incomplete — functions in secondary
 	// repos may lack incoming edges from the primary repo.
 	SkipCrossRepoNodes bool
+}
+
+// neverDeadCodeKinds enumerates node kinds the dead-code analyzer must
+// never report — regardless of opt-in flags — because the question
+// "is this code dead?" has no meaningful answer for them. Includes
+// structural nodes (file/package/import), function-shape nodes
+// (param/closure/generic_param), extracted metadata (todo/team/
+// release/license), infra surface (table/column/migration/config_key/
+// flag/event/fixture/resource/kustomization/image), package metadata
+// (module), and value-extraction nodes (string/enum_member).
+// Surfacing any of these drowns real dead-function signal in noise.
+var neverDeadCodeKinds = map[graph.NodeKind]bool{
+	graph.KindFile:          true,
+	graph.KindPackage:       true,
+	graph.KindImport:        true,
+	graph.KindParam:         true,
+	graph.KindClosure:       true,
+	graph.KindGenericParam:  true,
+	graph.KindString:        true,
+	graph.KindEnumMember:    true,
+	graph.KindModule:        true,
+	graph.KindColumn:        true,
+	graph.KindTable:         true,
+	graph.KindConfigKey:     true,
+	graph.KindFlag:          true,
+	graph.KindEvent:         true,
+	graph.KindMigration:     true,
+	graph.KindFixture:       true,
+	graph.KindTodo:          true,
+	graph.KindTeam:          true,
+	graph.KindRelease:       true,
+	graph.KindLicense:       true,
+	graph.KindResource:      true,
+	graph.KindKustomization: true,
+	graph.KindImage:         true,
+	graph.KindContract:      true,
+}
+
+// incomingUsageKinds returns the set of incoming edge kinds that count
+// as "this symbol is used" for the given node kind. The per-kind list
+// matters because different shapes are exercised by different edges:
+// a function is used via Calls or References, a type via References /
+// Instantiates / MemberOf, a field via Reads or Writes.
+//
+// Before this split, the analyzer used a single global allowlist
+// {Calls, References, MemberOf, Implements, Instantiates} — which
+// meant struct fields and variables always appeared dead because
+// the resolver records their use as EdgeReads, which wasn't in the
+// allowlist. The result was 5,390 fields flagged across the gortex
+// workspace, drowning out the ~300 real function-level signals.
+func incomingUsageKinds(k graph.NodeKind) []graph.EdgeKind {
+	switch k {
+	case graph.KindFunction:
+		// Calls: invoked as `foo()`. References: passed as a value
+		// (`RunE: runClean`). MemberOf: appears in a method-table /
+		// receiver mapping. Instantiates: NewFoo() pattern when the
+		// receiver type is the function type itself.
+		return []graph.EdgeKind{
+			graph.EdgeCalls, graph.EdgeReferences,
+			graph.EdgeMemberOf, graph.EdgeInstantiates,
+		}
+	case graph.KindMethod:
+		// Same as functions plus: Implements (the method satisfies
+		// an interface contract — required by the interface).
+		return []graph.EdgeKind{
+			graph.EdgeCalls, graph.EdgeReferences,
+			graph.EdgeMemberOf, graph.EdgeImplements, graph.EdgeInstantiates,
+		}
+	case graph.KindType, graph.KindInterface:
+		// Types are exercised by References (typed-as / return-type /
+		// param-type), Instantiates (struct literal), MemberOf
+		// (methods/fields hanging off the type), Implements (a type
+		// satisfies this interface), Extends (subclass), Composes
+		// (embeds), TypedAs (variable typed as this type).
+		return []graph.EdgeKind{
+			graph.EdgeReferences, graph.EdgeInstantiates,
+			graph.EdgeMemberOf, graph.EdgeImplements,
+			graph.EdgeExtends, graph.EdgeComposes, graph.EdgeTypedAs,
+		}
+	case graph.KindField:
+		// Fields are accessed via Reads/Writes (the dominant pattern)
+		// and References (when a struct literal positionally fills the
+		// field). MemberOf isn't a "use" — it just attaches the field
+		// to its owner type.
+		return []graph.EdgeKind{
+			graph.EdgeReads, graph.EdgeWrites, graph.EdgeReferences,
+		}
+	case graph.KindVariable, graph.KindConstant:
+		// Same as fields: Reads/Writes dominate; References covers
+		// the value-as-arg case.
+		return []graph.EdgeKind{
+			graph.EdgeReads, graph.EdgeWrites, graph.EdgeReferences,
+		}
+	}
+	// Fallback for any kind not specifically modelled: use the legacy
+	// global allowlist so a future KindWidget doesn't silently
+	// collapse to "always dead."
+	return []graph.EdgeKind{
+		graph.EdgeCalls, graph.EdgeReferences,
+		graph.EdgeMemberOf, graph.EdgeImplements, graph.EdgeInstantiates,
+	}
 }
 
 // FindDeadCode returns all symbols with zero incoming calls or references,
@@ -91,14 +224,28 @@ func FindDeadCode(g *graph.Graph, processes *ProcessResult, excludePatterns []st
 
 	var result []DeadCodeEntry
 	for _, n := range nodes {
-		// Skip structural node kinds
-		if n.Kind == graph.KindFile || n.Kind == graph.KindImport || n.Kind == graph.KindPackage {
+		// Skip kinds the analyzer never reports — structural,
+		// extracted metadata, infra, function-shape, and value-only
+		// nodes. See neverDeadCodeKinds for the full list and why.
+		if neverDeadCodeKinds[n.Kind] {
 			continue
 		}
 
-		// Skip variables unless explicitly requested — the graph lacks
-		// intra-function data-flow edges, so variables always look "dead".
+		// Skip variables/fields/constants unless explicitly opted in.
+		// All three are subject to the same graph limitation: the
+		// resolver can't always pick a candidate for intra-function
+		// reads, so they look dead even when the code reads them
+		// every line. We err toward false-negative (miss a real dead
+		// variable) over false-positive (flag every struct field
+		// in the repo) — the latter destroys the signal of the
+		// function/method results we DO trust.
 		if n.Kind == graph.KindVariable && !opt.IncludeVariables {
+			continue
+		}
+		if n.Kind == graph.KindField && !opt.IncludeFields {
+			continue
+		}
+		if n.Kind == graph.KindConstant && !opt.IncludeConstants {
 			continue
 		}
 
@@ -131,17 +278,20 @@ func FindDeadCode(g *graph.Graph, processes *ProcessResult, excludePatterns []st
 		}
 
 		// Count incoming edges that indicate the symbol is used.
-		// Besides calls and references, we also count:
-		//   - member_of:     methods point to this type → the type is used
-		//   - implements:    a type implements this interface → the interface is used
-		//   - instantiates:  struct literal usage → the type is used
+		// The allowlist is per-kind: fields/variables/constants are
+		// exercised by Reads/Writes; functions/methods by Calls/
+		// References; types by References/Instantiates/MemberOf/
+		// Implements/Extends/Composes/TypedAs. See incomingUsageKinds
+		// for the rationale.
+		allowed := incomingUsageKinds(n.Kind)
 		inEdges := g.GetInEdges(n.ID)
 		incomingCount := 0
 		for _, e := range inEdges {
-			switch e.Kind {
-			case graph.EdgeCalls, graph.EdgeReferences,
-				graph.EdgeMemberOf, graph.EdgeImplements, graph.EdgeInstantiates:
-				incomingCount++
+			for _, k := range allowed {
+				if e.Kind == k {
+					incomingCount++
+					break
+				}
 			}
 		}
 

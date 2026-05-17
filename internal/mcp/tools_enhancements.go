@@ -126,6 +126,11 @@ func (s *Server) registerEnhancementTools() {
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format, per-kind hand-tuned encoder), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
 			mcp.WithBoolean("include_variables", mcp.Description("(dead_code) Include variable nodes (default false — usually false positives without data-flow analysis)")),
+			mcp.WithBoolean("include_fields", mcp.Description("(dead_code) Include struct/class field nodes (default false — graph can't always pick a candidate for intra-function field reads, so fields look dead even when used)")),
+			mcp.WithBoolean("include_constants", mcp.Description("(dead_code) Include constant nodes (default false — same caveat as variables)")),
+			mcp.WithBoolean("include_cgo_exports", mcp.Description("(dead_code) Include functions annotated //export — default false; CGo exports have no Go-level callers")),
+			mcp.WithBoolean("include_linkname_targets", mcp.Description("(dead_code) Include //go:linkname targets — default false; they are linked by name from outside the package")),
+			mcp.WithBoolean("skip_cross_repo_nodes", mcp.Description("(dead_code) Drop nodes whose RepoPrefix is set — useful when cross-repo linking is incomplete")),
 			mcp.WithNumber("threshold", mcp.Description("(hotspots) Complexity score threshold (default: mean + 2σ)")),
 			mcp.WithString("scope", mcp.Description("(cycles) File path or package prefix to limit scope")),
 			mcp.WithString("from_id", mcp.Description("(would_create_cycle) Source symbol ID")),
@@ -1888,6 +1893,12 @@ func (s *Server) handleFindDeadCode(ctx context.Context, req mcp.CallToolRequest
 	if v, ok := args["include_variables"].(bool); ok && v {
 		opts.IncludeVariables = true
 	}
+	if v, ok := args["include_fields"].(bool); ok && v {
+		opts.IncludeFields = true
+	}
+	if v, ok := args["include_constants"].(bool); ok && v {
+		opts.IncludeConstants = true
+	}
 	if v, ok := args["include_cgo_exports"].(bool); ok && v {
 		opts.IncludeCgoExports = true
 	}
@@ -1915,10 +1926,7 @@ func (s *Server) handleFindDeadCode(ctx context.Context, req mcp.CallToolRequest
 		deadTruncated = true
 	}
 
-	variablesNote := ""
-	if !opts.IncludeVariables {
-		variablesNote = "Variables excluded by default (graph lacks intra-function data flow). Pass include_variables=true to include them."
-	}
+	variablesNote := buildDeadCodeNote(opts)
 
 	if s.isGCX(ctx, req) {
 		items := make([]deadCodeItem, 0, len(entries))
@@ -1960,6 +1968,27 @@ func (s *Server) handleFindDeadCode(ctx context.Context, req mcp.CallToolRequest
 		result["note"] = variablesNote
 	}
 	return s.respondJSONOrTOON(ctx, req, result)
+}
+
+// buildDeadCodeNote summarises which low-signal kinds the analyzer
+// dropped by default, so callers know which include_* flag to flip
+// if they want to broaden the scan. Returns the empty string when
+// every opt-in flag is already set.
+func buildDeadCodeNote(opts analysis.FindDeadCodeOptions) string {
+	var off []string
+	if !opts.IncludeVariables {
+		off = append(off, "variables (include_variables=true)")
+	}
+	if !opts.IncludeFields {
+		off = append(off, "fields (include_fields=true)")
+	}
+	if !opts.IncludeConstants {
+		off = append(off, "constants (include_constants=true)")
+	}
+	if len(off) == 0 {
+		return ""
+	}
+	return "Excluded by default — graph lacks intra-function data flow, so these always look dead: " + strings.Join(off, ", ") + "."
 }
 
 func (s *Server) handleFindHotspots(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
