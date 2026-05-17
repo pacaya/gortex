@@ -1,7 +1,6 @@
 package resolver
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -455,11 +454,3 @@ func splitQualifiedFunctionName(name string) (ns, base string) {
 	return "", name
 }
 
-// sameDir is a tiny convenience for resolver passes that want to
-// check whether a candidate lives in the caller's directory. Used
-// alongside the scope-resolution helpers above for the rare
-// non-Go languages whose ".gortex.yaml::workspace" boundary is
-// directory-based.
-func sameDir(callerFile, candidateFile string) bool {
-	return filepath.Dir(callerFile) == filepath.Dir(candidateFile)
-}

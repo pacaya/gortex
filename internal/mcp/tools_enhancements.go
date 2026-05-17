@@ -674,7 +674,7 @@ func (s *Server) handlePrefetchContext(ctx context.Context, req mcp.CallToolRequ
 func (s *Server) handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	kind, err := req.RequireString("kind")
 	if err != nil {
-		return mcp.NewToolResultError("kind is required (one of: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage, stale_code, ownership, coverage_gaps, stale_flags, releases, cgo_users, wasm_users, orphan_tables, unreferenced_tables, coverage_summary, channel_ops, goroutine_spawns, field_writers, annotation_users, config_readers, event_emitters, pubsub, string_emitters, error_surface, external_calls, routes, models, components, k8s_resources, images, kustomize, cross_repo)"), nil
+		return mcp.NewToolResultError("kind is required (one of: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage, stale_code, ownership, coverage_gaps, stale_flags, releases, cgo_users, wasm_users, orphan_tables, unreferenced_tables, coverage_summary, channel_ops, goroutine_spawns, field_writers, race_writes, unclosed_channels, annotation_users, config_readers, event_emitters, pubsub, string_emitters, error_surface, external_calls, routes, models, components, k8s_resources, images, kustomize, cross_repo)"), nil
 	}
 	switch kind {
 	case "dead_code":
@@ -717,6 +717,10 @@ func (s *Server) handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*m
 		return s.handleAnalyzeGoroutineSpawns(ctx, req)
 	case "field_writers":
 		return s.handleAnalyzeFieldWriters(ctx, req)
+	case "race_writes":
+		return s.handleAnalyzeRaceWrites(ctx, req)
+	case "unclosed_channels":
+		return s.handleAnalyzeUnclosedChannels(ctx, req)
 	case "annotation_users":
 		return s.handleAnalyzeAnnotationUsers(ctx, req)
 	case "config_readers":
@@ -748,7 +752,7 @@ func (s *Server) handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*m
 	case "dbt_models":
 		return s.handleAnalyzeDbtModels(ctx, req)
 	default:
-		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage, stale_code, ownership, coverage_gaps, stale_flags, releases, cgo_users, wasm_users, orphan_tables, unreferenced_tables, coverage_summary, channel_ops, goroutine_spawns, field_writers, annotation_users, config_readers, event_emitters, pubsub, string_emitters, error_surface, external_calls, routes, models, components, k8s_resources, images, kustomize, cross_repo, dbt_models)"), nil
+		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: dead_code, hotspots, cycles, would_create_cycle, todos, blame, coverage, stale_code, ownership, coverage_gaps, stale_flags, releases, cgo_users, wasm_users, orphan_tables, unreferenced_tables, coverage_summary, channel_ops, goroutine_spawns, field_writers, race_writes, unclosed_channels, annotation_users, config_readers, event_emitters, pubsub, string_emitters, error_surface, external_calls, routes, models, components, k8s_resources, images, kustomize, cross_repo, dbt_models)"), nil
 	}
 }
 

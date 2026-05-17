@@ -486,6 +486,30 @@ func encodeAnalyze(kind string, payload any) ([]byte, error) {
 			}
 		}
 		return buf.Bytes(), enc.Close()
+	case "race_writes":
+		items, _ := payload.([]raceWriteItem)
+		enc := newGCX(&buf, "analyze.race_writes",
+			[]string{"field", "writer", "file", "line", "reason"},
+			"count", fmt.Sprintf("%d", len(items)),
+		)
+		for _, it := range items {
+			if err := enc.WriteRow(it.Field, it.Writer, it.FilePath, it.Line, it.Reason); err != nil {
+				return nil, err
+			}
+		}
+		return buf.Bytes(), enc.Close()
+	case "unclosed_channels":
+		items, _ := payload.([]unclosedChannelItem)
+		enc := newGCX(&buf, "analyze.unclosed_channels",
+			[]string{"channel", "file", "line", "sends", "recvs", "senders", "risk", "reason"},
+			"count", fmt.Sprintf("%d", len(items)),
+		)
+		for _, it := range items {
+			if err := enc.WriteRow(it.Channel, it.FilePath, it.Line, it.Sends, it.Recvs, it.Senders, it.Risk, it.Reason); err != nil {
+				return nil, err
+			}
+		}
+		return buf.Bytes(), enc.Close()
 	case "annotation_users":
 		items, _ := payload.([]annotatedItem)
 		enc := newGCX(&buf, "analyze.annotation_users",
@@ -635,6 +659,31 @@ type fieldWriterItem struct {
 	Field   string
 	Writes  int
 	Writers string
+}
+
+// raceWriteItem is one row of the `race_writes` analyzer: a field
+// write that fires from inside a goroutine-reachable function with
+// no detected lock guard.
+type raceWriteItem struct {
+	Field    string
+	Writer   string
+	FilePath string
+	Line     int
+	Reason   string
+}
+
+// unclosedChannelItem is one row of the `unclosed_channels`
+// analyzer: a channel that takes sends but nobody (sender or
+// receiver) calls close() on.
+type unclosedChannelItem struct {
+	Channel  string
+	FilePath string
+	Line     int
+	Sends    int
+	Recvs    int
+	Senders  int
+	Risk     string
+	Reason   string
 }
 
 type annotatedItem struct {
