@@ -74,8 +74,6 @@ type Generator struct {
 	symbolCount      int
 	processCount     int
 	contractCount    int
-	hotspotsLimited  []analysis.HotspotEntry // unused; placeholder
-	repoSlugComputed string
 }
 
 // New constructs a Generator from the inputs and options. The opts are

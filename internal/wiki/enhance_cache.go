@@ -44,15 +44,19 @@ func DefaultEnhanceCacheDir() string {
 // prompt version so changing the prompt template busts the cache.
 func (c *EnhanceCache) Key(section EnhanceSection, providerName string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "v=%d\n", promptVersion)
-	fmt.Fprintf(h, "provider=%s\n", providerName)
-	fmt.Fprintf(h, "kind=%s\n", section.Kind)
-	fmt.Fprintf(h, "title=%s\n", section.PageTitle)
-	for _, a := range section.AnchorSymbolIDs {
-		fmt.Fprintf(h, "anchor=%s\n", a)
+	// sha256.Hash.Write never returns an error; ignore Fprintf's int+err.
+	write := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(h, format, args...)
 	}
-	fmt.Fprintf(h, "ctx=%s\n", section.Context)
-	fmt.Fprintf(h, "body=%s\n", section.RawMarkdown)
+	write("v=%d\n", promptVersion)
+	write("provider=%s\n", providerName)
+	write("kind=%s\n", section.Kind)
+	write("title=%s\n", section.PageTitle)
+	for _, a := range section.AnchorSymbolIDs {
+		write("anchor=%s\n", a)
+	}
+	write("ctx=%s\n", section.Context)
+	write("body=%s\n", section.RawMarkdown)
 	return hex.EncodeToString(h.Sum(nil))
 }
 

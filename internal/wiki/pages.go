@@ -362,7 +362,7 @@ func (gen *Generator) renderSemanticPage(_ context.Context) (string, error) {
 	b.WriteString("# Semantic Analysis\n\n")
 	b.WriteString("Edge confidence distribution across the indexed graph. Higher tiers come from compiler-verified providers (go-types, LSP, SCIP); lower tiers fall back to AST heuristics.\n\n")
 
-	if gen.confDist == nil || len(gen.confDist) == 0 {
+	if len(gen.confDist) == 0 {
 		b.WriteString("_No confidence-labelled edges in the graph._\n")
 		return b.String(), nil
 	}
