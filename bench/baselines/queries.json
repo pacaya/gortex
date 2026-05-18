@@ -1,0 +1,15 @@
+{
+  "comment": "Query set for the retrieval-baselines NDCG@10 bench. Same shape as the token-efficiency set so the two benches stay comparable: an adapter that scores well here should also produce low tokens-per-response there.",
+  "queries": [
+    "AddObservation",
+    "IsSymbolQuery",
+    "FileCoherenceSignal",
+    "alphaFuse",
+    "savings dashboard rendering",
+    "rerank pipeline default signals",
+    "Indexer Index method",
+    "graph build edges",
+    "MCP server start",
+    "token counting tiktoken"
+  ]
+}

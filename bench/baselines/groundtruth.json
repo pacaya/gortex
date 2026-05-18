@@ -1,0 +1,37 @@
+{
+  "comment": "Per-query expected file paths against the gortex repo. NDCG@10 = mean over queries of DCG_at_10 / IDCG_at_10 where gain=1 for hits in this list and 0 otherwise. Mirrors the token-efficiency ground truth so the two benches are directly comparable.",
+  "queries": {
+    "AddObservation": [
+      "internal/savings/store.go"
+    ],
+    "IsSymbolQuery": [
+      "internal/search/rerank/query_kind.go"
+    ],
+    "FileCoherenceSignal": [
+      "internal/search/rerank/signals_file_coherence.go"
+    ],
+    "alphaFuse": [
+      "internal/search/hybrid.go"
+    ],
+    "savings dashboard rendering": [
+      "cmd/gortex/savings.go",
+      "internal/savings/events.go"
+    ],
+    "rerank pipeline default signals": [
+      "internal/search/rerank/pipeline.go"
+    ],
+    "Indexer Index method": [
+      "internal/indexer/indexer.go"
+    ],
+    "graph build edges": [
+      "internal/graph/graph.go"
+    ],
+    "MCP server start": [
+      "internal/mcp/server.go",
+      "cmd/gortex/mcp.go"
+    ],
+    "token counting tiktoken": [
+      "internal/tokens/tokens.go"
+    ]
+  }
+}
