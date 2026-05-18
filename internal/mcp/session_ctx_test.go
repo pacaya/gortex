@@ -98,8 +98,8 @@ func TestServer_TokenStatsFor_IsolatedCounters(t *testing.T) {
 	ctxB := WithSessionID(context.Background(), "session_B")
 
 	// A records 1000 saved / 500 returned; B records 300/100.
-	srv.tokenStatsFor(ctxA).record(nil, 500, 1500) // returned=500, fullFile=1500 → saved=1000
-	srv.tokenStatsFor(ctxB).record(nil, 100, 400)  // returned=100, fullFile=400 → saved=300
+	srv.tokenStatsFor(ctxA).record(nil, "test", 500, 1500) // returned=500, fullFile=1500 → saved=1000
+	srv.tokenStatsFor(ctxB).record(nil, "test", 100, 400)  // returned=100, fullFile=400 → saved=300
 
 	snapA := srv.tokenStatsFor(ctxA).snapshot()
 	snapB := srv.tokenStatsFor(ctxB).snapshot()

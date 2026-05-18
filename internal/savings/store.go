@@ -67,6 +67,13 @@ type Store struct {
 	langDelta map[string]*Totals // per-language deltas
 	pending   int                // observations since last flush
 
+	// eventsPath is the JSONL event log derived from `path`. Each
+	// AddObservation appends one line so the `gortex savings` dashboard
+	// can compute Today / Last 7 days windows the cumulative file can't.
+	// Empty when the store is in-memory only or when disabled.
+	eventsPath     string
+	eventsDisabled bool
+
 	// stop signals the optional periodic flusher to exit. Nil when no
 	// flusher is running.
 	stopOnce sync.Once
@@ -84,15 +91,43 @@ func DefaultPath() string {
 	return filepath.Join(base, "gortex", "savings.json")
 }
 
+// DefaultEventsPath returns the canonical savings.jsonl event-log path next
+// to DefaultPath. Empty when the cache dir is unavailable.
+func DefaultEventsPath() string {
+	p := DefaultPath()
+	if p == "" {
+		return ""
+	}
+	return EventsPathFor(p)
+}
+
+// EventsPathFor returns the JSONL event-log path that corresponds to a
+// cumulative savings JSON path — `<dir>/savings.jsonl` alongside the JSON
+// file. Empty when storePath is empty.
+func EventsPathFor(storePath string) string {
+	if storePath == "" {
+		return ""
+	}
+	dir := filepath.Dir(storePath)
+	base := filepath.Base(storePath)
+	ext := filepath.Ext(base)
+	stem := base
+	if ext != "" {
+		stem = base[:len(base)-len(ext)]
+	}
+	return filepath.Join(dir, stem+".jsonl")
+}
+
 // Open loads savings from path, or returns an empty Store when the file
 // doesn't exist yet. Corrupt or incompatible files are backed up to
 // `<path>.corrupt-<ts>` and replaced with a fresh state so a bad write can't
 // permanently break metrics.
 func Open(path string) (*Store, error) {
 	s := &Store{
-		path:      path,
-		perDelta:  make(map[string]*Totals),
-		langDelta: make(map[string]*Totals),
+		path:       path,
+		eventsPath: EventsPathFor(path),
+		perDelta:   make(map[string]*Totals),
+		langDelta:  make(map[string]*Totals),
 	}
 	s.file.Version = schemaVersion
 	s.file.FirstSeen = time.Now().UTC()
@@ -147,14 +182,16 @@ func readFile(path string) (*File, error) {
 
 // AddObservation increments the store by one source-reading tool call.
 // repoPath and language, when non-empty, also aggregate under per-repo
-// and per-language buckets respectively. Writes to disk every flushEvery
-// observations.
-func (s *Store) AddObservation(repoPath, language string, returned, saved int64) {
+// and per-language buckets respectively. tool, when non-empty, is recorded
+// in the JSONL event log so the dashboard can build a per-tool breakdown
+// in --verbose mode. Writes to disk every flushEvery observations.
+func (s *Store) AddObservation(repoPath, language, tool string, returned, saved int64) {
 	if s == nil {
 		return
 	}
+	now := time.Now().UTC()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if saved < 0 {
 		saved = 0
@@ -163,7 +200,7 @@ func (s *Store) AddObservation(repoPath, language string, returned, saved int64)
 	s.file.Totals.TokensSaved += saved
 	s.file.Totals.TokensReturned += returned
 	s.file.Totals.CallsCounted++
-	s.file.LastUpdated = time.Now().UTC()
+	s.file.LastUpdated = now
 
 	s.delta.TokensSaved += saved
 	s.delta.TokensReturned += returned
@@ -195,8 +232,29 @@ func (s *Store) AddObservation(repoPath, language string, returned, saved int64)
 	addBucket(s.file.PerLanguage, s.langDelta, language)
 
 	s.pending++
-	if s.pending >= flushEvery {
+	flushCumulative := s.pending >= flushEvery
+	eventsPath := s.eventsPath
+	eventsDisabled := s.eventsDisabled
+	s.mu.Unlock()
+
+	// Best-effort JSONL append outside the store mutex — the file
+	// handle is opened with O_APPEND so concurrent writers from this
+	// or other gortex processes interleave at line boundaries.
+	if !eventsDisabled && eventsPath != "" {
+		_ = appendEvent(eventsPath, Event{
+			TS:       now,
+			Repo:     repoPath,
+			Language: language,
+			Tool:     tool,
+			Returned: returned,
+			Saved:    saved,
+		})
+	}
+
+	if flushCumulative {
+		s.mu.Lock()
 		_ = s.flushLocked()
+		s.mu.Unlock()
 	}
 }
 
@@ -308,6 +366,11 @@ func (s *Store) Reset() error {
 	}
 	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if s.eventsPath != "" {
+		if err := os.Remove(s.eventsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }

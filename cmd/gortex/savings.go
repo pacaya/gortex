@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -18,26 +19,39 @@ var (
 	savingsJSON     bool
 	savingsReset    bool
 	savingsCacheDir string
+	savingsVerbose  bool
+	savingsBarCells int
+	savingsUTC      bool
 )
 
 var savingsCmd = &cobra.Command{
 	Use:   "savings",
-	Short: "Show cumulative token savings + cost avoided across sessions",
-	Long: `Shows cumulative token-savings totals persisted across server restarts.
-Savings accumulate every time a source-reading MCP tool (get_symbol_source,
-batch_symbols, get_editing_context, get_file_summary, smart_context) avoids
-a full-file read. Cost is computed against list prices for popular models.
+	Short: "Show token-savings dashboard (Today / Last 7 days / All time) + cost avoided",
+	Long: `Renders a bar-chart dashboard of token-savings buckets persisted across
+sessions: Today, Last 7 days, and All time. Each bucket shows a 16-cell
+saved/total bar, percentage saved, raw token counts, and the USD value of
+the tokens avoided (priced against popular models).
 
-The underlying store lives at ~/.cache/gortex/savings.json (or --cache-dir/savings.json).
-Override pricing by exporting GORTEX_MODEL_PRICING_JSON.`,
+Savings accumulate every time a source-reading MCP tool (get_symbol_source,
+batch_symbols, smart_context) returns a symbol or compressed view instead of
+a full-file read. Cumulative totals live at ~/.cache/gortex/savings.json and
+per-call events at the sibling ~/.cache/gortex/savings.jsonl — Today / 7-day
+buckets come from the JSONL log, All time from the cumulative file.
+
+Override the cache dir with --cache-dir, override pricing by exporting
+GORTEX_MODEL_PRICING_JSON, and pass --verbose for a per-tool breakdown
+inside each bucket.`,
 	RunE: runSavings,
 }
 
 func init() {
-	savingsCmd.Flags().StringVar(&savingsModel, "model", "", "highlight a single model in text output (default: show all)")
-	savingsCmd.Flags().BoolVar(&savingsJSON, "json", false, "emit machine-readable JSON")
-	savingsCmd.Flags().BoolVar(&savingsReset, "reset", false, "wipe cumulative totals and exit")
-	savingsCmd.Flags().StringVar(&savingsCacheDir, "cache-dir", "", "override graph cache directory (savings.json lives here)")
+	savingsCmd.Flags().StringVar(&savingsModel, "model", "", "highlight one model in USD output (default: show all)")
+	savingsCmd.Flags().BoolVar(&savingsJSON, "json", false, "emit machine-readable JSON instead of the dashboard")
+	savingsCmd.Flags().BoolVar(&savingsReset, "reset", false, "wipe cumulative totals + event log and exit")
+	savingsCmd.Flags().StringVar(&savingsCacheDir, "cache-dir", "", "override graph cache directory (savings.json + savings.jsonl live here)")
+	savingsCmd.Flags().BoolVarP(&savingsVerbose, "verbose", "v", false, "include per-tool breakdown for each bucket")
+	savingsCmd.Flags().IntVar(&savingsBarCells, "bar-width", 16, "number of cells in each bar (default 16, matching semble)")
+	savingsCmd.Flags().BoolVar(&savingsUTC, "utc", false, "bucket Today by UTC calendar (default: local time)")
 	rootCmd.AddCommand(savingsCmd)
 }
 
@@ -46,6 +60,7 @@ func runSavings(_ *cobra.Command, _ []string) error {
 	if savingsCacheDir != "" {
 		path = filepath.Join(savingsCacheDir, "savings.json")
 	}
+	eventsPath := savings.EventsPathFor(path)
 
 	store, err := savings.Open(path)
 	if err != nil {
@@ -57,27 +72,73 @@ func runSavings(_ *cobra.Command, _ []string) error {
 			return fmt.Errorf("reset: %w", err)
 		}
 		fmt.Fprintf(os.Stderr, "[gortex savings] reset cumulative totals at %s\n", path)
+		if eventsPath != "" {
+			fmt.Fprintf(os.Stderr, "[gortex savings] removed event log at %s\n", eventsPath)
+		}
 		return nil
 	}
 
 	snap := store.Snapshot()
 
-	if savingsJSON {
-		return emitSavingsJSON(snap, path)
+	loc := time.Local
+	if savingsUTC {
+		loc = time.UTC
 	}
-	emitSavingsText(snap, path)
+	buckets, err := savings.BuildDashboard(eventsPath, snap.Totals, time.Now(), loc)
+	if err != nil {
+		// Don't fail the whole command on event-log read errors — fall
+		// back to a dashboard with empty Today/7d buckets.
+		fmt.Fprintf(os.Stderr, "[gortex savings] event log read failed: %v\n", err)
+		buckets = []savings.Bucket{
+			{Label: "Today"},
+			{Label: "Last 7 days"},
+			{Label: "All time", Totals: snap.Totals},
+		}
+	}
+
+	if savingsJSON {
+		return emitSavingsJSON(snap, buckets, path, eventsPath)
+	}
+	emitSavingsDashboard(snap, buckets, path, eventsPath)
 	return nil
 }
 
-func emitSavingsJSON(snap savings.File, path string) error {
+func emitSavingsJSON(snap savings.File, buckets []savings.Bucket, path, eventsPath string) error {
+	bucketJSON := make([]map[string]any, 0, len(buckets))
+	for _, b := range buckets {
+		entry := map[string]any{
+			"label":            b.Label,
+			"tokens_saved":     b.Totals.TokensSaved,
+			"tokens_returned":  b.Totals.TokensReturned,
+			"calls_counted":    b.Totals.CallsCounted,
+			"percent_saved":    savings.SavingsPercent(b.Totals),
+			"cost_avoided_usd": savings.CostAvoidedAll(b.Totals.TokensSaved),
+		}
+		if len(b.PerTool) > 0 {
+			tools := make([]map[string]any, 0, len(b.PerTool))
+			for _, t := range b.PerTool {
+				tools = append(tools, map[string]any{
+					"tool":            t.Tool,
+					"tokens_saved":    t.TokensSaved,
+					"tokens_returned": t.TokensReturned,
+					"calls_counted":   t.CallsCounted,
+				})
+			}
+			entry["per_tool"] = tools
+		}
+		bucketJSON = append(bucketJSON, entry)
+	}
+
 	out := map[string]any{
 		"path":             path,
+		"events_path":      eventsPath,
 		"first_seen":       snap.FirstSeen.Format(time.RFC3339),
 		"last_updated":     snap.LastUpdated.Format(time.RFC3339),
 		"tokens_saved":     snap.Totals.TokensSaved,
 		"tokens_returned":  snap.Totals.TokensReturned,
 		"calls_counted":    snap.Totals.CallsCounted,
 		"cost_avoided_usd": savings.CostAvoidedAll(snap.Totals.TokensSaved),
+		"buckets":          bucketJSON,
 	}
 	if len(snap.PerRepo) > 0 {
 		out["per_repo"] = snap.PerRepo
@@ -90,53 +151,159 @@ func emitSavingsJSON(snap savings.File, path string) error {
 	return enc.Encode(out)
 }
 
-func emitSavingsText(snap savings.File, path string) {
-	fmt.Printf("Gortex Token Savings\n")
-	fmt.Printf("====================\n\n")
+// emitSavingsDashboard renders the bar-chart dashboard. Layout mirrors
+// semble's format_savings_report(): a header with cumulative USD on top,
+// then one row per bucket with bar / percentage / token counts / dollar
+// amount, optionally followed by a per-tool breakdown in --verbose mode.
+func emitSavingsDashboard(snap savings.File, buckets []savings.Bucket, path, eventsPath string) {
+	fmt.Println("Gortex Token Savings")
+	fmt.Println("====================")
 	fmt.Printf("Store:          %s\n", path)
+	if eventsPath != "" {
+		fmt.Printf("Event log:      %s\n", eventsPath)
+	}
 	if !snap.FirstSeen.IsZero() {
 		fmt.Printf("Tracking since: %s\n", snap.FirstSeen.Format("2006-01-02 15:04"))
 	}
 	if !snap.LastUpdated.IsZero() {
 		fmt.Printf("Last updated:   %s\n", snap.LastUpdated.Format("2006-01-02 15:04"))
 	}
-	fmt.Println()
 
+	// USD header — total avoided, headlined by the model we want to
+	// feature (or the most-expensive one when --model is unset).
+	costs := savings.CostAvoidedAll(snap.Totals.TokensSaved)
+	headline, headlineModel := pickHeadlineCost(costs, savingsModel)
+	fmt.Println()
 	if snap.Totals.CallsCounted == 0 {
 		fmt.Println("No source-reading tool calls recorded yet.")
 		fmt.Println("Run `gortex mcp` and use get_symbol_source / batch_symbols / smart_context.")
 		return
 	}
+	fmt.Printf("Cost avoided:   %s (%s) across %s calls · %s tokens saved\n",
+		formatUSD(headline), headlineModel,
+		humanInt(snap.Totals.CallsCounted), humanInt(snap.Totals.TokensSaved))
 
-	fmt.Printf("Calls counted:   %d\n", snap.Totals.CallsCounted)
-	fmt.Printf("Tokens returned: %s\n", humanInt(snap.Totals.TokensReturned))
-	fmt.Printf("Tokens saved:    %s\n", humanInt(snap.Totals.TokensSaved))
-	if snap.Totals.TokensReturned > 0 {
-		ratio := float64(snap.Totals.TokensSaved+snap.Totals.TokensReturned) / float64(snap.Totals.TokensReturned)
-		fmt.Printf("Efficiency:      %.1fx\n", ratio)
-	}
+	// Per-bucket bar rows.
 	fmt.Println()
-
-	costs := savings.CostAvoidedAll(snap.Totals.TokensSaved)
-	fmt.Println("Cost avoided (tokens saved × input-price, USD):")
-	if savingsModel != "" {
-		// Highlight a single model.
-		amount := savings.CostAvoided(snap.Totals.TokensSaved, savingsModel)
-		fmt.Printf("  %-20s $%.4f\n", savingsModel, amount)
-		return
+	labelWidth := 0
+	for _, b := range buckets {
+		if l := len(b.Label); l > labelWidth {
+			labelWidth = l
+		}
 	}
-	// Stable ordering so output is diffable.
+	for _, b := range buckets {
+		renderBucketRow(b, labelWidth, headlineModel)
+	}
+
+	// USD-per-model table — same data the original CLI printed, kept
+	// because it lets agents see opus vs sonnet vs haiku side-by-side.
+	fmt.Println()
+	fmt.Println("Cost avoided per model (all time):")
+	if savingsModel != "" {
+		amount := savings.CostAvoided(snap.Totals.TokensSaved, savingsModel)
+		fmt.Printf("  %-20s %s\n", savingsModel, formatUSD(amount))
+	} else {
+		names := make([]string, 0, len(costs))
+		for n := range costs {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Printf("  %-20s %s\n", n, formatUSD(costs[n]))
+		}
+	}
+
+	// --verbose: per-tool breakdown inside each bucket. Hidden by
+	// default because the headline 3-row dashboard is what the user
+	// asked for; this is the deep-dive.
+	if savingsVerbose {
+		for _, b := range buckets {
+			if len(b.PerTool) == 0 {
+				continue
+			}
+			fmt.Println()
+			fmt.Printf("%s by tool:\n", b.Label)
+			toolWidth := 0
+			for _, t := range b.PerTool {
+				if l := len(t.Tool); l > toolWidth {
+					toolWidth = l
+				}
+			}
+			for _, t := range b.PerTool {
+				pct := savings.SavingsPercent(t.Totals)
+				bar := savings.BarString(pct, savingsBarCells)
+				fmt.Printf("  %-*s %s  %5.1f%%  saved %s (%d calls)\n",
+					toolWidth, t.Tool, bar, pct,
+					humanInt(t.TokensSaved), t.CallsCounted)
+			}
+		}
+	}
+
+	// Per-repo and per-language rollups (carried over from the original
+	// dashboard — agents still find these useful at the bottom).
+	printBucket("Per-repo totals (all time)", snap.PerRepo)
+	printBucket("Per-language totals (all time)", snap.PerLanguage)
+}
+
+func renderBucketRow(b savings.Bucket, labelWidth int, headlineModel string) {
+	pct := savings.SavingsPercent(b.Totals)
+	bar := savings.BarString(pct, savingsBarCells)
+	cost := savings.CostAvoided(b.Totals.TokensSaved, headlineModel)
+	costStr := formatUSD(cost)
+	if cost == 0 && b.Totals.TokensSaved == 0 {
+		costStr = "  $0.00"
+	}
+	fmt.Printf("%-*s %s  %5.1f%%  saved %s / %s tokens  %s\n",
+		labelWidth, b.Label, bar, pct,
+		humanInt(b.Totals.TokensSaved),
+		humanInt(b.Totals.TokensSaved+b.Totals.TokensReturned),
+		costStr,
+	)
+}
+
+// pickHeadlineCost selects which model's cost is featured at the top of
+// the dashboard. Honors --model when set, otherwise picks the highest
+// dollar amount so the headline is the most-impressive credible figure.
+// Returns the cost and the model name actually used.
+func pickHeadlineCost(costs map[string]float64, preferred string) (float64, string) {
+	if preferred != "" {
+		// Use the user's pick even when the model isn't in our table —
+		// CostAvoided handles fuzzy matching and returns 0 for misses.
+		return costs[preferred], preferred
+	}
+	if len(costs) == 0 {
+		return 0, "n/a"
+	}
+	var bestName string
+	var bestVal float64
+	// Stable selection: highest value, then lexicographic name.
 	names := make([]string, 0, len(costs))
 	for n := range costs {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Printf("  %-20s $%.4f\n", n, costs[n])
+		if costs[n] > bestVal {
+			bestVal = costs[n]
+			bestName = n
+		}
 	}
+	if bestName == "" {
+		// All zeros — return any deterministic name so the header is
+		// still meaningful ("$0.00 (claude-opus-4)").
+		bestName = names[0]
+	}
+	return bestVal, bestName
+}
 
-	printBucket("Per-repo totals", snap.PerRepo)
-	printBucket("Per-language totals", snap.PerLanguage)
+// formatUSD picks a precision that's useful at the bucket scale: full
+// cents for amounts >= $1, four decimals for the long-tail small ones so
+// fresh installs don't show "$0.00" everywhere.
+func formatUSD(usd float64) string {
+	if usd >= 1.0 {
+		return fmt.Sprintf("$%.2f", usd)
+	}
+	return fmt.Sprintf("$%.4f", usd)
 }
 
 // printBucket renders a sorted breakdown of name → Totals. Skipped when
@@ -176,19 +343,20 @@ func humanInt(n int64) string {
 		return s
 	}
 	// Insert commas every 3 digits from the right.
-	out := make([]byte, 0, len(s)+len(s)/3)
+	var sb strings.Builder
+	sb.Grow(len(s) + len(s)/3)
 	prefix := len(s) % 3
 	if prefix > 0 {
-		out = append(out, s[:prefix]...)
+		sb.WriteString(s[:prefix])
 		if len(s) > prefix {
-			out = append(out, ',')
+			sb.WriteByte(',')
 		}
 	}
 	for i := prefix; i < len(s); i += 3 {
-		out = append(out, s[i:i+3]...)
+		sb.WriteString(s[i : i+3])
 		if i+3 < len(s) {
-			out = append(out, ',')
+			sb.WriteByte(',')
 		}
 	}
-	return string(out)
+	return sb.String()
 }

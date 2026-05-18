@@ -305,10 +305,12 @@ type tokenStats struct {
 // source was returned — its RepoPrefix and Language are folded into the
 // per-repo / per-language buckets in the persistent store. node may be
 // nil for code paths that don't have a node handle, in which case the
-// observation only contributes to top-line totals.
+// observation only contributes to top-line totals. tool is the MCP tool
+// name that produced the call (e.g. "get_symbol_source") and is recorded
+// in the JSONL event log for the dashboard's per-tool breakdown.
 //
 // returned and fullFile are token counts (cl100k_base via internal/tokens).
-func (ts *tokenStats) record(node *graph.Node, returned, fullFile int64) {
+func (ts *tokenStats) record(node *graph.Node, tool string, returned, fullFile int64) {
 	ts.mu.Lock()
 	saved := fullFile - returned
 	if saved < 0 {
@@ -338,7 +340,7 @@ func (ts *tokenStats) record(node *graph.Node, returned, fullFile int64) {
 	// concurrent writers, and flushing to disk shouldn't block new record()
 	// calls on the hot path.
 	if store != nil {
-		store.AddObservation(repo, language, returned, saved)
+		store.AddObservation(repo, language, tool, returned, saved)
 	}
 }
 

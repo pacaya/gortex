@@ -564,7 +564,7 @@ func (s *Server) handleGetSymbolSource(ctx context.Context, req mcp.CallToolRequ
 	// response). Aggregated stats remain available via the `savings` tool.
 	returned := tokens.CountInt64(source)
 	fullFile := int64(tokens.EstimateFromSample(totalFileChars, source))
-	s.tokenStatsFor(ctx).record(node, returned, fullFile)
+	s.tokenStatsFor(ctx).record(node, "get_symbol_source", returned, fullFile)
 
 	result := map[string]any{
 		"id":         node.ID,
@@ -766,7 +766,7 @@ func (s *Server) handleBatchSymbols(ctx context.Context, req mcp.CallToolRequest
 					entry["from_line"] = fromLine
 					returned := tokens.CountInt64(source)
 					fullFile := int64(tokens.EstimateFromSample(totalFileChars, source))
-					s.tokenStatsFor(ctx).record(node, returned, fullFile)
+					s.tokenStatsFor(ctx).record(node, "batch_symbols", returned, fullFile)
 				}
 			}
 		}
@@ -1400,7 +1400,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 					sourcesEmbedded++
 					returned := tokens.CountInt64(source)
 					fullFile := int64(tokens.EstimateFromSample(totalFileChars, source))
-					s.tokenStatsFor(ctx).record(sym, returned, fullFile)
+					s.tokenStatsFor(ctx).record(sym, "smart_context", returned, fullFile)
 				}
 			}
 		}

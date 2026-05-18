@@ -19,12 +19,12 @@ func TestAddObservation_PerLanguageBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s.AddObservation("/repo-a", "go", 100, 200)
-	s.AddObservation("/repo-a", "go", 50, 80)
-	s.AddObservation("/repo-b", "typescript", 30, 70)
+	s.AddObservation("/repo-a", "go", "get_symbol_source", 100, 200)
+	s.AddObservation("/repo-a", "go", "get_symbol_source", 50, 80)
+	s.AddObservation("/repo-b", "typescript", "batch_symbols", 30, 70)
 	// Empty language is allowed (e.g. record() called with a nil node);
 	// it should accumulate in the totals but not in any per-language bucket.
-	s.AddObservation("/repo-c", "", 10, 20)
+	s.AddObservation("/repo-c", "", "smart_context", 10, 20)
 
 	if err := s.Flush(); err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestStartPeriodicFlush_FlushesPendingObservations(t *testing.T) {
 	stop := s.StartPeriodicFlush(50 * time.Millisecond)
 	defer stop()
 
-	s.AddObservation("/some/repo", "", 100, 200)
+	s.AddObservation("/some/repo", "", "test", 100, 200)
 	if got := s.Snapshot().Totals.CallsCounted; got != 1 {
 		t.Fatalf("CallsCounted before flush = %d, want 1", got)
 	}
@@ -121,9 +121,9 @@ func TestFlush_MergesConcurrentProcessDeltas(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a.AddObservation("/repo-a", "", 50, 150)
-	a.AddObservation("/repo-a", "", 50, 150)
-	b.AddObservation("/repo-b", "", 30, 70)
+	a.AddObservation("/repo-a", "", "test", 50, 150)
+	a.AddObservation("/repo-a", "", "test", 50, 150)
+	b.AddObservation("/repo-b", "", "test", 30, 70)
 
 	if err := a.Flush(); err != nil {
 		t.Fatalf("a.Flush: %v", err)
@@ -182,7 +182,7 @@ func TestFlush_FlockBlocksConcurrentWriters(t *testing.T) {
 		go func(s *Store, repo string) {
 			defer wg.Done()
 			for j := 0; j < perStore; j++ {
-				s.AddObservation(repo, "", 1, 10)
+				s.AddObservation(repo, "", "test", 1, 10)
 			}
 			_ = s.Flush()
 		}(s, "/repo-"+string(rune('a'+i)))
@@ -230,7 +230,7 @@ func TestAddObservation_AccumulatesAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range flushEvery + 5 {
-		s.AddObservation("/some/repo", "", 100, 900)
+		s.AddObservation("/some/repo", "", "test", 100, 900)
 	}
 	if err := s.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
@@ -270,7 +270,7 @@ func TestAddObservation_ConcurrentSafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range per {
-				s.AddObservation("", "", 10, 100)
+				s.AddObservation("", "", "test", 10, 100)
 				expectedSaved.Add(100)
 			}
 		}()
@@ -312,7 +312,7 @@ func TestReset_ClearsStateAndRemovesFile(t *testing.T) {
 	path := filepath.Join(dir, "savings.json")
 
 	s, _ := Open(path)
-	s.AddObservation("/r", "", 50, 500)
+	s.AddObservation("/r", "", "test", 50, 500)
 	_ = s.Flush()
 
 	if _, err := os.Stat(path); err != nil {
@@ -335,7 +335,7 @@ func TestOpen_EmptyPath_InMemoryOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.AddObservation("r", "", 10, 100)
+	s.AddObservation("r", "", "test", 10, 100)
 	if err := s.Flush(); err != nil {
 		t.Errorf("Flush on in-memory store should no-op, got: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestFile_Schema(t *testing.T) {
 	path := filepath.Join(dir, "savings.json")
 
 	s, _ := Open(path)
-	s.AddObservation("/repo-a", "", 10, 100)
+	s.AddObservation("/repo-a", "", "test", 10, 100)
 	_ = s.Flush()
 
 	data, err := os.ReadFile(path)
