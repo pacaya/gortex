@@ -51,6 +51,10 @@ var (
 	benchTEffBudgetRatio float64
 	benchTEffStrict      bool
 	benchTEffSkipRipgrep bool
+
+	benchDaemonLatencyRepo  string
+	benchDaemonLatencyIter  int
+	benchDaemonLatencyTools string
 )
 
 var benchCmd = &cobra.Command{
@@ -88,6 +92,7 @@ func init() {
 	benchCmd.AddCommand(benchEmbeddersCmd)
 	benchCmd.AddCommand(benchSWECmd)
 	benchCmd.AddCommand(benchPerfCmd)
+	benchCmd.AddCommand(benchDaemonLatencyCmd)
 	benchCmd.AddCommand(benchAllCmd)
 
 	benchRecallCmd.Flags().StringVar(&benchRecallFixture, "fixture", "bench/fixtures/retrieval.yaml", "fixture YAML path")
@@ -104,6 +109,10 @@ func init() {
 	benchTokensEfficiencyCmd.Flags().Float64Var(&benchTEffBudgetRatio, "budget-ratio", 0.5, "fail when gortex median tokens > ratio × ripgrep+full-read median (0 disables)")
 	benchTokensEfficiencyCmd.Flags().BoolVar(&benchTEffStrict, "strict", false, "exit 1 when budget gate trips")
 	benchTokensEfficiencyCmd.Flags().BoolVar(&benchTEffSkipRipgrep, "skip-ripgrep", false, "skip ripgrep pipelines (gortex-only output)")
+
+	benchDaemonLatencyCmd.Flags().StringVar(&benchDaemonLatencyRepo, "repo", ".", "corpus to index for the bench")
+	benchDaemonLatencyCmd.Flags().IntVar(&benchDaemonLatencyIter, "iter", 200, "iterations per tool (warm-up of iter/10 is added on top)")
+	benchDaemonLatencyCmd.Flags().StringVar(&benchDaemonLatencyTools, "tools", "", "comma-separated subset (default: all known tools)")
 
 	benchPerfCmd.Flags().StringVar(&benchPerfRepos, "repos", "gin,nestjs,react", "comma-separated repo set (preset slug, owner/repo, https URL, or local:/path)")
 	benchPerfCmd.Flags().BoolVar(&benchPerfIncludeLinux, "include-linux", false, "include the linux kernel preset (multi-GB clone; off by default)")
@@ -372,6 +381,62 @@ Examples:
 		// Honour --format on the parent: when JSON is requested, emit
 		// the JSON on stdout and discard markdown (no --out target
 		// would otherwise route stdout to markdown).
+		if benchFormat == "json" && jsonOut == "" {
+			args = append(args, "-format", "json")
+		}
+
+		subproc := exec.Command("go", args...)
+		subproc.Stdin = os.Stdin
+		subproc.Stdout = cmd.OutOrStdout()
+		subproc.Stderr = cmd.ErrOrStderr()
+		return subproc.Run()
+	},
+}
+
+// --- subcommand: daemon-latency -------------------------------------
+
+var benchDaemonLatencyCmd = &cobra.Command{
+	Use:   "daemon-latency",
+	Short: "Per-MCP-tool dispatch latency (p50/p95/p99) against an in-process server",
+	Long: `Measures end-to-end MCP tool-handler latency through the
+production dispatch path. Substrate: bench/daemon-latency/. Fires
+N iterations per tool, reports p50 / p95 / p99 / mean / max per
+tool plus a top-line summary.
+
+What it measures: tool-handler latency end-to-end through the
+real MCP dispatch path. Daemon socket overhead adds typically
+<1 ms on a warm pipe; the handler latency dominates user-
+perceived response time.
+
+Examples:
+  gortex bench daemon-latency
+  gortex bench daemon-latency --iter 500
+  gortex bench daemon-latency --tools graph_stats,search_symbols
+  gortex bench daemon-latency --out-dir bench/results`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		mdOut, err := outputPathFor("daemon-latency", "markdown")
+		if err != nil {
+			return err
+		}
+		jsonOut, err := outputPathFor("daemon-latency", "json")
+		if err != nil {
+			return err
+		}
+
+		args := []string{
+			"run", "./bench/daemon-latency",
+			"-repo", benchDaemonLatencyRepo,
+			"-iter", fmt.Sprintf("%d", benchDaemonLatencyIter),
+		}
+		if benchDaemonLatencyTools != "" {
+			args = append(args, "-tools", benchDaemonLatencyTools)
+		}
+		if mdOut != "" {
+			args = append(args, "-out", mdOut)
+		}
+		if jsonOut != "" {
+			args = append(args, "-json", jsonOut)
+		}
 		if benchFormat == "json" && jsonOut == "" {
 			args = append(args, "-format", "json")
 		}

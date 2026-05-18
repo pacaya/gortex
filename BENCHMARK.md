@@ -138,6 +138,49 @@ Substrate: `bench/wire-format/`
 
 ---
 
+---
+
+## 4. Daemon-mode MCP-tool latency
+
+**Last updated: 2026-05-19** · corpus: the gortex repo (71,300 nodes) · operator hardware: Apple M3 Max
+
+| tool | iters | p50 | p95 | p99 | mean | max |
+|------|------:|----:|----:|----:|-----:|----:|
+| graph_stats        | 50 | 4.2ms  | 5.5ms   | 5.9ms   | 4.4ms  | 5.9ms   |
+| search_symbols     | 50 | 1.2ms  | 22.4ms  | 26.9ms  | 5.6ms  | 26.9ms  |
+| get_symbol_source  | 50 | 0.19ms | 0.90ms  | 1.3ms   | 0.27ms | 1.3ms   |
+| get_callers        | 50 | 0.01ms | 0.02ms  | 0.03ms  | 0.01ms | 0.03ms  |
+| find_usages        | 50 | 0.01ms | 0.01ms  | 0.01ms  | 0.01ms | 0.01ms  |
+| get_file_summary   | 50 | 0.03ms | 0.04ms  | 0.05ms  | 0.03ms | 0.05ms  |
+| smart_context      | 10 | 1.5ms  | 24.2ms  | 24.2ms  | 6.0ms  | 24.2ms  |
+| get_repo_outline   | 50 | 60.6ms | 217.0ms | 377.0ms | 79.3ms | 377.0ms |
+
+**Headline**: median p95 across tools is **5.5 ms**, median p99 is
+**5.9 ms**. The heavy outliers (`smart_context`, `get_repo_outline`)
+sit at hundreds of ms; everything else is single-digit ms or
+sub-ms. Numbers measure `Handler.CallToolStrict` end-to-end through
+the production MCP dispatch path; daemon socket framing adds
+typically <1 ms on a warm pipe.
+
+### How to reproduce
+
+```sh
+# Quick smoke against the local repo
+gortex bench daemon-latency
+
+# Tighter percentiles (more iterations)
+gortex bench daemon-latency --iter 500
+
+# Subset of tools (focus tuning)
+gortex bench daemon-latency --tools graph_stats,search_symbols
+```
+
+Substrate: `bench/daemon-latency/` ([README](bench/daemon-latency/README.md)).
+Raw metrics land at `bench/results/daemon-latency.{md,json,csv}`
+when `--out-dir` is set.
+
+---
+
 ## Methodology notes
 
 - **Hardware sensitivity.** Absolute timings vary 2-5× across
