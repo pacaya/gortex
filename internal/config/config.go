@@ -285,6 +285,16 @@ type IndexConfig struct {
 	// `.gortex.yaml::index::crash_isolation: true` or the
 	// GORTEX_PARSER_ISOLATION=1 environment override.
 	CrashIsolation bool `mapstructure:"crash_isolation" yaml:"crash_isolation,omitempty"`
+	// MaxExtractMillis caps how long a single file's extraction may
+	// run. A file that exceeds the budget is skipped with a synthetic
+	// node carrying Meta["skipped_due_to_timeout"] instead of stalling
+	// the pass — the microsoft/TypeScript reallyLargeFile.ts class of
+	// pathological input. Zero (the default) disables the cap, for the
+	// same full-coverage reason MaxFileSize defaults off. Set
+	// generously (e.g. 10000) so only genuinely pathological files
+	// trip it. In crash-isolation mode it also bounds the worker
+	// round-trip.
+	MaxExtractMillis int `mapstructure:"max_extract_millis" yaml:"max_extract_millis,omitempty"`
 	// Coverage gates the per-domain coverage extractors (todos,
 	// licenses, ownership, function shape, etc.). Each sub-block has
 	// its own default; an empty Coverage block means "use the

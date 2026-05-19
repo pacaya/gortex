@@ -59,9 +59,15 @@ type IndexResult struct {
 	// crash-isolation quarantine after this pass — files that
 	// SIGSEGV'd / hung / panicked the parser and were skipped with a
 	// Meta["parse_error"] node. Zero unless crash isolation is on.
-	QuarantinedFiles int          `json:"quarantined_files,omitempty"`
-	DurationMs       int64        `json:"duration_ms"`
-	Errors           []IndexError `json:"errors,omitempty"`
+	QuarantinedFiles int `json:"quarantined_files,omitempty"`
+	// SkippedFiles is the number of files skipped by the size cap
+	// (MaxFileSize) or the per-file extraction timeout
+	// (MaxExtractMillis). Each is recorded in the graph as a synthetic
+	// file node carrying skipped_due_to_size / skipped_due_to_timeout
+	// telemetry. Zero unless one of those caps is set.
+	SkippedFiles int          `json:"skipped_files,omitempty"`
+	DurationMs   int64        `json:"duration_ms"`
+	Errors       []IndexError `json:"errors,omitempty"`
 }
 
 // IndexError records a per-file parsing failure.
@@ -1299,6 +1305,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	var files []string
 	var skippedLarge int
 	var skippedBytes int64
+	var skippedBySize []skippedFile
 	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -1309,7 +1316,8 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 			}
 			return nil
 		}
-		if _, ok := idx.registry.DetectLanguage(path); !ok {
+		lang, ok := idx.registry.DetectLanguage(path)
+		if !ok {
 			return nil
 		}
 		if idx.shouldExclude(path, absRoot) {
@@ -1319,6 +1327,10 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 			if info, statErr := d.Info(); statErr == nil && info.Size() > maxSize {
 				skippedLarge++
 				skippedBytes += info.Size()
+				rel, _ := filepath.Rel(absRoot, path)
+				skippedBySize = append(skippedBySize, skippedFile{
+					relPath: filepath.ToSlash(rel), lang: lang, size: info.Size(),
+				})
 				return nil
 			}
 		}
@@ -1351,7 +1363,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	var quarantine *crashpool.Quarantine
 	if idx.crashIsolationEnabled() {
 		quarantine = crashpool.LoadQuarantine(filepath.Join(absRoot, ".gortex", "parser-quarantine.json"))
-		if p, perr := newParsePool(workers, idx.logger); perr != nil {
+		if p, perr := idx.newParsePool(workers); perr != nil {
 			idx.logger.Warn("indexer: crash isolation requested but parser pool unavailable; parsing in-process",
 				zap.Error(perr))
 		} else {
@@ -1380,6 +1392,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	var errors []IndexError
 	var processed int64
 	var fileCount int64
+	var skippedByTimeout int64
 
 	var wg sync.WaitGroup
 	for range workers {
@@ -1408,7 +1421,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 					continue
 				}
 
-				result, quarantined, err := idx.extractFile(parsePool, quarantine, path, relPath, lang, ext, src)
+				result, skipped, err := idx.extractFile(parsePool, quarantine, path, relPath, lang, ext, src)
 				if err != nil {
 					errMu.Lock()
 					errors = append(errors, IndexError{FilePath: path, Error: err.Error()})
@@ -1417,14 +1430,19 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 				if result == nil {
 					continue
 				}
+				if skipped && len(result.Nodes) > 0 {
+					if _, ok := result.Nodes[0].Meta["skipped_due_to_timeout"]; ok {
+						atomic.AddInt64(&skippedByTimeout, 1)
+					}
+				}
 
 				// Append coverage artifacts (todos / licenses /
 				// ownership) before applyRepoPrefix so they get the
 				// same multi-repo namespacing treatment as
-				// language-extractor output. Skipped for quarantined
-				// files — the coverage scanners would re-read a source
-				// the parser could not survive.
-				if !quarantined {
+				// language-extractor output. Skipped for quarantined /
+				// timed-out files — the coverage scanners would re-read
+				// a source the parser could not survive.
+				if !skipped {
 					idx.applyCoverageDomains(relPath, lang, src, result)
 				}
 
@@ -1458,7 +1476,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 				// per-edge path during cold-start warmup.
 				idx.graph.AddBatch(result.Nodes, result.Edges)
 
-				if !quarantined && fileGraphPath != "" {
+				if !skipped && fileGraphPath != "" {
 					exts := contractExtractorsByLang[lang]
 					if len(exts) > 0 {
 						c := idx.runContractExtractorsForFile(
@@ -1504,6 +1522,11 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	if processed > 0 {
 		reporter.Report("parsing", int(processed), totalFiles)
 	}
+
+	// Emit synthetic file nodes for files dropped by the size cap so
+	// they stay visible in the graph with skip telemetry attached
+	// instead of vanishing silently.
+	idx.emitSizeSkipNodes(skippedBySize)
 
 	// Populate fileMtimes for all detected files.
 	idx.mtimeMu.Lock()
@@ -1684,6 +1707,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 		EdgeCount:        edges,
 		FileCount:        int(fileCount),
 		QuarantinedFiles: quarantine.Len(),
+		SkippedFiles:     len(skippedBySize) + int(skippedByTimeout),
 		DurationMs:       time.Since(start).Milliseconds(),
 		Errors:           errors,
 	}, nil
@@ -1757,6 +1781,18 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 		return nil
 	}
 
+	// Honour the size cap on the incremental path too: an over-cap
+	// file gets a synthetic skip node, not a parse — matching the
+	// bulk IndexCtx walk.
+	if maxSize := idx.config.MaxFileSize; maxSize > 0 && int64(len(src)) > maxSize {
+		n := sizeSkipNode(skippedFile{
+			relPath: filepath.ToSlash(relPath), lang: lang, size: int64(len(src)),
+		}, maxSize)
+		idx.applyRepoPrefix([]*graph.Node{n}, nil)
+		idx.graph.AddBatch([]*graph.Node{n}, nil)
+		return nil
+	}
+
 	// Crash isolation for the incremental path: a file the user just
 	// saved that SIGSEGVs the parser is quarantined instead of taking
 	// the daemon down with it.
@@ -1764,12 +1800,12 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 	var quarantine *crashpool.Quarantine
 	if idx.crashIsolationEnabled() {
 		quarantine = crashpool.LoadQuarantine(filepath.Join(idx.rootPath, ".gortex", "parser-quarantine.json"))
-		if p, perr := newParsePool(1, idx.logger); perr == nil {
+		if p, perr := idx.newParsePool(1); perr == nil {
 			pool = p
 			defer pool.Close()
 		}
 	}
-	result, quarantined, err := idx.extractFile(pool, quarantine, absPath, relPath, lang, ext, src)
+	result, skipped, err := idx.extractFile(pool, quarantine, absPath, relPath, lang, ext, src)
 	if quarantine != nil {
 		_ = quarantine.Save()
 	}
@@ -1779,8 +1815,8 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 
 	// Coverage extractors (todos, licenses, ownership). Same call
 	// site exists in the bulk IndexCtx worker pool — see
-	// applyCoverageDomains. Skipped for a quarantined file.
-	if !quarantined {
+	// applyCoverageDomains. Skipped for a quarantined / timed-out file.
+	if !skipped {
 		idx.applyCoverageDomains(relPath, lang, src, result)
 	}
 

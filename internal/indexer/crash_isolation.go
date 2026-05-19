@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -25,17 +26,23 @@ func (idx *Indexer) crashIsolationEnabled() bool {
 }
 
 // newParsePool spawns a crash-isolated parser pool — `workers` worker
-// subprocesses, each a `gortex __parse-worker` instance.
-func newParsePool(workers int, logger *zap.Logger) (*crashpool.Pool, error) {
+// subprocesses, each a `gortex __parse-worker` instance. When a
+// per-file extraction budget is configured it also bounds the worker
+// round-trip so a hung file is killed on the same deadline.
+func (idx *Indexer) newParsePool(workers int) (*crashpool.Pool, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
 	}
-	return crashpool.NewPool(crashpool.Config{
+	cfg := crashpool.Config{
 		Argv:    []string{exe, "__parse-worker"},
 		Workers: workers,
-		Logger:  logger,
-	})
+		Logger:  idx.logger,
+	}
+	if ms := idx.config.MaxExtractMillis; ms > 0 {
+		cfg.RequestTimeout = time.Duration(ms) * time.Millisecond
+	}
+	return crashpool.NewPool(cfg)
 }
 
 // extractFile produces one file's graph contribution. With pool == nil
@@ -44,15 +51,23 @@ func newParsePool(workers int, logger *zap.Logger) (*crashpool.Pool, error) {
 // the file and yields a synthetic KindFile node carrying
 // Meta["parse_error"] instead of aborting the whole index pass.
 //
-// The returned bool reports whether the file was quarantined — callers
-// MUST skip coverage + contract extraction for quarantined files, since
-// both re-parse the source and would re-trigger the crash in-process.
+// The returned bool reports whether the file was skipped — quarantined
+// after a crash, or skipped after blowing the extraction time budget.
+// Callers MUST skip coverage + contract extraction for skipped files,
+// since both re-parse the source and would re-trigger the fault.
 func (idx *Indexer) extractFile(
 	pool *crashpool.Pool, q *crashpool.Quarantine,
 	path, relPath, lang string, ext parser.Extractor, src []byte,
-) (result *parser.ExtractionResult, quarantined bool, err error) {
+) (result *parser.ExtractionResult, skipped bool, err error) {
 	if pool == nil {
-		r, eerr := ext.Extract(relPath, src)
+		r, eerr := idx.extractWithTimeout(ext, relPath, src)
+		if errors.Is(eerr, errExtractTimeout) {
+			budget := idx.config.MaxExtractMillis
+			idx.logger.Warn("indexer: file extraction exceeded budget; skipped",
+				zap.String("file", relPath), zap.Int("budget_ms", budget))
+			return timeoutSkipResult(relPath, lang, budget), true,
+				fmt.Errorf("extraction exceeded %dms budget: %s", budget, relPath)
+		}
 		if eerr != nil {
 			return nil, false, eerr
 		}
