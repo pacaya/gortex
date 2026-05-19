@@ -141,6 +141,18 @@ func (r *Router) RegisterAvailable(disabled map[string]bool) []string {
 		if disabled[spec.Name] {
 			continue
 		}
+		// An explicit .gortex.yaml entry may have already registered a
+		// SpecWithOverrides copy of this spec (a different pointer)
+		// carrying custom command / args / env. The auto-pass must
+		// defer to that override rather than clobber it with the
+		// pristine built-in spec. A spec already registered as the
+		// built-in itself is harmless to re-register.
+		r.mu.Lock()
+		existing, already := r.enabled[spec.Name]
+		r.mu.Unlock()
+		if already && existing != spec {
+			continue
+		}
 		if !r.specAvailable(spec) {
 			continue
 		}

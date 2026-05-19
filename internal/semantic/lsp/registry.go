@@ -50,6 +50,11 @@ type ServerSpec struct {
 	// (e.g. `tsserver` from `npm i -g typescript`, vs
 	// `typescript-language-server`).
 	AlternativeCommands []ServerAlt
+	// Env carries extra KEY=VALUE environment entries for the server
+	// subprocess, appended to the daemon's own environment. Empty for
+	// every built-in spec; populated only when a user overrides a
+	// server via .gortex.yaml (e.g. pinning JAVA_HOME for jdtls).
+	Env []string
 }
 
 // ServerAlt is one fallback command form for a server.
@@ -486,6 +491,28 @@ func SpecForPath(path string) *ServerSpec {
 // SpecByName returns the ServerSpec with the given name, or nil.
 func SpecByName(name string) *ServerSpec {
 	return nameToSpec[name]
+}
+
+// SpecWithOverrides returns a copy of base with non-empty command /
+// args / env overrides applied — the path by which .gortex.yaml tunes
+// a heavyweight server (notably pinning a JRE + jdtls launcher args).
+// base is never mutated, so the package-global Servers slice stays
+// pristine across daemons and tests.
+func SpecWithOverrides(base *ServerSpec, command string, args, env []string) *ServerSpec {
+	if base == nil {
+		return nil
+	}
+	cp := *base
+	if command != "" {
+		cp.Command = command
+	}
+	if len(args) > 0 {
+		cp.Args = append([]string(nil), args...)
+	}
+	if len(env) > 0 {
+		cp.Env = append([]string(nil), env...)
+	}
+	return &cp
 }
 
 // LanguageIDForPath returns the LSP `languageId` for the given file

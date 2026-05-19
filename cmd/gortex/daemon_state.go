@@ -210,6 +210,7 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 				Languages: pc.Languages,
 				Command:   pc.Command,
 				Args:      pc.Args,
+				Env:       pc.Env,
 				Daemon:    pc.Daemon,
 				Priority:  pc.Priority,
 				Enabled:   pc.Enabled,
@@ -236,7 +237,11 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 			case strings.HasPrefix(pc.Name, "scip-") && pc.Command != "":
 				semMgr.RegisterProvider(scip.NewProvider(pc.Command, pc.Args, pc.Languages, semCfg.TimeoutSeconds, logger))
 			case lsp.SpecByName(pc.Name) != nil:
-				lspRouter.RegisterSpec(lsp.SpecByName(pc.Name))
+				// Apply any command / args / env overrides from
+				// .gortex.yaml — this is how a user pins a JRE or
+				// passes launcher args to a heavyweight server (jdtls).
+				lspRouter.RegisterSpec(lsp.SpecWithOverrides(
+					lsp.SpecByName(pc.Name), pc.Command, pc.Args, pc.Env))
 			case pc.Daemon:
 				semMgr.RegisterProvider(lsp.NewProvider(pc.Command, pc.Args, pc.Languages, pc.Daemon, pc.MaxParallel, logger))
 			}

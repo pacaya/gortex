@@ -23,6 +23,9 @@ type ProviderConfig struct {
 	Mode        string   `mapstructure:"mode" yaml:"mode,omitempty"` // "typecheck" or "callgraph" for go-types
 	Daemon      bool     `mapstructure:"daemon" yaml:"daemon,omitempty"`
 	MaxParallel int      `mapstructure:"max_parallel" yaml:"max_parallel,omitempty"`
+	// Env adds KEY=VALUE environment entries to the provider's LSP
+	// subprocess (e.g. JAVA_HOME for jdtls).
+	Env []string `mapstructure:"env" yaml:"env,omitempty"`
 }
 
 // DefaultConfig returns a default semantic config with auto-detection enabled.

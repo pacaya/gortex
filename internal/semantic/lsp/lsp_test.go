@@ -73,7 +73,7 @@ func TestLSP_Provider_Available_FalseWhenMissing(t *testing.T) {
 }
 
 func TestLSP_NewClient_FailsForBadCommand(t *testing.T) {
-	_, err := NewClient("/nonexistent/path/to/lsp", nil, t.TempDir(), zap.NewNop())
+	_, err := NewClient("/nonexistent/path/to/lsp", nil, nil, t.TempDir(), zap.NewNop())
 	require.Error(t, err)
 }
 

@@ -410,3 +410,42 @@ func TestRouter_RegisterAvailable_Idempotent(t *testing.T) {
 		t.Fatalf("EnabledSpecNames length %d should equal RegisterAvailable return %d", len(enabled), len(first))
 	}
 }
+
+// TestRouter_RegisterAvailable_KeepsConfigOverride — the auto-register
+// pass must not clobber a spec already registered from .gortex.yaml
+// with command / args / env overrides (the jdtls JRE-pin path).
+func TestRouter_RegisterAvailable_KeepsConfigOverride(t *testing.T) {
+	r := NewRouter(t.TempDir(), zap.NewNop())
+	defer func() { _ = r.Close() }()
+
+	r.availMu.Lock()
+	for _, s := range AllSpecs() {
+		r.avail[s.Name] = true
+	}
+	r.availMu.Unlock()
+
+	// The config loop registers an overridden jdtls spec first.
+	override := SpecWithOverrides(SpecByName("jdtls"), "",
+		[]string{"--jvm-arg=-Xmx4G"}, []string{"JAVA_HOME=/opt/jdk21"})
+	r.RegisterSpec(override)
+
+	// The auto-register pass runs and must leave the override intact.
+	r.RegisterAvailable(nil)
+
+	var got *ServerSpec
+	for _, s := range r.EnabledSpecs() {
+		if s.Name == "jdtls" {
+			got = s
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("jdtls not registered")
+	}
+	if len(got.Env) != 1 || got.Env[0] != "JAVA_HOME=/opt/jdk21" {
+		t.Errorf("RegisterAvailable clobbered the config env override: %v", got.Env)
+	}
+	if len(got.Args) != 1 || got.Args[0] != "--jvm-arg=-Xmx4G" {
+		t.Errorf("RegisterAvailable clobbered the config args override: %v", got.Args)
+	}
+}

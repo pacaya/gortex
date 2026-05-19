@@ -191,6 +191,12 @@ type SemanticProviderConfig struct {
 	Mode        string   `mapstructure:"mode" yaml:"mode,omitempty"`
 	Daemon      bool     `mapstructure:"daemon" yaml:"daemon,omitempty"`
 	MaxParallel int      `mapstructure:"max_parallel" yaml:"max_parallel,omitempty"`
+	// Env adds KEY=VALUE environment entries to the provider's
+	// subprocess. The motivating case is pinning a JRE for the
+	// heavyweight jdtls Java server (env: ["JAVA_HOME=/path/to/jdk"]),
+	// but it works for any LSP server that needs a tuned environment.
+	// Command / Args / Env set here override the built-in spec.
+	Env []string `mapstructure:"env" yaml:"env,omitempty"`
 }
 
 type Config struct {

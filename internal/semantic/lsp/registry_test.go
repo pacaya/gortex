@@ -178,3 +178,44 @@ func TestPyreflyAndTsgoSpecs(t *testing.T) {
 		t.Errorf("pyrefly/tsgo missing from DefaultConfig providers")
 	}
 }
+
+// TestSpecWithOverrides verifies .gortex.yaml command / args / env
+// overrides are applied to a copy without mutating the built-in spec —
+// the path by which jdtls gets a pinned JRE and launcher args.
+func TestSpecWithOverrides(t *testing.T) {
+	if SpecWithOverrides(nil, "x", nil, nil) != nil {
+		t.Error("nil base must return nil")
+	}
+
+	base := SpecByName("jdtls")
+	if base == nil {
+		t.Fatal("jdtls spec missing")
+	}
+
+	// No overrides → a copy with inherited values.
+	cp := SpecWithOverrides(base, "", nil, nil)
+	if cp == base {
+		t.Error("must return a copy, not the same pointer")
+	}
+	if cp.Command != base.Command {
+		t.Errorf("command should be inherited, got %q", cp.Command)
+	}
+
+	// Overrides applied.
+	cp = SpecWithOverrides(base, "/opt/jdtls/bin/jdtls",
+		[]string{"--jvm-arg=-Xmx4G"}, []string{"JAVA_HOME=/opt/jdk21"})
+	if cp.Command != "/opt/jdtls/bin/jdtls" {
+		t.Errorf("command override not applied: %q", cp.Command)
+	}
+	if len(cp.Args) != 1 || cp.Args[0] != "--jvm-arg=-Xmx4G" {
+		t.Errorf("args override not applied: %v", cp.Args)
+	}
+	if len(cp.Env) != 1 || cp.Env[0] != "JAVA_HOME=/opt/jdk21" {
+		t.Errorf("env override not applied: %v", cp.Env)
+	}
+
+	// The built-in spec must stay pristine.
+	if len(base.Env) != 0 || base.Command != "jdtls" {
+		t.Errorf("base spec mutated: command=%q env=%v", base.Command, base.Env)
+	}
+}

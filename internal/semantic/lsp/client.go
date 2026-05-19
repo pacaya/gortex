@@ -83,11 +83,16 @@ func (e *jsonRPCError) Error() string {
 	return fmt.Sprintf("LSP error %d: %s", e.Code, e.Message)
 }
 
-// NewClient spawns an LSP server subprocess and returns a connected client.
-func NewClient(command string, args []string, workspaceRoot string, logger *zap.Logger) (*Client, error) {
+// NewClient spawns an LSP server subprocess and returns a connected
+// client. env carries extra KEY=VALUE entries appended to the daemon's
+// own environment — used to pin a JRE for jdtls and similar.
+func NewClient(command string, args, env []string, workspaceRoot string, logger *zap.Logger) (*Client, error) {
 	cmd := exec.Command(command, args...)
 	cmd.Dir = workspaceRoot
 	cmd.Stderr = os.Stderr
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -19,8 +19,11 @@ import (
 
 // Provider uses an LSP server for on-demand semantic queries.
 type Provider struct {
-	command     string
-	args        []string
+	command string
+	args    []string
+	// env carries extra KEY=VALUE entries for the server subprocess,
+	// from a .gortex.yaml override (e.g. JAVA_HOME for jdtls).
+	env         []string
 	languages   []string
 	daemon      bool
 	maxParallel int
@@ -103,6 +106,7 @@ func NewProviderFromSpec(spec *ServerSpec, logger *zap.Logger) *Provider {
 	p := &Provider{
 		command:     cmd,
 		args:        args,
+		env:         spec.Env,
 		languages:   spec.Languages,
 		daemon:      spec.Daemon,
 		maxParallel: maxParallel,
@@ -372,7 +376,7 @@ func (p *Provider) ensureClient(workspaceRoot string) error {
 		return nil
 	}
 
-	client, err := NewClient(p.command, p.args, workspaceRoot, p.logger)
+	client, err := NewClient(p.command, p.args, p.env, workspaceRoot, p.logger)
 	if err != nil {
 		return err
 	}
