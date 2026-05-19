@@ -392,6 +392,11 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// per-repo cache directory with notes; entries are workspace-wide
 	// and durable across sessions, compounding team knowledge.
 	srv.InitMemories(mcpCacheDir, mcpIndex)
+	// Notebook: repository-local persistent notebook at
+	// <repo>/.gortex/notebook/. Entries are committed alongside the
+	// repo so they're visible in PR reviews and travel with the
+	// codebase.
+	srv.InitNotebook(mcpIndex)
 	// Combo tracker persists (query → chosen symbol) associations per repo
 	// so the next time the agent asks the same thing, the previously-picked
 	// symbol floats to the top of search results.

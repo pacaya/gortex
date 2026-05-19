@@ -126,6 +126,10 @@ type Server struct {
 	// to this one. Nil when InitMemories was called with the legacy
 	// single-arg surface or when the user-home cannot be resolved.
 	globalMemories *memoryManager
+	// notebook is the repository-local persistent notebook —
+	// .gortex/notebook/<id>.md files committed alongside the repo.
+	// Nil until InitNotebook fires; tools surface a clear error.
+	notebook *notebookManager
 	combo            *comboManager
 	frecency         *frecencyTracker
 
@@ -642,6 +646,7 @@ func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watch
 	s.registerSimulationTools()
 	s.registerNotesTools()
 	s.registerMemoriesTools()
+	s.registerNotebookTools()
 	s.registerCitationTools()
 	s.registerKnowledgeGapsTool()
 	s.registerSurprisingConnectionsTool()
@@ -747,6 +752,16 @@ func (s *Server) InitNotes(cacheDir, repoPath string) {
 // Memories persist across daemon restarts and context compactions
 // and are workspace-wide — every agent in the same workspace
 // shares the store.
+// InitNotebook mounts the repository-local persistent notebook
+// store at <repoPath>/.gortex/notebook/. Empty repoPath leaves
+// s.notebook nil; tools surface that as "notebook not initialised".
+// Distinct from notes (per-session) and memories (cache-dir cross-
+// session) — notebook entries are committed to git so they travel
+// with the repo and surface in PR reviews.
+func (s *Server) InitNotebook(repoPath string) {
+	s.notebook = newNotebookManager(repoPath)
+}
+
 func (s *Server) InitMemories(cacheDir, repoPath string) {
 	s.memories = newMemoryManager(cacheDir, repoPath)
 	// Mount the user-level global store at ~/.gortex/memories/.
