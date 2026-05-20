@@ -220,7 +220,11 @@ func rrfFuse(textResults []SearchResult, vecIDs []string, k, limit int) []Search
 		results = append(results, scored{id: id, score: score})
 	}
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		// Stable secondary key: equal-score runs ship in a fixed order.
+		return results[i].id < results[j].id
 	})
 
 	if len(results) > limit {

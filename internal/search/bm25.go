@@ -203,7 +203,12 @@ func (b *BM25Backend) Search(query string, limit int) []SearchResult {
 		results = append(results, scored{id, score})
 	}
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
+		if results[i].score != results[j].score {
+			return results[i].score > results[j].score
+		}
+		// Tie-break on doc ID so an equal-score run ships in a stable
+		// order across calls — Go's map iteration is otherwise random.
+		return results[i].id < results[j].id
 	})
 
 	if len(results) > limit {

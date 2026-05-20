@@ -350,6 +350,9 @@ func (e *Engine) FindUsagesScoped(nodeID string, opts QueryOptions) *SubGraph {
 	for _, n := range nodeMap {
 		nodes = append(nodes, n)
 	}
+	// Sort by ID — nodeMap is a map, so the extraction order is
+	// otherwise randomised per call and leaks into the result set.
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return &SubGraph{
 		Nodes: nodes, Edges: filtered,
 		TotalNodes: len(nodes), TotalEdges: len(filtered),
@@ -514,9 +517,12 @@ func (e *Engine) gatherBackendCandidates(query string, limit int) []*rerank.Cand
 
 	// Substring fallback for remaining slots — strictly TextRank=-1
 	// (the rerank pipeline still considers them via signature/recency
-	// signals, but BM25 can't speak to them).
+	// signals, but BM25 can't speak to them). Matches are collected,
+	// sorted by ID, then truncated, so the candidate set does not
+	// depend on the randomised map-iteration order of AllNodes().
 	if len(cands) < limit {
 		lower := strings.ToLower(query)
+		var subMatches []*graph.Node
 		for _, n := range e.g.AllNodes() {
 			if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
 				continue
@@ -525,11 +531,15 @@ func (e *Engine) gatherBackendCandidates(query string, limit int) []*rerank.Cand
 				continue
 			}
 			if strings.Contains(strings.ToLower(n.Name), lower) {
-				idx[n.ID] = len(cands)
-				cands = append(cands, &rerank.Candidate{Node: n, TextRank: -1, VectorRank: -1})
-				if len(cands) >= limit {
-					break
-				}
+				subMatches = append(subMatches, n)
+			}
+		}
+		sort.Slice(subMatches, func(i, j int) bool { return subMatches[i].ID < subMatches[j].ID })
+		for _, n := range subMatches {
+			idx[n.ID] = len(cands)
+			cands = append(cands, &rerank.Candidate{Node: n, TextRank: -1, VectorRank: -1})
+			if len(cands) >= limit {
+				break
 			}
 		}
 	}
@@ -616,7 +626,12 @@ func (e *Engine) searchSubstring(query string, limit int) []*graph.Node {
 		if results[i].score != results[j].score {
 			return results[i].score < results[j].score
 		}
-		return len(results[i].node.Name) < len(results[j].node.Name)
+		if len(results[i].node.Name) != len(results[j].node.Name) {
+			return len(results[i].node.Name) < len(results[j].node.Name)
+		}
+		// Final tie-break on node ID — equal (score, name-length)
+		// pairs would otherwise resolve in random map-iteration order.
+		return results[i].node.ID < results[j].node.ID
 	})
 
 	out := make([]*graph.Node, 0, limit)

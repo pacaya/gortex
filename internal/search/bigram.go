@@ -208,7 +208,13 @@ func (bi *bigramIndex) Candidates(query string, minOverlap int) []string {
 			cands = append(cands, cand{id, c})
 		}
 	}
-	sort.Slice(cands, func(i, j int) bool { return cands[i].count > cands[j].count })
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].count != cands[j].count {
+			return cands[i].count > cands[j].count
+		}
+		// Equal-overlap candidates tie-break on ID for stable ordering.
+		return cands[i].id < cands[j].id
+	})
 	out := make([]string, len(cands))
 	for i, c := range cands {
 		out[i] = c.id
