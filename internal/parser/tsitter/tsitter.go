@@ -230,12 +230,16 @@ func (p *Parser) Close() {
 // void return; callers trust build-time grammar selection.
 func (p *Parser) SetLanguage(lang *Language) { _ = p.inner.SetLanguage(lang) }
 
-// Reset clears all retained parse state so the parser is safe to reuse
-// for an unrelated document. It MUST be called before returning a
-// parser to a pool: after a cancelled or timed-out parse the underlying
-// C parser is left halted mid-parse, and a subsequent Parse on the same
-// parser would otherwise resume the stale parse instead of starting
-// fresh. Reset does not clear the bound language.
+// Reset clears retained parse state (finished tree, old-tree refs,
+// stack, cached token) so a parser that parsed cleanly can be reused
+// for an unrelated document. It does not clear the bound language.
+//
+// Reset does NOT fully sanitise a parser whose parse was cancelled:
+// ts_parser_reset leaves the C parser's canceled_balancing flag set,
+// so a parse cancelled during the balancing phase poisons the parser
+// permanently — the next Parse jumps to the balance label and aborts
+// the process on an internal assertion. Discard (Close) an errored
+// parser; never Reset-and-reuse it. See parser.ParseFile.
 func (p *Parser) Reset() {
 	if p != nil && p.inner != nil {
 		p.inner.Reset()

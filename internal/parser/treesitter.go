@@ -16,13 +16,13 @@ const parseTimeout = 5 * time.Second
 // each indexer worker amortises one parser allocation instead of
 // allocating + freeing a C-side TSParser per file.
 //
-// A *Parser pool was attempted once under the legacy smacker bindings
-// and tripped cross-call state bugs. The official tree-sitter bindings
-// fixed that: SetLanguage safely re-binds the grammar on every checkout
-// (verified — grammar switches reset the lexer), and Reset() drops the
-// halt flag and old-tree references left behind by a cancelled or
-// timed-out parse. putParser always calls Reset() before returning a
-// parser, so a checked-out parser is guaranteed to start a fresh parse.
+// Only parsers whose last parse SUCCEEDED are pooled. A parse cancelled
+// during tree-sitter's balancing phase leaves the C parser's internal
+// canceled_balancing flag set, and ts_parser_reset does NOT clear it —
+// so the next ts_parser_parse on that parser jumps straight to the
+// balance label and aborts the whole process on ts_assert(finished_tree).
+// ParseFile therefore Closes any parser whose parse returned an error
+// instead of recycling it; Reset() cannot sanitise such a parser.
 var parserPool = sync.Pool{
 	New: func() any { return sitter.NewParser() },
 }
@@ -34,10 +34,11 @@ func getParser(lang *sitter.Language) *sitter.Parser {
 	return p
 }
 
-// putParser resets a parser's retained parse state and returns it to
-// the pool. Reset is mandatory after a cancelled / timed-out parse:
-// the underlying C parser is otherwise left halted mid-parse and the
-// next Parse would resume the stale parse rather than start fresh.
+// putParser returns a parser to the pool after a SUCCESSFUL parse.
+// Reset drops the finished-tree and old-tree references so the pooled
+// parser doesn't pin that memory. Never call this for a parser whose
+// parse errored — Reset cannot clear the C-side canceled_balancing
+// flag, so ParseFile Closes errored parsers instead.
 func putParser(p *sitter.Parser) {
 	if p == nil {
 		return
@@ -65,7 +66,17 @@ type QueryResult struct {
 // The caller must call tree.Close() when done.
 func ParseFile(src []byte, lang *sitter.Language) (*sitter.Tree, error) {
 	parser := getParser(lang)
-	defer putParser(parser)
+	// Pool the parser only on a clean parse. An errored parse (cancelled
+	// / timed out) may have left the C parser's canceled_balancing flag
+	// set, which ts_parser_reset cannot clear — recycling it would abort
+	// the process on the next caller's parse. The defer Closes the
+	// parser unless the success path pooled it.
+	pooled := false
+	defer func() {
+		if !pooled {
+			parser.Close()
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), parseTimeout)
 	defer cancel()
@@ -74,6 +85,8 @@ func ParseFile(src []byte, lang *sitter.Language) (*sitter.Tree, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tree-sitter parse: %w", err)
 	}
+	putParser(parser)
+	pooled = true
 	return tree, nil
 }
 
