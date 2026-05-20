@@ -128,3 +128,77 @@ func TestGlobMatch(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateArchitecture_MaxFanOut(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "hub", Kind: graph.KindFunction, FilePath: "internal/domain/hub.go"})
+	for i, id := range []string{"t1", "t2", "t3", "t4", "t5", "t6"} {
+		g.AddNode(&graph.Node{ID: id, Kind: graph.KindFunction, FilePath: "internal/domain/t.go", StartLine: i})
+		g.AddEdge(&graph.Edge{From: "hub", To: id, Kind: graph.EdgeCalls})
+	}
+	arch := config.ArchitectureConfig{
+		Layers: map[string]config.LayerRule{
+			"domain": {Paths: []string{"internal/domain/**"}},
+		},
+		Rules: []config.ArchRule{
+			{Layer: "domain", MaxFanOut: 5},
+		},
+	}
+	v := EvaluateArchitecture(g, arch, []string{"hub"})
+	if len(v) != 1 || v[0].Kind != "fan_out" {
+		t.Fatalf("expected 1 fan_out violation, got %+v", v)
+	}
+	if v[0].Violator != "hub" {
+		t.Errorf("violator = %q, want hub", v[0].Violator)
+	}
+
+	// Within the limit — no violation.
+	arch.Rules[0].MaxFanOut = 10
+	if v := EvaluateArchitecture(g, arch, []string{"hub"}); len(v) != 0 {
+		t.Errorf("fan-out under the limit should not violate, got %+v", v)
+	}
+}
+
+func TestEvaluateArchitecture_DenyCallersOutside(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "secret", Kind: graph.KindFunction, FilePath: "internal/secret/key.go"})
+	g.AddNode(&graph.Node{ID: "peer", Kind: graph.KindFunction, FilePath: "internal/secret/other.go"})
+	g.AddNode(&graph.Node{ID: "sec", Kind: graph.KindFunction, FilePath: "internal/security/auth.go"})
+	g.AddNode(&graph.Node{ID: "api", Kind: graph.KindFunction, FilePath: "internal/api/handler.go"})
+	g.AddEdge(&graph.Edge{From: "peer", To: "secret", Kind: graph.EdgeCalls}) // intra-set: allowed
+	g.AddEdge(&graph.Edge{From: "sec", To: "secret", Kind: graph.EdgeCalls})  // allowlisted: allowed
+	g.AddEdge(&graph.Edge{From: "api", To: "secret", Kind: graph.EdgeCalls})  // outside: violation
+
+	arch := config.ArchitectureConfig{
+		Rules: []config.ArchRule{
+			{
+				Name:               "secret-boundary",
+				Pattern:            "internal/secret/**",
+				DenyCallersOutside: []string{"internal/security/**"},
+			},
+		},
+	}
+	v := EvaluateArchitecture(g, arch, []string{"secret"})
+	if len(v) != 1 {
+		t.Fatalf("expected exactly one caller-boundary violation, got %d: %+v", len(v), v)
+	}
+	if v[0].Kind != "caller_boundary" || v[0].Violator != "api" {
+		t.Errorf("unexpected violation: %+v", v[0])
+	}
+	if v[0].RuleName != "secret-boundary" {
+		t.Errorf("rule name = %q, want secret-boundary", v[0].RuleName)
+	}
+}
+
+func TestEvaluateArchitecture_RuleWithoutSelectorMatchesNothing(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "x", Kind: graph.KindFunction, FilePath: "internal/x.go"})
+	g.AddNode(&graph.Node{ID: "y", Kind: graph.KindFunction, FilePath: "internal/y.go"})
+	g.AddEdge(&graph.Edge{From: "x", To: "y", Kind: graph.EdgeCalls})
+	arch := config.ArchitectureConfig{
+		Rules: []config.ArchRule{{MaxFanOut: 0, Message: "no selector"}},
+	}
+	if v := EvaluateArchitecture(g, arch, []string{"x"}); len(v) != 0 {
+		t.Errorf("a rule with no layer/pattern selector must match nothing, got %+v", v)
+	}
+}

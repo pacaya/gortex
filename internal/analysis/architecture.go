@@ -69,7 +69,138 @@ func EvaluateArchitecture(g *graph.Graph, arch config.ArchitectureConfig, change
 			})
 		}
 	}
+	violations = append(violations, evaluateArchRules(g, arch, changedSymbolIDs, names)...)
 	return violations
+}
+
+// evaluateArchRules checks the per-layer / per-pattern dependency-cone
+// rules — fan-out caps and caller-boundary restrictions — for a set
+// of changed symbols.
+func evaluateArchRules(g *graph.Graph, arch config.ArchitectureConfig, changedSymbolIDs, layerNames []string) []GuardViolation {
+	if len(arch.Rules) == 0 {
+		return nil
+	}
+	var violations []GuardViolation
+	for _, id := range changedSymbolIDs {
+		n := g.GetNode(id)
+		if n == nil {
+			continue
+		}
+		ep := effectivePath(n)
+		nodeLayer := layerOf(ep, arch.Layers, layerNames)
+		for _, rule := range arch.Rules {
+			if !ruleApplies(rule, ep, nodeLayer) {
+				continue
+			}
+			label := archRuleLabel(rule)
+			if rule.MaxFanOut > 0 {
+				if fan := distinctCallTargets(g, id); fan > rule.MaxFanOut {
+					violations = append(violations, GuardViolation{
+						RuleName: label,
+						Kind:     "fan_out",
+						Description: ruleMessage(rule, fmt.Sprintf(
+							"%s has dependency fan-out %d, exceeding the limit of %d",
+							n.ID, fan, rule.MaxFanOut)),
+						Violator: n.ID,
+					})
+				}
+			}
+			if len(rule.DenyCallersOutside) > 0 {
+				seen := make(map[string]bool)
+				for _, e := range g.GetInEdges(id) {
+					if e.Kind != graph.EdgeCalls && e.Kind != graph.EdgeReferences {
+						continue
+					}
+					caller := g.GetNode(e.From)
+					if caller == nil || seen[caller.ID] {
+						continue
+					}
+					seen[caller.ID] = true
+					cp := effectivePath(caller)
+					if callerWithinBoundary(cp, rule, layerOf(cp, arch.Layers, layerNames)) {
+						continue
+					}
+					violations = append(violations, GuardViolation{
+						RuleName: label,
+						Kind:     "caller_boundary",
+						Description: ruleMessage(rule, fmt.Sprintf(
+							"%s calls into %s from outside the permitted set", caller.ID, n.ID)),
+						Violator: caller.ID,
+						EdgeType: string(e.Kind),
+					})
+				}
+			}
+		}
+	}
+	return violations
+}
+
+// ruleApplies reports whether an architecture rule is scoped to a
+// symbol. A rule with neither a Layer nor a Pattern selector matches
+// nothing; when both are set the symbol must satisfy both.
+func ruleApplies(rule config.ArchRule, effPath, nodeLayer string) bool {
+	if rule.Layer == "" && rule.Pattern == "" {
+		return false
+	}
+	if rule.Layer != "" && nodeLayer != rule.Layer {
+		return false
+	}
+	if rule.Pattern != "" && !globMatch(rule.Pattern, effPath) {
+		return false
+	}
+	return true
+}
+
+// callerWithinBoundary reports whether a caller is permitted to depend
+// on a symbol guarded by a deny_callers_outside rule. The guarded set
+// may always call within itself; every other caller must match one of
+// the allowlist globs.
+func callerWithinBoundary(callerPath string, rule config.ArchRule, callerLayer string) bool {
+	if ruleApplies(rule, callerPath, callerLayer) {
+		return true
+	}
+	for _, allow := range rule.DenyCallersOutside {
+		if globMatch(allow, callerPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// distinctCallTargets counts the distinct symbols a node calls or
+// references — the dependency-cone size.
+func distinctCallTargets(g *graph.Graph, id string) int {
+	seen := make(map[string]bool)
+	for _, e := range g.GetOutEdges(id) {
+		if e.Kind != graph.EdgeCalls && e.Kind != graph.EdgeReferences {
+			continue
+		}
+		seen[e.To] = true
+	}
+	return len(seen)
+}
+
+// archRuleLabel derives a stable rule name for a violation.
+func archRuleLabel(rule config.ArchRule) string {
+	switch {
+	case rule.Name != "":
+		return rule.Name
+	case rule.Layer != "":
+		return "arch:layer:" + rule.Layer
+	case rule.Pattern != "":
+		return "arch:pattern:" + rule.Pattern
+	default:
+		return "arch:rule"
+	}
+}
+
+// ruleMessage prefixes a rule's configured Message onto the derived
+// description when one is set.
+func ruleMessage(rule config.ArchRule, detail string) string {
+	if rule.Message != "" {
+		return rule.Message + ": " + detail
+	}
+	return detail
 }
 
 // layerAllows reports whether a dependency from one layer to another

@@ -34,6 +34,32 @@ type ArchitectureConfig struct {
 	// the layer whose Paths globs match it — or, when a layer
 	// declares no Paths, whose name appears as a path segment.
 	Layers map[string]LayerRule `mapstructure:"layers" yaml:"layers,omitempty"`
+	// Rules are per-layer / per-pattern dependency-cone constraints —
+	// fan-out caps and caller-boundary restrictions — evaluated on
+	// top of the layer allow/deny graph.
+	Rules []ArchRule `mapstructure:"rules" yaml:"rules,omitempty"`
+}
+
+// ArchRule is one architecture constraint scoped to a layer or a file
+// glob: a dependency-cone fan-out limit, a caller-boundary
+// restriction, or both.
+type ArchRule struct {
+	// Name is an optional human label surfaced on violations.
+	Name string `mapstructure:"name" yaml:"name,omitempty"`
+	// Layer scopes the rule to symbols in this architecture layer.
+	Layer string `mapstructure:"layer" yaml:"layer,omitempty"`
+	// Pattern scopes the rule to symbols whose file matches this glob.
+	// When both Layer and Pattern are set a symbol must match both.
+	Pattern string `mapstructure:"pattern" yaml:"pattern,omitempty"`
+	// MaxFanOut caps the number of distinct symbols a scoped symbol
+	// may call or reference. 0 disables the fan-out check.
+	MaxFanOut int `mapstructure:"max_fan_out" yaml:"max_fan_out,omitempty"`
+	// DenyCallersOutside restricts who may call into the scoped set:
+	// every caller's file must match one of these globs. The scoped
+	// set is always allowed to call within itself.
+	DenyCallersOutside []string `mapstructure:"deny_callers_outside" yaml:"deny_callers_outside,omitempty"`
+	// Message is an optional human-readable explanation.
+	Message string `mapstructure:"message" yaml:"message,omitempty"`
 }
 
 // LayerRule defines one architecture layer: the files that belong to
@@ -56,7 +82,7 @@ type LayerRule struct {
 // IsEmpty reports whether no architecture rules are configured — the
 // signal for check_guards to skip the layered evaluation entirely.
 func (a ArchitectureConfig) IsEmpty() bool {
-	return len(a.Layers) == 0
+	return len(a.Layers) == 0 && len(a.Rules) == 0
 }
 
 // MultiRepoConfig holds workspace-discovery settings used by the
