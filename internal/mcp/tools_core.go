@@ -598,6 +598,7 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("assist", mcp.Description("LLM assist mode: \"auto\" (default — engages on natural-language queries, skips identifier lookups), \"on\" (force engage), \"off\" (bypass), \"deep\" (on + a body-grounded verification pass that reads candidate code and HONESTLY drops irrelevant matches — slower, may return empty results when nothing genuinely matches). Requires an LLM provider configured via `llm.provider` (local / anthropic / openai / ollama / claudecli / gemini / bedrock / deepseek); behaves as \"off\" when none is available.")),
 			mcp.WithBoolean("debug", mcp.Description("When true, attach a `rerank` block to the response carrying per-candidate scores and per-signal contributions from the 11-signal rerank pipeline (bm25, semantic, fan_in, fan_out, churn, community, minhash, api_signature, type_signature, recency, feedback) plus the active per-signal weight map. Off by default; enable to inspect ranking decisions or tune `.gortex.yaml::search::weights`.")),
 			mcp.WithString("query_class", mcp.Description("Advisory hint that tunes the bm25-vs-semantic balance of the rerank: \"auto\" (default — detect from query shape), \"symbol\" (identifier / API lookup — BM25-heavy), \"concept\" (natural-language description — balanced), \"path\" (file-path query — most BM25-heavy), \"signature\" (type/function-signature fragment — BM25-leaning). The class actually used is echoed back as `query_class` in the response.")),
+			mcp.WithNumber("max_per_file", mcp.Description("Cap how many results a single source file may contribute to the diverse head of the result set (default 3). Hits beyond the cap are demoted below not-yet-capped results — never dropped — so the top of the list spans more files. Set 0 to disable diversification.")),
 		),
 		s.handleSearchSymbols,
 	)
@@ -951,6 +952,11 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	rctx.QueryClass = queryClass
 	var rerankBreakdown []*rerank.Candidate
 	nodes = applyRerankBoosts(s, nodes, q, rctx, &rerankBreakdown)
+
+	// Per-file diversification: keep one file's many symbols from
+	// monopolising the head of the result set. Runs after the rerank
+	// so demotion acts on final scores; nothing is dropped.
+	nodes, rerankBreakdown = diversifyByFile(nodes, rerankBreakdown, req.GetInt("max_per_file", defaultMaxPerFile))
 
 	// Remember the returned IDs for attribution on later consume calls.
 	// Cap at top limit so unseen "overflow" results don't get credited.
