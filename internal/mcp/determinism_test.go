@@ -82,6 +82,7 @@ func TestDeterminism_ReadToolsByteIdentical(t *testing.T) {
 	assertStable("search_identifier", "search_symbols", map[string]any{"query": "Handler17"})
 	assertStable("get_repo_outline", "get_repo_outline", map[string]any{})
 	assertStable("get_file_summary", "get_file_summary", map[string]any{"path": "handlers.go"})
+	assertStable("suggest_queries", "suggest_queries", map[string]any{})
 
 	// find_usages over a 40-caller symbol exercises the usage-map
 	// extraction order most heavily.

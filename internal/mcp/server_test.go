@@ -94,6 +94,7 @@ func findAndCallHandler(srv *Server, name string, ctx context.Context, req mcpli
 		"smart_context":         srv.handleSmartContext,
 		"plan_turn":             srv.handlePlanTurn,
 		"get_repo_outline":      srv.handleGetRepoOutline,
+		"suggest_queries":       srv.handleSuggestQueries,
 		"get_untested_symbols":  srv.handleGetUntestedSymbols,
 		"winnow_symbols":        srv.handleWinnowSymbols,
 		"edit_file":             srv.handleEditFile,

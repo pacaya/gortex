@@ -37,6 +37,15 @@ func (s *Server) registerAnalysisTools() {
 		),
 		s.handleDetectChanges,
 	)
+
+	s.addTool(
+		mcp.NewTool("suggest_queries",
+			mcp.WithDescription("Cold-start helper: returns 5-10 starter exploration queries for an unfamiliar repository, derived from its entry points, load-bearing hubs, community bridges, and largest subsystems. Run at session start to orient before reaching for search_symbols / smart_context."),
+			mcp.WithNumber("limit", mcp.Description("Max suggestions to return (default 8, capped at 20).")),
+			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
+		),
+		s.handleSuggestQueries,
+	)
 }
 
 func (s *Server) handleGetCommunities(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
