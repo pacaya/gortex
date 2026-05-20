@@ -142,6 +142,17 @@ const (
 	//     stages
 	// Meta carries registry, digest (when pinned), platform.
 	KindImage NodeKind = "image"
+	// KindArtifact represents a non-code knowledge file declared in
+	// the `.gortex.yaml::artifacts` manifest — a DB schema (SQL /
+	// Prisma / dbt), an API spec (OpenAPI / GraphQL / protobuf), an
+	// infra config (Terraform / Kustomize / Helm), or an
+	// architecture doc (ADR markdown). ID convention:
+	// `artifact::<repo-relative-path>`. Meta carries artifact_kind
+	// (schema|api|infra|doc), content_hash (sha256 of the file —
+	// drives staleness detection), title, and size. The artifact
+	// node links to every symbol it mentions via EdgeReferences so
+	// agents can pull the right schema or spec alongside the code.
+	KindArtifact NodeKind = "artifact"
 )
 
 var validNodeKinds = map[NodeKind]bool{
@@ -157,6 +168,7 @@ var validNodeKinds = map[NodeKind]bool{
 	KindFixture: true, KindTodo: true, KindTeam: true,
 	KindRelease: true, KindLicense: true, KindString: true,
 	KindResource: true, KindKustomization: true, KindImage: true,
+	KindArtifact: true,
 }
 
 type Node struct {

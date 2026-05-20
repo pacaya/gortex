@@ -377,6 +377,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 	gortexmcp.Version = version
 	srv := gortexmcp.NewServer(eng, g, idx, nil, logger, cfg.Guards.Rules, multiOpts...)
 	srv.SetArchitecture(cfg.Architecture)
+	srv.SetArtifacts(cfg.Artifacts)
 
 	if semMgr := idx.SemanticManager(); semMgr != nil {
 		srv.SetSemanticManager(semMgr)

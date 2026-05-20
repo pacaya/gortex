@@ -16,6 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/zzet/gortex/internal/analysis"
+	"github.com/zzet/gortex/internal/artifacts"
 	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/contracts"
 	"github.com/zzet/gortex/internal/daemon"
@@ -113,6 +114,16 @@ type Server struct {
 	cochangeMu     sync.RWMutex
 	cochangeByFile map[string]map[string]float64
 	cochangeCount  map[string]map[string]int
+
+	// artifacts caches the materialised `.gortex.yaml::artifacts`
+	// manifest. artifactEntries is the configured manifest (installed
+	// via SetArtifacts); artifactList is the result of materialising
+	// it into KindArtifact nodes + EdgeReferences edges, lazily and
+	// once per daemon lifetime, by ensureArtifacts.
+	artifactsOnce   sync.Once
+	artifactsMu     sync.RWMutex
+	artifactEntries []config.ArtifactEntry
+	artifactList    []artifacts.Artifact
 
 	// session / symHistory / tokenStats are the shared-default per-client
 	// state for the embedded stdio path (one implicit client per process).
@@ -695,6 +706,7 @@ func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watch
 	s.registerInspectionsTools()
 	s.registerChurnRateTool()
 	s.registerCoChangeTool()
+	s.registerArtifactTools()
 	s.registerCouplingMetricsTool()
 	s.registerExtractionCandidatesTool()
 	s.registerCheckReferencesTool()

@@ -62,6 +62,21 @@ type ArchRule struct {
 	Message string `mapstructure:"message" yaml:"message,omitempty"`
 }
 
+// ArtifactEntry is one row of the `artifacts:` manifest — a non-code
+// knowledge file (DB schema, API spec, infra config, ADR) tracked as
+// a first-class KindArtifact graph node.
+type ArtifactEntry struct {
+	// Path is a file path or glob, repo-relative. ** matches any
+	// number of directory segments.
+	Path string `mapstructure:"path" yaml:"path"`
+	// Kind is schema | api | infra | doc. Auto-detected from the file
+	// extension when empty.
+	Kind string `mapstructure:"kind" yaml:"kind,omitempty"`
+	// Name is an optional display name; defaults to the file's base
+	// name.
+	Name string `mapstructure:"name" yaml:"name,omitempty"`
+}
+
 // LayerRule defines one architecture layer: the files that belong to
 // it and the layers it may or may not depend on.
 type LayerRule struct {
@@ -322,8 +337,11 @@ type Config struct {
 	// by default; the flat Guards list above keeps working when it is
 	// unset.
 	Architecture ArchitectureConfig `mapstructure:"architecture" yaml:"architecture,omitempty"`
-	Multi        MultiRepoConfig    `mapstructure:"multi"    yaml:"multi,omitempty"`
-	Semantic     SemanticConfig     `mapstructure:"semantic" yaml:"semantic,omitempty"`
+	// Artifacts is the non-code knowledge manifest — schemas, API
+	// specs, infra configs, and ADRs surfaced as KindArtifact nodes.
+	Artifacts []ArtifactEntry `mapstructure:"artifacts" yaml:"artifacts,omitempty"`
+	Multi     MultiRepoConfig `mapstructure:"multi"    yaml:"multi,omitempty"`
+	Semantic  SemanticConfig  `mapstructure:"semantic" yaml:"semantic,omitempty"`
 	// LLM configures the LLM service that backs the `ask` MCP tool and
 	// the search-assist passes. Empty by default — daemon skips LLM
 	// wiring entirely when the active provider has no model configured.
