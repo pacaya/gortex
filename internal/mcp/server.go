@@ -720,6 +720,7 @@ func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watch
 	s.registerHealthTools()
 	s.registerStaleRefsTools()
 	s.registerGraphInvalidatedTools()
+	s.registerToolProfileTool()
 	s.registerDataflowTools()
 	s.registerASTTools()
 	s.registerCloneTools()
