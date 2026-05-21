@@ -26,6 +26,7 @@ func (s *Server) registerArchitectureTool() {
 			mcp.WithNumber("top_processes", mcp.Description("Cap on number of discovered processes returned (default: 5).")),
 			mcp.WithNumber("top_entry_points", mcp.Description("Cap on entry-point list (default: 10).")),
 			mcp.WithString("path_prefix", mcp.Description("Restrict communities / hotspots / processes / entry points to those touching this file-path prefix.")),
+			mcp.WithString("resolution", mcp.Description("Add a hierarchical multi-resolution rollup of the graph at this tier — one of file, package, service, or system. The response gains a `hierarchy` block holding rollup nodes (one per group, with a leaf count) and weighted rollup edges (weight = the count of underlying leaf-level edges crossing the two groups) — the architecture at that tier, with no function-leaf nodes. Omit (or pass symbol) to skip the rollup.")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx, or toon")),
 		),
 		s.handleGetArchitecture,
@@ -96,7 +97,7 @@ func (s *Server) handleGetArchitecture(ctx context.Context, req mcp.CallToolRequ
 	// rollup. The full contract list lives behind `contracts list`.
 	contractsSection := architectureContracts(s.contractRegistry)
 
-	return s.respondJSONOrTOON(ctx, req, map[string]any{
+	out := map[string]any{
 		"summary":      summary,
 		"communities":  communitiesSection,
 		"hotspots":     hotspots,
@@ -104,7 +105,66 @@ func (s *Server) handleGetArchitecture(ctx context.Context, req mcp.CallToolRequ
 		"processes":    processes,
 		"cross_repo":   crossRepo,
 		"contracts":    contractsSection,
-	})
+	}
+
+	// 8. Hierarchy — optional multi-resolution rollup. When the caller
+	// asks for a resolution tier, collapse the leaf graph to that tier
+	// so the response carries the architecture at the requested
+	// granularity (file / package / service / system) with no
+	// function-leaf nodes. Computed on demand from the base graph.
+	if hierarchy, errMsg := architectureHierarchy(s.graph, s.getCommunities(), req.GetString("resolution", "")); errMsg != "" {
+		return mcp.NewToolResultError(errMsg), nil
+	} else if hierarchy != nil {
+		out["hierarchy"] = hierarchy
+	}
+
+	return s.respondJSONOrTOON(ctx, req, out)
+}
+
+// architectureHierarchy builds the optional multi-resolution rollup
+// block for get_architecture. An empty resolution argument means the
+// caller did not ask for a rollup — it returns (nil, ""). An
+// unrecognised tier returns ("", message) so the handler can surface a
+// clean error. Otherwise it rolls the base graph up to the requested
+// tier via analysis.BuildHierarchy and returns the wire shape.
+func architectureHierarchy(g *graph.Graph, cr *analysis.CommunityResult, resolution string) (map[string]any, string) {
+	resolution = strings.ToLower(strings.TrimSpace(resolution))
+	if resolution == "" {
+		return nil, ""
+	}
+	level := analysis.ResolutionLevel(resolution)
+	if !analysis.ValidResolutionLevel(level) {
+		return nil, "get_architecture: unknown resolution " + resolution +
+			" (expected: symbol, file, package, service, system)"
+	}
+
+	view := analysis.BuildHierarchy(g, level, cr)
+
+	nodes := make([]map[string]any, 0, len(view.Nodes))
+	for _, n := range view.Nodes {
+		nodes = append(nodes, map[string]any{
+			"id":         n.ID,
+			"label":      n.Label,
+			"leaf_count": n.LeafCount,
+		})
+	}
+	edges := make([]map[string]any, 0, len(view.Edges))
+	for _, e := range view.Edges {
+		edges = append(edges, map[string]any{
+			"from":   e.From,
+			"to":     e.To,
+			"weight": e.Weight,
+		})
+	}
+	return map[string]any{
+		"level":      string(view.Level),
+		"node_count": len(view.Nodes),
+		"edge_count": len(view.Edges),
+		"leaf_count": view.LeafCount,
+		"nodes":      nodes,
+		"edges":      edges,
+		"self_loops": view.SelfLoops,
+	}, ""
 }
 
 // architectureSummary builds the language mix + node/edge count
@@ -225,8 +285,8 @@ func architectureHotspots(g *graph.Graph, cr *analysis.CommunityResult, inScope 
 
 func architectureEntryPoints(inScope map[string]*graph.Node, g *graph.Graph, top int) []map[string]any {
 	type entryCandidate struct {
-		node    *graph.Node
-		fanOut  int
+		node   *graph.Node
+		fanOut int
 	}
 	cands := make([]entryCandidate, 0, len(inScope))
 	for _, n := range inScope {
@@ -340,10 +400,10 @@ func architectureCrossRepo(g *graph.Graph) []crossRepoRow {
 
 func architectureContracts(registry *contracts.Registry) map[string]any {
 	out := map[string]any{
-		"total":          0,
-		"by_type":        map[string]int{},
-		"by_role":        map[string]int{},
-		"by_workspace":   map[string]int{},
+		"total":        0,
+		"by_type":      map[string]int{},
+		"by_role":      map[string]int{},
+		"by_workspace": map[string]int{},
 	}
 	if registry == nil {
 		return out
