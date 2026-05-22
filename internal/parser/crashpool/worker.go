@@ -2,10 +2,13 @@ package crashpool
 
 import (
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"runtime/debug"
 
+	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/parser/languages"
 )
@@ -20,7 +23,26 @@ import (
 func RunWorker(r io.Reader, w io.Writer) error {
 	reg := parser.NewRegistry()
 	languages.RegisterAll(reg)
+	registerWorkerGrammars(reg)
 	return serveWorker(reg, r, w)
+}
+
+// registerWorkerGrammars loads the custom tree-sitter grammars the
+// parent passed through the GORTEX_CUSTOM_GRAMMARS environment
+// variable — a JSON array of config.GrammarSpec — so a crash-isolated
+// worker resolves the same languages as the parent process. A malformed
+// or absent value is silently ignored: the worker simply has no custom
+// grammars, exactly as before this channel existed.
+func registerWorkerGrammars(reg *parser.Registry) {
+	raw := os.Getenv("GORTEX_CUSTOM_GRAMMARS")
+	if raw == "" {
+		return
+	}
+	var specs []config.GrammarSpec
+	if err := json.Unmarshal([]byte(raw), &specs); err != nil {
+		return
+	}
+	languages.RegisterCustomGrammars(reg, specs, nil)
 }
 
 // serveWorker is the decode/extract/encode loop, factored out of

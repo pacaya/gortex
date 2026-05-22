@@ -88,6 +88,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		g := graph.New()
 		reg := parser.NewRegistry()
 		languages.RegisterAll(reg)
+		languages.RegisterCustomGrammars(reg, cfg.Index.Grammars, idxLogger)
 		idx := indexer.New(g, reg, cfg.Index, idxLogger)
 
 		// --profile attaches a timing reporter via the progress API.

@@ -187,6 +187,7 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	g := graph.New()
 	reg := parser.NewRegistry()
 	languages.RegisterAll(reg)
+	languages.RegisterCustomGrammars(reg, cfg.Index.Grammars, logger)
 
 	// Warm-start from snapshot when one exists. Subsequent
 	// ReconcileRepoCtx calls re-index only the files that changed since

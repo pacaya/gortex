@@ -152,6 +152,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	g := graph.New()
 	reg := parser.NewRegistry()
 	languages.RegisterAll(reg)
+	languages.RegisterCustomGrammars(reg, cfg.Index.Grammars, logger)
 
 	idx := indexer.New(g, reg, cfg.Index, logger)
 

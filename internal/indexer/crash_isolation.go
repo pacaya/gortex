@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/parser/crashpool"
@@ -42,7 +44,35 @@ func (idx *Indexer) newParsePool(workers int) (*crashpool.Pool, error) {
 	if ms := idx.config.MaxExtractMillis; ms > 0 {
 		cfg.RequestTimeout = time.Duration(ms) * time.Millisecond
 	}
+	if env := customGrammarEnv(idx.config.Grammars); env != "" {
+		cfg.Env = []string{env}
+	}
 	return crashpool.NewPool(cfg)
+}
+
+// customGrammarEnv encodes the configured custom grammars into the
+// GORTEX_CUSTOM_GRAMMARS environment entry a crash-isolation worker
+// reads at startup. Library paths are resolved to absolute so the
+// worker — which may run with a different working directory — can
+// still load them. Returns "" when no custom grammars are configured.
+func customGrammarEnv(specs []config.GrammarSpec) string {
+	if len(specs) == 0 {
+		return ""
+	}
+	resolved := make([]config.GrammarSpec, len(specs))
+	for i, s := range specs {
+		resolved[i] = s
+		if s.Library != "" && !filepath.IsAbs(s.Library) {
+			if abs, err := filepath.Abs(s.Library); err == nil {
+				resolved[i].Library = abs
+			}
+		}
+	}
+	data, err := json.Marshal(resolved)
+	if err != nil {
+		return ""
+	}
+	return "GORTEX_CUSTOM_GRAMMARS=" + string(data)
 }
 
 // sharedParsePool returns the long-lived crash-isolation pool and the

@@ -451,12 +451,39 @@ type IndexConfig struct {
 	// expanding minified bundles, normalising SVG/TOON, converting a
 	// PDF to markdown, etc. Empty by default.
 	Transforms []TransformRule `mapstructure:"transforms" yaml:"transforms,omitempty"`
+	// Grammars registers user-supplied tree-sitter grammars — drop-in
+	// languages Gortex was not compiled with. Each entry points at a
+	// compiled grammar shared object (.so / .dylib / .dll); see
+	// GrammarSpec. Empty by default. Configured under `index.grammars`
+	// in .gortex.yaml.
+	Grammars []GrammarSpec `mapstructure:"grammars" yaml:"grammars,omitempty"`
 	// Coverage gates the per-domain coverage extractors (todos,
 	// licenses, ownership, function shape, etc.). Each sub-block has
 	// its own default; an empty Coverage block means "use the
 	// documented per-domain defaults" — cheap structural domains on,
 	// expensive ones off.
 	Coverage CoverageConfig `mapstructure:"coverage" yaml:"coverage,omitempty"`
+}
+
+// GrammarSpec declares a user-supplied tree-sitter grammar to load at
+// startup — a drop-in language Gortex was not compiled with. The
+// grammar must be a compiled shared library (.so / .dylib / .dll)
+// exporting the standard tree-sitter `tree_sitter_<language>` entry
+// point, built against a compatible tree-sitter ABI.
+type GrammarSpec struct {
+	// Language is the name the extractor registers under. A name that
+	// collides with a built-in extractor is skipped — built-ins win.
+	Language string `mapstructure:"language" yaml:"language"`
+	// Library is the path to the compiled grammar shared object. A
+	// relative path resolves against the working directory.
+	Library string `mapstructure:"library" yaml:"library"`
+	// Symbol overrides the C entry-point symbol. Defaults to
+	// `tree_sitter_<language>` with non-alphanumerics folded to `_`.
+	Symbol string `mapstructure:"symbol" yaml:"symbol,omitempty"`
+	// Extensions are the file extensions (leading dot) the grammar
+	// claims, e.g. [".foo", ".foobar"]. An extension already claimed
+	// by a built-in extractor is skipped.
+	Extensions []string `mapstructure:"extensions" yaml:"extensions"`
 }
 
 // TransformRule declares a pluggable pre-ingestion content transform.
