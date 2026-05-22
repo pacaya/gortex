@@ -13,6 +13,11 @@ import (
 // manifest fills when the caller does not pass token_budget.
 const defaultManifestBudget = 8000
 
+// smartCtxMaxSource caps how many focus functions/methods a flat
+// smart_context response embeds full source for; the rest ship as
+// signatures. The estimate path mirrors this to size the flat shape.
+const smartCtxMaxSource = 3
+
 // manifestSourceKinds are the node kinds whose source is worth
 // embedding in a manifest; one-liners (vars, consts, fields) carry
 // their whole meaning in the signature already.
@@ -219,4 +224,61 @@ func (s *Server) manifestRing(ctx context.Context, focus []*graph.Node, exclude 
 		}
 	}
 	return ring
+}
+
+// buildSmartContextEstimate projects the token cost of a smart_context
+// symbol delivery without returning the payload, so an agent can
+// budget before fetching. For graded fidelity it sizes the manifest
+// at the given budget; for flat fidelity it sizes the legacy
+// relevant_symbols shape (full source for the first smartCtxMaxSource
+// functions, signatures for the rest).
+func (s *Server) buildSmartContextEstimate(ctx context.Context, graded bool, budget int, focus, outline []*graph.Node) map[string]any {
+	est := map[string]any{
+		"symbol_count": len(focus) + len(outline),
+	}
+	if graded {
+		mani := s.buildContextManifest(ctx, focus, outline, budget)
+		tiers := map[string]int{"focus": 0, "ring": 0, "outline": 0}
+		if entries, ok := mani["entries"].([]map[string]any); ok {
+			for _, e := range entries {
+				if t, ok := e["tier"].(string); ok {
+					tiers[t]++
+				}
+			}
+		}
+		est["fidelity"] = "graded"
+		est["token_budget"] = mani["token_budget"]
+		est["projected_tokens"] = mani["tokens_used"]
+		est["omitted"] = mani["omitted"]
+		est["focus"] = tiers["focus"]
+		est["ring"] = tiers["ring"]
+		est["outline"] = tiers["outline"]
+		return est
+	}
+	est["fidelity"] = "flat"
+	est["projected_tokens"] = s.estimateFlatTokens(ctx, focus)
+	return est
+}
+
+// estimateFlatTokens sizes a flat smart_context symbol payload: a
+// per-entry signature cost for every focus symbol plus full source
+// for the first smartCtxMaxSource functions/methods.
+func (s *Server) estimateFlatTokens(ctx context.Context, syms []*graph.Node) int {
+	total, embedded := 0, 0
+	for _, n := range syms {
+		if n == nil {
+			continue
+		}
+		total += 16
+		if sig, ok := n.Meta["signature"].(string); ok {
+			total += int(tokens.CachedCountInt64(sig))
+		}
+		if embedded < smartCtxMaxSource && (n.Kind == graph.KindFunction || n.Kind == graph.KindMethod) {
+			if src := s.manifestSymbolSource(ctx, n); src != "" {
+				total += int(tokens.CachedCountInt64(src))
+				embedded++
+			}
+		}
+	}
+	return total
 }

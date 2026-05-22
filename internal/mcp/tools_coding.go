@@ -167,6 +167,7 @@ func (s *Server) registerCodingTools() {
 			mcp.WithNumber("max_symbols", mcp.Description("Max symbols to include source for (default: 5)")),
 			mcp.WithString("fidelity", mcp.Description("Set to \"graded\" to add a context_manifest: focus symbols at full source, their caller/callee adjacency ring as elided signature stubs, and the keyword-match remainder as outline-only entries — all packed under one token budget. Default \"flat\" keeps the legacy relevant_symbols shape.")),
 			mcp.WithNumber("token_budget", mcp.Description("Token ceiling for the graded-fidelity manifest (default 8000). Entries are demoted full → compressed → outline as the budget fills. Ignored unless fidelity is \"graded\".")),
+			mcp.WithBoolean("estimate", mcp.Description("Dry-run: skip assembling the payload and return only a token-cost projection (projected_tokens plus per-tier counts) for the task at the chosen fidelity, so the caller can budget before fetching the real context.")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
@@ -1452,12 +1453,30 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		relevantSymbols = relevantSymbols[:maxSymbols]
 	}
 
+	// 4b. Estimate mode short-circuits: project the symbol-delivery
+	// token cost and return it without assembling the payload, so the
+	// caller can budget before fetching the real context.
+	if req.GetBool("estimate", false) {
+		estResult := map[string]any{
+			"task": task,
+			"estimate": s.buildSmartContextEstimate(
+				ctx, graded, req.GetInt("token_budget", defaultManifestBudget),
+				relevantSymbols, outlineCandidates),
+		}
+		if s.isGCX(ctx, req) {
+			return s.gcxResponseWithBudget(req)(encodeSmartContextEstimate(estResult))
+		}
+		if s.isTOON(ctx, req) {
+			return returnTOON(estResult)
+		}
+		return s.respondJSONOrTOON(ctx, req, estResult)
+	}
+
 	// 5. Get source and signatures for relevant symbols. Source is
-	// only embedded for the top maxSource functions/methods — signatures
-	// alone cover 80% of agent decision-making and each full source
-	// snippet adds several hundred tokens. Callers that need more can
-	// follow up with get_symbol_source for specific IDs.
-	const maxSource = 3
+	// only embedded for the top smartCtxMaxSource functions/methods —
+	// signatures alone cover 80% of agent decision-making and each
+	// full source snippet adds several hundred tokens. Callers that
+	// need more can follow up with get_symbol_source for specific IDs.
 	sourcesEmbedded := 0
 	var symbolContexts []map[string]any
 	for _, sym := range relevantSymbols {
@@ -1471,7 +1490,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		if sig, ok := sym.Meta["signature"]; ok {
 			entry["signature"] = sig
 		}
-		if !graded && sourcesEmbedded < maxSource &&
+		if !graded && sourcesEmbedded < smartCtxMaxSource &&
 			(sym.Kind == graph.KindFunction || sym.Kind == graph.KindMethod) &&
 			sym.StartLine > 0 && sym.EndLine > 0 {
 			if absPath, err := s.resolveNodePath(sym); err == nil {

@@ -112,3 +112,80 @@ func TestSmartContext_GradedGCX(t *testing.T) {
 	assert.True(t, strings.Contains(tc.Text, "smart_context.manifest"),
 		"GCX output must carry the manifest section, got:\n%s", tc.Text)
 }
+
+func TestSmartContext_EstimateFlat(t *testing.T) {
+	srv, _ := setupCompressTestServer(t)
+	r := callTool(t, srv, "smart_context", map[string]any{
+		"task":     "validate token and parse claims",
+		"estimate": true,
+	})
+	m := extractTextResult(t, r)
+	// Estimate mode short-circuits: no payload, just the projection.
+	_, hasSyms := m["relevant_symbols"]
+	assert.False(t, hasSyms, "estimate mode must not return the symbol payload")
+	est, ok := m["estimate"].(map[string]any)
+	require.True(t, ok, "estimate mode must return an estimate object")
+	assert.Equal(t, "flat", est["fidelity"])
+	proj, _ := est["projected_tokens"].(float64)
+	assert.Positive(t, proj, "projected_tokens must be a positive estimate")
+}
+
+func TestSmartContext_EstimateGraded(t *testing.T) {
+	srv, _ := setupCompressTestServer(t)
+	r := callTool(t, srv, "smart_context", map[string]any{
+		"task":     "validate token and parse claims",
+		"fidelity": "graded",
+		"estimate": true,
+	})
+	m := extractTextResult(t, r)
+	_, hasMani := m["context_manifest"]
+	assert.False(t, hasMani, "estimate mode must not return the manifest payload")
+	est, ok := m["estimate"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "graded", est["fidelity"])
+	assert.Equal(t, float64(defaultManifestBudget), est["token_budget"])
+	proj, _ := est["projected_tokens"].(float64)
+	budget, _ := est["token_budget"].(float64)
+	assert.LessOrEqual(t, proj, budget, "projected tokens must fit the budget")
+	for _, k := range []string{"focus", "ring", "outline"} {
+		_, ok := est[k].(float64)
+		assert.Truef(t, ok, "graded estimate must report a %s count", k)
+	}
+}
+
+func TestSmartContext_EstimateMatchesManifest(t *testing.T) {
+	srv, _ := setupCompressTestServer(t)
+	args := map[string]any{
+		"task":         "validate token and parse claims",
+		"fidelity":     "graded",
+		"token_budget": float64(500),
+	}
+	full := extractTextResult(t, callTool(t, srv, "smart_context", args))
+	mani := full["context_manifest"].(map[string]any)
+	realUsed, _ := mani["tokens_used"].(float64)
+
+	estArgs := map[string]any{"estimate": true}
+	for k, v := range args {
+		estArgs[k] = v
+	}
+	est := extractTextResult(t, callTool(t, srv, "smart_context", estArgs))["estimate"].(map[string]any)
+	estProj, _ := est["projected_tokens"].(float64)
+
+	assert.Equal(t, realUsed, estProj,
+		"estimate projected_tokens must match the real manifest tokens_used")
+}
+
+func TestSmartContext_EstimateGCX(t *testing.T) {
+	srv, _ := setupCompressTestServer(t)
+	r := callTool(t, srv, "smart_context", map[string]any{
+		"task":     "validate token and parse claims",
+		"estimate": true,
+		"format":   "gcx",
+	})
+	require.False(t, r.IsError, "unexpected error: %+v", r.Content)
+	require.NotEmpty(t, r.Content)
+	tc, ok := r.Content[0].(mcplib.TextContent)
+	require.True(t, ok, "expected TextContent, got %T", r.Content[0])
+	assert.Contains(t, tc.Text, "smart_context.estimate",
+		"GCX estimate output must carry the estimate section")
+}

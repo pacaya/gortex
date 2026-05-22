@@ -1331,6 +1331,33 @@ func encodeSmartContext(result map[string]any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// encodeSmartContextEstimate encodes the dry-run token-cost projection
+// of smart_context as a single-row GCX section.
+func encodeSmartContextEstimate(result map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	est, _ := result["estimate"].(map[string]any)
+	enc := newGCX(&buf, "smart_context.estimate",
+		[]string{"fidelity", "symbol_count", "projected_tokens", "token_budget", "focus", "ring", "outline", "omitted"},
+		"count", "1",
+	)
+	if err := enc.WriteRow(
+		str(est["fidelity"]),
+		str(est["symbol_count"]),
+		str(est["projected_tokens"]),
+		str(est["token_budget"]),
+		str(est["focus"]),
+		str(est["ring"]),
+		str(est["outline"]),
+		str(est["omitted"]),
+	); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // --------------------------------------------------------------------
 // prefetch_context, explain_change_impact, check_guards, feedback.query
 // --------------------------------------------------------------------
