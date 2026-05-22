@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ This command is the migration path: it lists what each tracked repo
 currently declares and writes new declarations atomically without
 disturbing other keys in the file.`,
 }
+
+var workspaceListJSON bool
 
 var workspaceListCmd = &cobra.Command{
 	Use:   "list",
@@ -84,6 +87,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceListCmd)
 	workspaceCmd.AddCommand(workspaceSetCmd)
 	workspaceCmd.AddCommand(workspaceSetAllCmd)
+	workspaceListCmd.Flags().BoolVar(&workspaceListJSON, "json", false, "emit machine-readable JSON instead of a table")
 	workspaceSetCmd.Flags().BoolVar(&workspaceSetGlobal, "global", false, "write to ~/.config/gortex/config.yaml instead of the repo's .gortex.yaml (OSS-friendly)")
 	workspaceSetAllCmd.Flags().BoolVarP(&workspaceSetAll, "yes", "y", false, "skip interactive confirmation")
 	workspaceSetAllCmd.Flags().StringVar(&workspaceSetRoot, "root", "", "only stamp repos whose path starts with this prefix")
@@ -186,12 +190,102 @@ func matchRepo(repos []config.RepoEntry, target string) (int, error) {
 	return -1, fmt.Errorf("no tracked repo matches %q (try `gortex daemon status` for the list)", target)
 }
 
+// workspaceListEntry is one repo's resolved workspace/project view —
+// the row of `gortex workspace list`. It is also the JSON shape emitted
+// under --json; the table renderer projects the same struct.
+type workspaceListEntry struct {
+	// Repo is the repo's configured name, falling back to the path
+	// basename when the global config declares no explicit name.
+	Repo string `json:"repo"`
+	// Path is the absolute on-disk path of the repository.
+	Path string `json:"path"`
+	// Workspace is the effective workspace slug after applying the
+	// precedence rules (global config > .gortex.yaml > default).
+	Workspace string `json:"workspace"`
+	// Project is the effective project slug, same precedence.
+	Project string `json:"project"`
+	// Source records where the effective Workspace came from:
+	// "global", ".gortex.yaml", "default", or a "global (overrides
+	// .gortex.yaml=...)" note when an override is shadowing a repo
+	// declaration.
+	Source string `json:"source"`
+	// Error carries a non-empty message when the repo's .gortex.yaml
+	// could not be read or parsed; the other fields are unset then.
+	Error string `json:"error,omitempty"`
+}
+
+// collectWorkspaceList resolves every tracked repo into a
+// workspaceListEntry. The precedence rules (global RepoEntry override >
+// .gortex.yaml declaration > default repo prefix) are applied here so
+// the table and JSON renderers stay byte-identical in semantics.
+func collectWorkspaceList(repos []config.RepoEntry) []workspaceListEntry {
+	entries := make([]workspaceListEntry, 0, len(repos))
+	for _, r := range repos {
+		// Precedence: global config (RepoEntry) > .gortex.yaml > default.
+		ws, proj, src := "", "", ""
+		if r.Workspace != "" || r.Project != "" {
+			ws, proj, src = r.Workspace, r.Project, "global"
+		}
+		yamlWS, yamlProj := "", ""
+		payload, yamlErr := readRepoYAML(r.Path)
+		if yamlErr != nil {
+			entries = append(entries, workspaceListEntry{
+				Repo:  repoLabel(r),
+				Path:  r.Path,
+				Error: yamlErr.Error(),
+			})
+			continue
+		}
+		yamlWS, _ = payload["workspace"].(string)
+		yamlProj, _ = payload["project"].(string)
+		if ws == "" {
+			ws = yamlWS
+			if ws != "" {
+				src = ".gortex.yaml"
+			}
+		}
+		if proj == "" {
+			proj = yamlProj
+		}
+		// Note when global override is shadowing a repo declaration.
+		if r.Workspace != "" && yamlWS != "" && r.Workspace != yamlWS {
+			src = "global (overrides .gortex.yaml=" + yamlWS + ")"
+		}
+		if ws == "" {
+			ws = "(default: " + repoLabel(r) + ")"
+			if src == "" {
+				src = "default"
+			}
+		}
+		if proj == "" {
+			proj = "(default: " + repoLabel(r) + ")"
+		}
+		entries = append(entries, workspaceListEntry{
+			Repo:      repoLabel(r),
+			Path:      r.Path,
+			Workspace: ws,
+			Project:   proj,
+			Source:    src,
+		})
+	}
+	return entries
+}
+
 func runWorkspaceList(cmd *cobra.Command, _ []string) error {
 	repos, err := loadGlobalRepos()
 	if err != nil {
 		return err
 	}
-	if len(repos) == 0 {
+
+	entries := collectWorkspaceList(repos)
+
+	if workspaceListJSON {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(entries)
+	}
+
+	if len(entries) == 0 {
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "(no tracked repos)")
 		return nil
 	}
@@ -208,44 +302,12 @@ func runWorkspaceList(cmd *cobra.Command, _ []string) error {
 		{Number: 5, Align: text.AlignLeft},
 	})
 
-	for _, r := range repos {
-		// Precedence: global config (RepoEntry) > .gortex.yaml > default.
-		ws, proj, src := "", "", ""
-		if r.Workspace != "" || r.Project != "" {
-			ws, proj, src = r.Workspace, r.Project, "global"
-		}
-		yamlWS, yamlProj := "", ""
-		payload, yamlErr := readRepoYAML(r.Path)
-		if yamlErr == nil {
-			yamlWS, _ = payload["workspace"].(string)
-			yamlProj, _ = payload["project"].(string)
-			if ws == "" {
-				ws = yamlWS
-				if ws != "" {
-					src = ".gortex.yaml"
-				}
-			}
-			if proj == "" {
-				proj = yamlProj
-			}
-		} else {
-			t.AppendRow(table.Row{repoLabel(r), "(error)", yamlErr.Error(), "", r.Path})
+	for _, e := range entries {
+		if e.Error != "" {
+			t.AppendRow(table.Row{e.Repo, "(error)", e.Error, "", e.Path})
 			continue
 		}
-		// Note when global override is shadowing a repo declaration.
-		if r.Workspace != "" && yamlWS != "" && r.Workspace != yamlWS {
-			src = "global (overrides .gortex.yaml=" + yamlWS + ")"
-		}
-		if ws == "" {
-			ws = "(default: " + repoLabel(r) + ")"
-			if src == "" {
-				src = "default"
-			}
-		}
-		if proj == "" {
-			proj = "(default: " + repoLabel(r) + ")"
-		}
-		t.AppendRow(table.Row{repoLabel(r), ws, proj, src, r.Path})
+		t.AppendRow(table.Row{e.Repo, e.Workspace, e.Project, e.Source, e.Path})
 	}
 	t.Render()
 	return nil
