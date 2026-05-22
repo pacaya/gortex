@@ -1,0 +1,222 @@
+package mcp
+
+import (
+	"context"
+
+	"github.com/zzet/gortex/internal/elide"
+	"github.com/zzet/gortex/internal/graph"
+	"github.com/zzet/gortex/internal/query"
+	"github.com/zzet/gortex/internal/tokens"
+)
+
+// defaultManifestBudget is the token ceiling a graded smart_context
+// manifest fills when the caller does not pass token_budget.
+const defaultManifestBudget = 8000
+
+// manifestSourceKinds are the node kinds whose source is worth
+// embedding in a manifest; one-liners (vars, consts, fields) carry
+// their whole meaning in the signature already.
+var manifestSourceKinds = map[graph.NodeKind]bool{
+	graph.KindFunction:  true,
+	graph.KindMethod:    true,
+	graph.KindType:      true,
+	graph.KindInterface: true,
+}
+
+// ringMember is one symbol on the graph-distance-1 adjacency ring of
+// the focus set, tagged with how it relates to the focus.
+type ringMember struct {
+	node     *graph.Node
+	relation string
+}
+
+// buildContextManifest assembles a graded-fidelity context pack: the
+// focus symbols at full source, their caller/callee adjacency ring as
+// elided signature stubs, and an outline-only remainder — all packed
+// under one token budget. Entries are returned as a single flat list
+// tagged with `tier` so the shape stays friendly to every wire
+// format; budget pressure demotes an entry to a cheaper tier (full →
+// compressed → outline) rather than dropping it outright.
+func (s *Server) buildContextManifest(ctx context.Context, focus, outlineCandidates []*graph.Node, budget int) map[string]any {
+	if budget <= 0 {
+		budget = defaultManifestBudget
+	}
+	used := 0
+	placed := make(map[string]bool)
+	entries := make([]map[string]any, 0, len(focus)+len(outlineCandidates))
+	omitted := 0
+
+	base := func(n *graph.Node) map[string]any {
+		e := map[string]any{
+			"id":         n.ID,
+			"kind":       string(n.Kind),
+			"name":       n.Name,
+			"file_path":  n.FilePath,
+			"start_line": n.StartLine,
+			"relation":   "",
+			"distance":   0,
+			"compressed": false,
+			"source":     "",
+		}
+		if sig, ok := n.Meta["signature"].(string); ok {
+			e["signature"] = sig
+		}
+		return e
+	}
+	sigCost := func(e map[string]any) int {
+		c := 16
+		if sig, ok := e["signature"].(string); ok {
+			c += int(tokens.CachedCountInt64(sig))
+		}
+		return c
+	}
+
+	// Tier 0 — focus: full source, demoted to a compressed stub or to
+	// an outline entry when the budget tightens.
+	for _, n := range focus {
+		if n == nil || placed[n.ID] {
+			continue
+		}
+		placed[n.ID] = true
+		e := base(n)
+		src := s.manifestSymbolSource(ctx, n)
+		if src != "" {
+			if full := int(tokens.CachedCountInt64(src)); used+full <= budget {
+				e["tier"] = "focus"
+				e["source"] = src
+				used += full
+				entries = append(entries, e)
+				continue
+			}
+			if comp, err := elide.CompressString(src, n.Language); err == nil {
+				if cc := int(tokens.CachedCountInt64(comp)); used+cc <= budget {
+					e["tier"] = "ring"
+					e["source"] = comp
+					e["compressed"] = true
+					used += cc
+					entries = append(entries, e)
+					continue
+				}
+			}
+		}
+		if c := sigCost(e); used+c <= budget {
+			e["tier"] = "outline"
+			used += c
+			entries = append(entries, e)
+			continue
+		}
+		omitted++
+	}
+
+	// Tier 1 — ring: the caller/callee adjacency of the focus set,
+	// embedded as elided signature stubs.
+	for _, rm := range s.manifestRing(ctx, focus, placed) {
+		n := rm.node
+		placed[n.ID] = true
+		e := base(n)
+		e["relation"] = rm.relation
+		e["distance"] = 1
+		src := s.manifestSymbolSource(ctx, n)
+		if src != "" {
+			comp := src
+			if c, err := elide.CompressString(src, n.Language); err == nil {
+				comp = c
+			}
+			if cc := int(tokens.CachedCountInt64(comp)); used+cc <= budget {
+				e["tier"] = "ring"
+				e["source"] = comp
+				e["compressed"] = true
+				used += cc
+				entries = append(entries, e)
+				continue
+			}
+		}
+		if c := sigCost(e); used+c <= budget {
+			e["tier"] = "outline"
+			used += c
+			entries = append(entries, e)
+			continue
+		}
+		omitted++
+	}
+
+	// Tier 2 — outline: keyword matches past the focus cap, signature
+	// only.
+	for _, n := range outlineCandidates {
+		if n == nil || placed[n.ID] {
+			continue
+		}
+		placed[n.ID] = true
+		e := base(n)
+		e["distance"] = 2
+		if c := sigCost(e); used+c <= budget {
+			e["tier"] = "outline"
+			used += c
+			entries = append(entries, e)
+			continue
+		}
+		omitted++
+	}
+
+	return map[string]any{
+		"token_budget": budget,
+		"tokens_used":  used,
+		"omitted":      omitted,
+		"entries":      entries,
+	}
+}
+
+// manifestSymbolSource reads the on-disk source of a symbol worth
+// embedding (functions, methods, types, interfaces). Returns "" when
+// the symbol has no usable kind, range, or path.
+func (s *Server) manifestSymbolSource(ctx context.Context, n *graph.Node) string {
+	if n == nil || !manifestSourceKinds[n.Kind] {
+		return ""
+	}
+	if n.StartLine <= 0 || n.EndLine <= 0 {
+		return ""
+	}
+	absPath, err := s.resolveNodePath(n)
+	if err != nil {
+		return ""
+	}
+	src, _, _, err := s.readLinesForCtx(ctx, absPath, n.StartLine, n.EndLine, 0)
+	if err != nil {
+		return ""
+	}
+	return src
+}
+
+// manifestRing collects the distance-1 adjacency ring of the focus
+// set — direct callers and callees — skipping anything already
+// placed. Order is deterministic: focus order, callers before callees.
+func (s *Server) manifestRing(ctx context.Context, focus []*graph.Node, exclude map[string]bool) []ringMember {
+	var ring []ringMember
+	seen := make(map[string]bool)
+	sessWS, _, _ := s.sessionScope(ctx)
+	add := func(n *graph.Node, rel string) {
+		if n == nil || n.Kind == graph.KindFile || exclude[n.ID] || seen[n.ID] {
+			return
+		}
+		seen[n.ID] = true
+		ring = append(ring, ringMember{node: n, relation: rel})
+	}
+	for _, f := range focus {
+		if f == nil {
+			continue
+		}
+		callers := s.engineFor(ctx).GetCallers(f.ID, query.QueryOptions{Depth: 1, Limit: 8, Detail: "brief", WorkspaceID: sessWS})
+		for _, cn := range callers.Nodes {
+			if cn.ID != f.ID {
+				add(cn, "caller")
+			}
+		}
+		callees := s.engineFor(ctx).GetCallChain(f.ID, query.QueryOptions{Depth: 1, Limit: 8, Detail: "brief", WorkspaceID: sessWS})
+		for _, cn := range callees.Nodes {
+			if cn.ID != f.ID {
+				add(cn, "callee")
+			}
+		}
+	}
+	return ring
+}

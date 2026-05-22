@@ -165,6 +165,8 @@ func (s *Server) registerCodingTools() {
 			mcp.WithString("task", mcp.Required(), mcp.Description("Natural language description of what you want to do (e.g. 'add a new MCP tool called list_files')")),
 			mcp.WithString("entry_point", mcp.Description("Optional symbol ID or file path to start from")),
 			mcp.WithNumber("max_symbols", mcp.Description("Max symbols to include source for (default: 5)")),
+			mcp.WithString("fidelity", mcp.Description("Set to \"graded\" to add a context_manifest: focus symbols at full source, their caller/callee adjacency ring as elided signature stubs, and the keyword-match remainder as outline-only entries — all packed under one token budget. Default \"flat\" keeps the legacy relevant_symbols shape.")),
+			mcp.WithNumber("token_budget", mcp.Description("Token ceiling for the graded-fidelity manifest (default 8000). Entries are demoted full → compressed → outline as the budget fills. Ignored unless fidelity is \"graded\".")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
@@ -1332,6 +1334,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 
 	entryPoint := req.GetString("entry_point", "")
 	maxSymbols := req.GetInt("max_symbols", 5)
+	graded := req.GetString("fidelity", "") == "graded"
 
 	result := map[string]any{
 		"task": task,
@@ -1440,8 +1443,12 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		}
 	}
 
-	// 4. Limit to top N most relevant symbols.
+	// 4. Limit to top N most relevant symbols. In graded-fidelity mode
+	// the overflow seeds the manifest's outline tier instead of being
+	// discarded.
+	var outlineCandidates []*graph.Node
 	if len(relevantSymbols) > maxSymbols {
+		outlineCandidates = append(outlineCandidates, relevantSymbols[maxSymbols:]...)
 		relevantSymbols = relevantSymbols[:maxSymbols]
 	}
 
@@ -1464,7 +1471,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		if sig, ok := sym.Meta["signature"]; ok {
 			entry["signature"] = sig
 		}
-		if sourcesEmbedded < maxSource &&
+		if !graded && sourcesEmbedded < maxSource &&
 			(sym.Kind == graph.KindFunction || sym.Kind == graph.KindMethod) &&
 			sym.StartLine > 0 && sym.EndLine > 0 {
 			if absPath, err := s.resolveNodePath(sym); err == nil {
@@ -1480,6 +1487,15 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		symbolContexts = append(symbolContexts, entry)
 	}
 	result["relevant_symbols"] = symbolContexts
+
+	// 5b1. Graded-fidelity manifest: focus symbols at full source,
+	// their caller/callee adjacency ring as elided signature stubs,
+	// and the keyword-match remainder as an outline — all packed
+	// under one token budget.
+	if graded {
+		result["context_manifest"] = s.buildContextManifest(
+			ctx, relevantSymbols, outlineCandidates, req.GetInt("token_budget", defaultManifestBudget))
+	}
 
 	// 5b. Include cross-repo dependencies when in multi-repo mode.
 	if s.multiIndexer != nil && s.multiIndexer.IsMultiRepo() {

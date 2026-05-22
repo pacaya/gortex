@@ -1200,6 +1200,36 @@ func encodeSmartContext(result map[string]any) ([]byte, error) {
 		return nil, err
 	}
 
+	if mani, ok := result["context_manifest"].(map[string]any); ok {
+		entries, _ := mani["entries"].([]map[string]any)
+		manEnc := newGCX(&buf, "smart_context.manifest",
+			[]string{"id", "kind", "name", "path", "line", "tier", "relation", "distance", "compressed", "sig", "source"},
+			"token_budget", str(mani["token_budget"]),
+			"tokens_used", str(mani["tokens_used"]),
+			"omitted", str(mani["omitted"]),
+		)
+		for _, e := range entries {
+			if err := manEnc.WriteRow(
+				str(e["id"]),
+				str(e["kind"]),
+				str(e["name"]),
+				str(e["file_path"]),
+				e["start_line"],
+				str(e["tier"]),
+				str(e["relation"]),
+				e["distance"],
+				str(e["compressed"]),
+				str(e["signature"]),
+				str(e["source"]),
+			); err != nil {
+				return nil, err
+			}
+		}
+		if err := manEnc.Close(); err != nil {
+			return nil, err
+		}
+	}
+
 	if crossRepo, ok := result["cross_repo_dependencies"].([]map[string]any); ok && len(crossRepo) > 0 {
 		enc := newGCX(&buf, "smart_context.cross_repo",
 			[]string{"id", "kind", "name", "path", "repo", "edge_kind", "sig"},
