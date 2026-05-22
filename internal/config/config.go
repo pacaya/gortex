@@ -361,7 +361,7 @@ type Config struct {
 	// on by default with the zero-download static GloVe provider.
 	Embedding EmbeddingConfig `mapstructure:"embedding" yaml:"embedding,omitempty"`
 	MCP       MCPConfig       `mapstructure:"mcp"      yaml:"mcp,omitempty"`
-	Guards GuardsConfig `mapstructure:"guards"   yaml:"guards,omitempty"`
+	Guards    GuardsConfig    `mapstructure:"guards"   yaml:"guards,omitempty"`
 	// Architecture is the declarative layer / allow-deny DSL. Empty
 	// by default; the flat Guards list above keeps working when it is
 	// unset.

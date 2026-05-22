@@ -97,9 +97,9 @@ type gqFilter struct {
 // gqStage is one parsed pipeline stage.
 type gqStage struct {
 	kind      gqStageKind
-	filters   []gqFilter        // nodes / filter stages
-	edgeKinds []graph.EdgeKind  // traverse stage
-	direction string            // traverse stage: out|in|both
+	filters   []gqFilter       // nodes / filter stages
+	edgeKinds []graph.EdgeKind // traverse stage
+	direction string           // traverse stage: out|in|both
 }
 
 // parseGraphQuery tokenizes and parses the pipeline DSL into stages.

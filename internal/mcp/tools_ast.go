@@ -16,15 +16,15 @@ import (
 // graph-aware code search powered by tree-sitter queries.
 //
 // Two surfaces, exposed through one tool:
-//   1. Bundled detectors (`detector: "<name>"`) — pre-baked rules
-//      for high-signal anti-patterns. Cross-language by design;
-//      one detector ships per-language patterns and the engine
-//      picks the right one per file.
-//   2. Raw tree-sitter S-expression patterns (`pattern: "..."`,
-//      `language: "..."`) for callers who want full power. The
-//      pattern syntax is tree-sitter's standard query language —
-//      capture nodes with `@name`, anchor with `@match`, predicates
-//      `(#eq? @x "literal")` / `(#match? @x "regex")`.
+//  1. Bundled detectors (`detector: "<name>"`) — pre-baked rules
+//     for high-signal anti-patterns. Cross-language by design;
+//     one detector ships per-language patterns and the engine
+//     picks the right one per file.
+//  2. Raw tree-sitter S-expression patterns (`pattern: "..."`,
+//     `language: "..."`) for callers who want full power. The
+//     pattern syntax is tree-sitter's standard query language —
+//     capture nodes with `@name`, anchor with `@match`, predicates
+//     `(#eq? @x "literal")` / `(#match? @x "regex")`.
 //
 // Beyond ast-grep's surface, every match is enriched with
 //   - `symbol_id` / `symbol_name` — the enclosing function/method/

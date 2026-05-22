@@ -2508,8 +2508,8 @@ func (idx *Indexer) embedAllChunks(
 
 	jobs := make(chan embedChunkBatch)
 	var (
-		wg      sync.WaitGroup
-		errOnce sync.Once
+		wg       sync.WaitGroup
+		errOnce  sync.Once
 		firstErr error
 	)
 	fail := func(err error) {

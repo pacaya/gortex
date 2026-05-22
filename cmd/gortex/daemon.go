@@ -24,8 +24,8 @@ import (
 )
 
 var (
-	daemonDetach bool
-	daemonTail   int
+	daemonDetach     bool
+	daemonTail       int
 	daemonEmbeddings bool
 	// daemonEmbeddingsChanged records whether `--embeddings` was given
 	// explicitly on `gortex daemon start`. buildDaemonState reads it

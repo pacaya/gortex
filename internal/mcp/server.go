@@ -163,8 +163,8 @@ type Server struct {
 	// used.
 	sessions *sessionMap
 
-	guardRules       []config.GuardRule
-	architecture     config.ArchitectureConfig
+	guardRules   []config.GuardRule
+	architecture config.ArchitectureConfig
 	// searchCfg carries the `.gortex.yaml::search` block — rerank
 	// weights plus the search-behaviour knobs (keyword-soup rewrite,
 	// equivalence-class expansion, prose indexing). Installed via
