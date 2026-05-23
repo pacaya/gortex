@@ -198,11 +198,24 @@ func (s *Server) buildASTTargets(language, pathPrefix string, allowedRepos map[s
 			// repo eviction). Skip rather than fail the run.
 			continue
 		}
+		lang := strings.ToLower(n.Language)
 		out = append(out, astquery.Target{
 			AbsPath:   abs,
 			GraphPath: n.FilePath,
-			Language:  strings.ToLower(n.Language),
+			Language:  lang,
 		})
+		// .tsx files use the tsx grammar (a strict superset of the
+		// typescript grammar that adds JSX nodes). Emit a parallel
+		// target tagged "tsx" so JSX-using detectors can compile
+		// cleanly without losing the "typescript" scan for
+		// grammar-agnostic detectors.
+		if lang == "typescript" && strings.HasSuffix(strings.ToLower(n.FilePath), ".tsx") {
+			out = append(out, astquery.Target{
+				AbsPath:   abs,
+				GraphPath: n.FilePath,
+				Language:  "tsx",
+			})
+		}
 	}
 	// Stable order so identical inputs produce identical outputs
 	// across daemon restarts. Cheap; the file list is bounded.

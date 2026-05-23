@@ -79,7 +79,10 @@ func registerJSReactDangerouslySetHTML() {
 		Tags:        []string{"xss", "react"},
 		Pat: map[string]string{
 			"javascript": `((jsx_attribute (property_identifier) @attr) @match (#eq? @attr "dangerouslySetInnerHTML"))`,
-			"typescript": `((jsx_attribute (property_identifier) @attr) @match (#eq? @attr "dangerouslySetInnerHTML"))`,
+			// tsx (not typescript) — jsx_attribute only exists in the
+			// JSX-aware grammar. .tsx targets are retagged as "tsx"
+			// upstream so this query compiles cleanly.
+			"tsx": `((jsx_attribute (property_identifier) @attr) @match (#eq? @attr "dangerouslySetInnerHTML"))`,
 		},
 	})
 }
@@ -215,7 +218,10 @@ func registerJSTargetBlankNoopener() {
 		Severity:    "info",
 		CWE:         "CWE-1022",
 		Tags:        []string{"phishing"},
-		Pat:         map[string]string{"javascript": pat, "typescript": pat},
+		// tsx (not typescript) — jsx_attribute only exists in the
+		// JSX-aware grammar. .tsx targets are retagged as "tsx"
+		// upstream so this query compiles cleanly.
+		Pat: map[string]string{"javascript": pat, "tsx": pat},
 	})
 }
 

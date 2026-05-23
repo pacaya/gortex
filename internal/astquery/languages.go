@@ -16,6 +16,7 @@ import (
 	rubylang "github.com/zzet/gortex/internal/parser/tsitter/ruby"
 	rustlang "github.com/zzet/gortex/internal/parser/tsitter/rust"
 	scalalang "github.com/zzet/gortex/internal/parser/tsitter/scala"
+	tsxlang "github.com/zzet/gortex/internal/parser/tsitter/tsx"
 	tslang "github.com/zzet/gortex/internal/parser/tsitter/typescript"
 )
 
@@ -38,11 +39,15 @@ func DefaultLanguageResolver(name string) *sitter.Language {
 	case "javascript":
 		return jslang.GetLanguage()
 	case "typescript":
-		// NB: tsx grammar is exposed by the typescript binding's
-		// `GetTSXLanguage`; for TSX file targets a richer resolver
-		// can be passed by the caller. The default uses the plain
-		// .ts grammar which handles JSX-free TypeScript only.
+		// The plain .ts grammar handles JSX-free TypeScript. .tsx
+		// targets get retagged as "tsx" upstream so JSX-using
+		// detectors compile against the TSX grammar below.
 		return tslang.GetLanguage()
+	case "tsx":
+		// Superset of the TS grammar that exposes JSX nodes
+		// (jsx_element, jsx_attribute, …). Picked for .tsx targets
+		// so detectors that look for JSX shapes can compile cleanly.
+		return tsxlang.GetLanguage()
 	case "ruby":
 		return rubylang.GetLanguage()
 	case "java":
