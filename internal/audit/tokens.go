@@ -91,8 +91,23 @@ func classifyToken(tok string) tokenKind {
 	if strings.Contains(tok, "://") {
 		return tokenOther
 	}
-
-	if isPathLike(tok) {
+	// Whitespace inside a token (e.g. `POST /mcp`, `git status`) — the
+	// content is a snippet, not an identifier. Skip before path
+	// classification so a slash + space combination doesn't get
+	// mistakenly read as a filesystem path.
+	if strings.ContainsAny(tok, " \t") {
+		return tokenOther
+	}
+	// Placeholder syntax inside docs (e.g. `<exact-name>`, `<kind>`) —
+	// templated examples, not real identifiers.
+	if strings.ContainsAny(tok, "<>") {
+		return tokenOther
+	}
+	// Tokens carrying the Go-style `::` qualifier are always symbol
+	// candidates even when they also contain a `/`. Without this gate
+	// `pkg/foo.go::Bar` would land in tokenPath first and look up a
+	// non-existent file rather than a non-existent symbol.
+	if !strings.Contains(tok, "::") && isPathLike(tok) {
 		return tokenPath
 	}
 
@@ -101,11 +116,15 @@ func classifyToken(tok string) tokenKind {
 	if skipTokens[bare] {
 		return tokenOther
 	}
-	// Whitespace or quoted content -> not a symbol.
-	if strings.ContainsAny(bare, " \t\"'") {
+	if !identRe.MatchString(tok) {
 		return tokenOther
 	}
-	if !identRe.MatchString(tok) {
+	// SCREAMING_SNAKE / SCREAMING-DASH tokens (env var names, build-tag
+	// constants, JSON-schema-style ALL_CAPS keys) are not Go symbols
+	// in any graph we'd audit — agent configs cite them constantly
+	// (ANTHROPIC_API_KEY, AWS_ACCESS_KEY_ID, NODE_TLS_REJECT_UNAUTHORIZED)
+	// and the audit must not flag them as stale.
+	if isScreamingSnake(bare) {
 		return tokenOther
 	}
 	// Require a strong signal that this is a code symbol the graph
@@ -122,6 +141,20 @@ func classifyToken(tok string) tokenKind {
 	if !hasSignal {
 		return tokenOther
 	}
+	// A bare lowercase-first identifier (e.g. `generateContent`,
+	// `responseSchema`, `additionalProperties`) is ambiguous — could
+	// be a Go unexported method we own, could be a Google/AWS/JSON-
+	// schema API name an agent config legitimately cites. Require a
+	// stronger signal: a qualifier (`pkg.Sym` / `pkg::Sym`), an
+	// explicit call form (`fn()`), or a capitalized first letter
+	// (exported Go / Java / TS, where the docs-author convention is
+	// to mean "this exported symbol"). Bare `handleFoo` no longer
+	// qualifies — false positives from docs vocabulary used to drown
+	// out the real signal.
+	firstUpper := bare[0] >= 'A' && bare[0] <= 'Z'
+	if !firstUpper && !strings.ContainsAny(bare, ".:") && !strings.HasSuffix(tok, "()") {
+		return tokenOther
+	}
 	// Must be at least 3 chars to reduce false positives on 1-2 letter vars.
 	if len(bare) < 3 {
 		return tokenOther
@@ -129,14 +162,28 @@ func classifyToken(tok string) tokenKind {
 	return tokenSymbol
 }
 
-// isPathLike detects tokens that look like filesystem paths rather than symbols.
+// isPathLike detects tokens that look like filesystem paths rather than
+// symbols. Returns true only when the token carries a positive path
+// signal — a known file extension, a leading `./` / `~` / `/`, or a
+// recognised directory leaf. Bare slash-separated identifiers (e.g.
+// `notifications/tools/list_changed`, `pkg/foo`) are NOT paths because
+// the audit can't pathExists() them without a stat against the repo
+// root, and slash-separated identifiers are common in MCP method names,
+// JSON pointer fragments, and HTTP routes that the audit should leave
+// alone.
 func isPathLike(tok string) bool {
-	if strings.ContainsAny(tok, "/\\") {
-		// Exclude package-style dotted identifiers that happen to contain no
-		// slashes (already handled).
+	if tok == "" {
+		return false
+	}
+	// Explicit-path prefixes — `./relative`, `/absolute`, `~/home`.
+	if strings.HasPrefix(tok, "./") || strings.HasPrefix(tok, "/") || strings.HasPrefix(tok, "~/") || strings.HasPrefix(tok, "~") && len(tok) > 1 && tok[1] == '/' {
 		return true
 	}
-	// Files with a known extension (e.g. `.gortex.yaml`, `README.md`).
+	if strings.Contains(tok, "\\") {
+		return true
+	}
+	// Files with a known extension (e.g. `.gortex.yaml`, `README.md`,
+	// `internal/foo.go`).
 	if idx := strings.LastIndex(tok, "."); idx > 0 {
 		ext := strings.ToLower(tok[idx:])
 		if pathExts[ext] {
@@ -144,6 +191,28 @@ func isPathLike(tok string) bool {
 		}
 	}
 	return false
+}
+
+// isScreamingSnake reports whether tok is composed entirely of upper-
+// case letters, digits, underscores, and dashes — the env-var /
+// constant shape that agent configs cite but our symbol graphs don't
+// carry as nodes.
+func isScreamingSnake(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	hasLetter := false
+	for _, r := range tok {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func hasUppercase(s string) bool {

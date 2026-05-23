@@ -41,7 +41,12 @@ func TestClassifyToken(t *testing.T) {
 		in   string
 		want tokenKind
 	}{
-		{"handleAuditAgentConfig", tokenSymbol},
+		// Bare lowercase-first identifiers used to land in tokenSymbol;
+		// they're now tokenOther because docs vocabulary
+		// (`additionalProperties`, `generateContent`, `responseSchema`)
+		// is camelCase and indistinguishable from internal symbols.
+		// A qualified or call-form variant still classifies.
+		{"handleAuditAgentConfig", tokenOther},
 		{"Server.handleAuditAgentConfig", tokenSymbol},
 		{"register_tools()", tokenSymbol},
 		{"Parser", tokenSymbol}, // capital, 6 chars
@@ -53,6 +58,27 @@ func TestClassifyToken(t *testing.T) {
 		{".gortex.yaml", tokenPath},
 		{"foo", tokenOther}, // lowercase, no signal
 		{"", tokenOther},
+		// Regressions from the post-fix audit_agent_config report:
+		// env vars, JSON-schema keys, placeholder paths, HTTP routes,
+		// MCP method names, JSON pointer syntax, and ~paths must all
+		// stay out of stale / dead refs.
+		{"ANTHROPIC_API_KEY", tokenOther},
+		{"AWS_ACCESS_KEY_ID", tokenOther},
+		{"GORTEX_LLM_PROVIDER", tokenOther},
+		{"additionalProperties", tokenOther},
+		{"generateContent", tokenOther},
+		{"responseSchema", tokenOther},
+		{"<exact-name>", tokenOther},
+		{"POST /mcp", tokenOther},
+		{"git status", tokenOther},
+		{"notifications/tools/list_changed", tokenOther},
+		// `pkg/foo.go::Bar` is the canonical docs placeholder shape;
+		// it never resolves to a real graph node or a real file. The
+		// classifier returns tokenOther because the embedded `::`
+		// disqualifies it from path classification AND the embedded
+		// `/` disqualifies it from the symbol identifier regexp.
+		{"pkg/foo.go::Bar", tokenOther},
+		{"~/.claude/CLAUDE.md", tokenPath}, // ~ + extension
 	}
 	for _, c := range cases {
 		got := classifyToken(c.in)
@@ -93,11 +119,15 @@ func TestAuditDetectsStaleAndDead(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Use capitalized symbol names so they pass the post-fix
+	// classifier — bare lowercase-first camelCase is no longer
+	// considered a stale-symbol candidate (it's indistinguishable
+	// from docs vocabulary like additionalProperties).
 	claudeMd := `# CLAUDE.md
 
 ## Tools
-- Use ` + "`handleLive`" + ` for live ops.
-- Removed: ` + "`handleStale`" + ` (gone in v2).
+- Use ` + "`HandleLive`" + ` for live ops.
+- Removed: ` + "`HandleStale`" + ` (gone in v2).
 
 ## Paths
 - See ` + "`internal/real.go`" + ` (exists).
@@ -108,18 +138,18 @@ func TestAuditDetectsStaleAndDead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fg := newFakeGraph("handleLive")
+	fg := newFakeGraph("HandleLive")
 	rep := Audit(fg, tmp, []string{"CLAUDE.md"})
 
 	if rep.FilesScanned != 1 {
 		t.Fatalf("FilesScanned = %d, want 1", rep.FilesScanned)
 	}
 
-	if !containsToken(rep.StaleRefs, "handleStale") {
-		t.Errorf("expected handleStale in stale refs, got %+v", rep.StaleRefs)
+	if !containsToken(rep.StaleRefs, "HandleStale") {
+		t.Errorf("expected HandleStale in stale refs, got %+v", rep.StaleRefs)
 	}
-	if containsToken(rep.StaleRefs, "handleLive") {
-		t.Errorf("handleLive should NOT be stale — it's in the graph")
+	if containsToken(rep.StaleRefs, "HandleLive") {
+		t.Errorf("HandleLive should NOT be stale — it's in the graph")
 	}
 
 	if !containsPath(rep.DeadPaths, "internal/ghost.go") {

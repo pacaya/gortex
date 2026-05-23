@@ -171,9 +171,16 @@ func symbolExists(g GraphLookup, tok string) bool {
 }
 
 // pathExists checks whether the token resolves to an existing filesystem path
-// under root. Leading `./` is stripped.
+// under root. Leading `./` is stripped; a leading `~` expands to the user's
+// home directory so config docs that cite `~/.claude/CLAUDE.md` aren't
+// reported as dead.
 func pathExists(root, p string) bool {
 	p = strings.TrimPrefix(p, "./")
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			p = home + strings.TrimPrefix(p, "~")
+		}
+	}
 	if filepath.IsAbs(p) {
 		_, err := os.Stat(p)
 		return err == nil
