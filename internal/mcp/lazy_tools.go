@@ -66,10 +66,15 @@ var hotEagerTools = map[string]bool{
 // keyword.
 const LazyToolsSearchName = "tools_search"
 
-// lazyDisableEnv flips the registry into pass-through mode when set to
-// a truthy value at construction time. Useful for older MCP clients
-// that haven't been taught the discovery flow.
-const lazyDisableEnv = "GORTEX_LAZY_TOOLS"
+// lazyToolsEnv toggles the lazy / pass-through split. Default is
+// disabled (every tool ships eagerly) because the dominant stdio MCP
+// clients in the wild — Claude Code among them — do not refresh
+// tools/list on `notifications/tools/list_changed`, which makes the
+// post-promotion surface unreachable. Set to a truthy value
+// (1 / true / yes / on / enable / enabled) to opt back in on
+// lazy-aware clients (HTTP transport, IDE plugins that follow the
+// notification).
+const lazyToolsEnv = "GORTEX_LAZY_TOOLS"
 
 // deferredTool holds the tool definition + handler we stashed away so
 // the discovery tool can return the schema and (optionally) promote it
@@ -105,14 +110,18 @@ func newLazyToolRegistry(enabled bool) *lazyToolRegistry {
 	}
 }
 
-// lazyEnabledFromEnv reads the opt-out env var. Default is enabled.
+// lazyEnabledFromEnv reads the opt-in env var. Default is disabled —
+// the lazy split only works when the client honours
+// notifications/tools/list_changed and re-fetches tools/list mid
+// session. Claude Code (and most stdio MCP hosts) do not, so a
+// promoted tool stays unreachable for them. Truthy value opts in.
 func lazyEnabledFromEnv() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(lazyDisableEnv)))
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(lazyToolsEnv)))
 	switch v {
-	case "0", "false", "no", "off", "disable", "disabled":
-		return false
+	case "1", "true", "yes", "on", "enable", "enabled":
+		return true
 	}
-	return true
+	return false
 }
 
 // Enabled reports whether the registry is active. When false, Register

@@ -84,9 +84,10 @@ func LintToolSchema(tool mcp.Tool) []SchemaViolation {
 }
 
 // LintAllTools lints every tool currently registered live with the
-// server. Run it with lazy registration disabled
-// (GORTEX_LAZY_TOOLS=0) so the full surface is live and linted in one
-// pass. Returns every violation across every tool.
+// server. The lazy split is off by default, so the full surface is
+// already live; if a test or runtime sets GORTEX_LAZY_TOOLS=1 to
+// exercise the deferred path, clear it before linting. Returns every
+// violation across every tool.
 func LintAllTools(s *Server) []SchemaViolation {
 	var out []SchemaViolation
 	for _, st := range s.mcpServer.ListTools() {

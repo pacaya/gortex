@@ -366,6 +366,7 @@ func TestHandleReindexRepository_MultiRepoRejectsUntrackedPath(t *testing.T) {
 // catalog. After promotion it lands on the live MCP server with the
 // `paths` argument declared on its schema.
 func TestReindexRepositoryTool_RegisteredAndDiscoverable(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"),
 		[]byte("package main\n\nfunc Main() {}\n"), 0o644))

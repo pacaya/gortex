@@ -416,18 +416,21 @@ gortex query stats                      Show graph statistics
 
 All query commands support `--format text|json|dot` (DOT output for Graphviz visualization).
 
-## MCP Tools (100+, lazy-loaded)
+## MCP Tools (100+)
 
-### Tool surface — lazy discovery (N50)
+### Tool surface — lazy discovery (opt-in)
 
-By default the server publishes only the 25 hot tools listed below at session
-start; the remaining ~70 schemas stay hidden in a deferred catalog and are
-fetched on demand via the `tools_search` discovery tool. Cold `tools/list`
-drops from ~88 tools down to ~28 — roughly 68% fewer schema bytes on the
-first round-trip — without giving up access to anything: the full surface is
-one `tools_search` call away.
+By default the server publishes the entire tool surface in the initial
+`tools/list` payload. The lazy / discovery flow — where only a hot set of
+~25 tools ships eagerly and the rest are fetched on demand through
+`tools_search` — is opt-in via `GORTEX_LAZY_TOOLS=1`. The opt-in default
+exists because dominant stdio MCP hosts (Claude Code among them) don't
+re-fetch `tools/list` when the server fires
+`notifications/tools/list_changed`, leaving every post-promotion tool
+unreachable; eager registration sidesteps that.
 
 ```jsonc
+// With GORTEX_LAZY_TOOLS=1 set:
 // Browse — list deferred tool names without schemas.
 {"name":"tools_search","arguments":{}}
 
@@ -443,8 +446,8 @@ one `tools_search` call away.
 
 Returned tools are auto-promoted (`promote:false` opts out) and the server
 fires `notifications/tools/list_changed` for any client that subscribes.
-Set `GORTEX_LAZY_TOOLS=0` to opt every tool back into eager registration —
-useful for older MCP clients that don't speak the discovery flow.
+Enable the lazy split with `GORTEX_LAZY_TOOLS=1` on HTTP transport or
+IDE plugins that honour the notification.
 
 The `tool_profile` tool reports the active surface — which tools are live
 vs. deferred, their scopes, and (with a `tool` argument) a single tool's

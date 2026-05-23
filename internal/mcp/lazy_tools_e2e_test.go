@@ -17,6 +17,7 @@ import (
 // failure in handleToolsSearch could still pass while the
 // JSON-RPC wiring quietly regresses.
 func TestLazyRegistration_E2EOverMCPDispatch(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	ctx := context.Background()
 

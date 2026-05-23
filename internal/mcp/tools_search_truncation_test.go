@@ -12,6 +12,7 @@ import (
 // the result reports omitted_count and the text advises a select: retry so
 // the agent does not silently lose the tool it was looking for.
 func TestToolsSearch_TruncationAdvisesExactNameRetry(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 
 	// "memories" matches the whole memory tool family — a deliberately
@@ -35,6 +36,7 @@ func TestToolsSearch_TruncationAdvisesExactNameRetry(t *testing.T) {
 // TestToolsSearch_NoMatchAdvisesExactNameRetry covers the zero-result
 // path: an agent that mistyped a keyword is pointed at select:.
 func TestToolsSearch_NoMatchAdvisesExactNameRetry(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	result := callToolsSearch(t, srv, map[string]any{"query": "xyzzyplugh"})
 	require.False(t, result.IsError)
@@ -46,6 +48,7 @@ func TestToolsSearch_NoMatchAdvisesExactNameRetry(t *testing.T) {
 // a query that is a deferred tool's name verbatim surfaces that tool as
 // the top hit, even when other tools share one of the query tokens.
 func TestToolsSearch_WholeQueryNameMatchRanksFirst(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	require.Contains(t, srv.lazy.DeferredNames(), "taint_paths")
 

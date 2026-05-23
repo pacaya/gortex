@@ -16,9 +16,10 @@ import (
 // the N50 row defines: the hot set is published on session start so an
 // agent can do its work without paying any discovery cost for them.
 func TestLazyRegistration_HotEagerToolsAreInToolsList(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	require.NotNil(t, srv.lazy, "lazy registry must be installed at construction")
-	require.True(t, srv.lazy.Enabled(), "lazy registry default state is enabled (no opt-out env)")
+	require.True(t, srv.lazy.Enabled(), "GORTEX_LAZY_TOOLS=1 must enable the registry")
 
 	live := srv.mcpServer.ListTools()
 	require.NotNil(t, live)
@@ -40,6 +41,7 @@ func TestLazyRegistration_HotEagerToolsAreInToolsList(t *testing.T) {
 // not in hotEagerTools is hidden from the live tools/list and lives in
 // the lazy registry instead.
 func TestLazyRegistration_DeferredToolsAreHidden(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	live := srv.mcpServer.ListTools()
 	deferredNames := srv.lazy.DeferredNames()
@@ -79,6 +81,7 @@ func TestLazyRegistration_DeferredToolsAreHidden(t *testing.T) {
 // declares listChanged=true so lazy-aware clients refresh tools/list
 // when a deferred tool is promoted.
 func TestLazyRegistration_ListChangedAdvertised(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	req := mcplib.InitializeRequest{}
 	req.Params.ProtocolVersion = mcplib.LATEST_PROTOCOL_VERSION
@@ -124,6 +127,7 @@ func TestLazyRegistration_ListChangedAdvertised(t *testing.T) {
 // browse mode — the entry point an agent uses to learn the catalog
 // without paying any schema bytes upfront.
 func TestToolsSearch_BrowseReturnsDeferredNames(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	expectNames := srv.lazy.DeferredNames()
 	require.NotEmpty(t, expectNames)
@@ -143,6 +147,7 @@ func TestToolsSearch_BrowseReturnsDeferredNames(t *testing.T) {
 // the tools migrate into tools/list, the listChanged notification
 // fires, and a subsequent tools/call dispatches normally.
 func TestToolsSearch_KeywordPromotesAndReturnsSchemas(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	// Sanity: memories tools start deferred.
 	require.Contains(t, srv.lazy.DeferredNames(), "store_memory")
@@ -179,6 +184,7 @@ func TestToolsSearch_KeywordPromotesAndReturnsSchemas(t *testing.T) {
 // schemas without keyword guessing — important for the "I know the
 // name, I just need the schema" path.
 func TestToolsSearch_SelectByExactName(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	want := []string{"flow_between", "taint_paths", "find_clones"}
 	for _, n := range want {
@@ -204,6 +210,7 @@ func TestToolsSearch_SelectByExactName(t *testing.T) {
 // peek at a schema without migrating the tool — useful for reading
 // docs without committing to use.
 func TestToolsSearch_PromoteFalseLeavesCatalogIntact(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	before := srv.lazy.CountDeferred()
 	result := callToolsSearch(t, srv, map[string]any{"query": "select:contracts", "promote": false})
@@ -220,6 +227,7 @@ func TestToolsSearch_PromoteFalseLeavesCatalogIntact(t *testing.T) {
 // blank result still returns 200 with deferred_remaining metadata —
 // agents can iterate without fearing failure modes.
 func TestToolsSearch_NoMatchesIsNotAnError(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	// xyzzyplugh: a nonce string unlikely to appear in any tool name
 	// or description. We tokenize on alphanumeric boundaries, so the
@@ -235,6 +243,7 @@ func TestToolsSearch_NoMatchesIsNotAnError(t *testing.T) {
 // TestToolsSearch_RequiredKeywordFiltering exercises the "+keyword"
 // syntax for narrowing matches.
 func TestToolsSearch_RequiredKeywordFiltering(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	result := callToolsSearch(t, srv, map[string]any{"query": "+overlay drop", "max_results": 20})
 	require.False(t, result.IsError)
@@ -248,8 +257,9 @@ func TestToolsSearch_RequiredKeywordFiltering(t *testing.T) {
 // TestLazyRegistration_DisabledByEnvKeepsEverythingEager confirms the
 // opt-out switch for clients that don't speak the discovery flow.
 func TestLazyRegistration_DisabledByEnvKeepsEverythingEager(t *testing.T) {
-	// t.Setenv already restores the prior value on test exit; no
-	// extra Setenv / Unsetenv needed.
+	// Default is now disabled; "0" still resolves to disabled. The
+	// behaviour we care about — full surface in tools/list, no
+	// tools_search noise — is unchanged.
 	t.Setenv("GORTEX_LAZY_TOOLS", "0")
 
 	srv, _ := setupTestServer(t)
@@ -270,6 +280,7 @@ func TestLazyRegistration_DisabledByEnvKeepsEverythingEager(t *testing.T) {
 // tool. This is the key invariant: discovery promotes; promotion does
 // not change behaviour.
 func TestLazyRegistration_PromotedToolsDispatchNormally(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	require.NotContains(t, srv.mcpServer.ListTools(), "list_inspections")
 
@@ -318,6 +329,7 @@ func TestLazyRegistration_PromotedToolsDispatchNormally(t *testing.T) {
 // tools_search. Failing this test means the hot set has crept out of
 // bounds — re-audit before bumping the bound.
 func TestLazyRegistration_HitsSpecTarget(t *testing.T) {
+	t.Setenv("GORTEX_LAZY_TOOLS", "1")
 	srv, _ := setupTestServer(t)
 	eager := len(srv.mcpServer.ListTools())
 	deferred := srv.lazy.CountDeferred()
