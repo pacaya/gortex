@@ -610,22 +610,16 @@ func (idx *Indexer) RunGlobalGraphPasses(ctx context.Context) {
 			zap.Int("edges", crossRepoEdges),
 		)
 	}
-	// Reachability index — runs last in the global pass so every
-	// preceding pass's edges are baked into the precomputed depth-1/2/3
-	// sets. Mirrors the per-repo IndexCtx tail so daemon warm-starts
-	// have the same fast path multi-repo orchestrators get. Reporter is
-	// triggered up front so an operator sees the stage start; the Ctx
-	// variant emits per-N-seed heartbeats inside the BFS loop.
-	reporter.Report("reachability index (global)", 0, 0)
-	if reachStats := reach.BuildIndexCtx(ctx, idx.graph); reachStats.NodesIndexed > 0 {
-		idx.logger.Info("reachability index built (global)",
-			zap.Int("nodes", reachStats.NodesIndexed),
-			zap.Int("d1_entries", reachStats.EntriesD1),
-			zap.Int("d2_entries", reachStats.EntriesD2),
-			zap.Int("d3_entries", reachStats.EntriesD3),
-			zap.Uint64("build", reachStats.Build),
-		)
-	}
+	// Reachability index — used to be precomputed here for every
+	// impact seed. The eager pass was retired because the breakeven
+	// math doesn't work: on a 200 k-seed graph (k8s) the build took
+	// ~2000 s of cold-index wall time to save ~10 ms per
+	// AnalyzeImpact call, requiring ~200 k queries to pay off — well
+	// beyond any realistic agent session. Lookups are now
+	// compute-on-first-use; we just invalidate the cache so any
+	// surviving stamps from a previous build don't shadow the fresh
+	// graph state.
+	reach.InvalidateIndex()
 }
 
 // cloneThreshold returns the configured Jaccard similarity cutoff for
@@ -1931,23 +1925,17 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 					zap.Int("edges", extCalls),
 				)
 			}
-			// Reachability index — depth-1/2/3 incoming-reach sets on
-			// every impact seed, stamped into Node.Meta so AnalyzeImpact
-			// answers in O(seeds × reach) map lookups instead of a live
-			// BFS. Runs last so every preceding pass's edges (resolver,
-			// semantic enrichment, gRPC stubs) are folded in. Marker is
-			// emitted up front so an operator sees the stage start; the
-			// Ctx variant emits per-N-seed heartbeats inside the BFS.
-			reporter.Report("reachability index", 0, 0)
-			if reachStats := reach.BuildIndexCtx(ctx, idx.graph); reachStats.NodesIndexed > 0 {
-				idx.logger.Info("reachability index built",
-					zap.Int("nodes", reachStats.NodesIndexed),
-					zap.Int("d1_entries", reachStats.EntriesD1),
-					zap.Int("d2_entries", reachStats.EntriesD2),
-					zap.Int("d3_entries", reachStats.EntriesD3),
-					zap.Uint64("build", reachStats.Build),
-				)
-			}
+			// Reachability index — used to be precomputed for every
+			// impact seed here. The eager pass was retired because the
+			// breakeven was untenable on monorepo graphs (k8s:
+			// ~2000 s build to save ~10 ms per query, ~200 k-query
+			// breakeven). reach.Lookup now computes the BFS on first
+			// access per seed and caches the result. The
+			// InvalidateIndex call bumps the build counter so any
+			// stale stamps from a prior build (e.g. snapshot reload
+			// before a partial mutation) no longer shadow the live
+			// graph state.
+			reach.InvalidateIndex()
 		}
 	}
 

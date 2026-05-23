@@ -163,13 +163,53 @@ func TestBuildIndex_FilesAndImportsExcludedFromTiers(t *testing.T) {
 	}
 }
 
-// TestLookup_FallbackWhenNoBuildStamp asserts that a node without the
-// build stamp returns hit=false, signalling consumers to live-walk.
-func TestLookup_FallbackWhenNoBuildStamp(t *testing.T) {
+// TestLookup_LazyComputesOnFirstMiss asserts that Lookup is self-
+// populating: a seed that has never been precomputed (no eager
+// BuildIndex run) still returns a hit, having run the BFS on demand
+// and stamped the result for subsequent lookups. The behaviour
+// switched from "fall back to live walk via consumer fallback" to
+// "compute and cache transparently inside Lookup" when the eager
+// pass was retired from the cold-index hot path.
+func TestLookup_LazyComputesOnFirstMiss(t *testing.T) {
 	g, ids := newCallChain(t, 3)
-	// Deliberately skip BuildIndex.
-	if _, _, _, hit := Lookup(g, ids[2]); hit {
-		t.Error("expected hit=false when index has not been built")
+	// Deliberately skip BuildIndex — lazy Lookup must still answer.
+	seed := ids[2]
+	d1, d2, d3, hit := Lookup(g, seed)
+	if !hit {
+		t.Fatal("lazy Lookup should return hit=true for a valid impact seed even without an eager BuildIndex")
+	}
+	// On a 3-node A→B→C chain, seed C has B at d1 and A at d2.
+	if len(d1) != 1 || d1[0].ID != ids[1] {
+		t.Errorf("expected d1=[%s], got %#v", ids[1], d1)
+	}
+	if len(d2) != 1 || d2[0].ID != ids[0] {
+		t.Errorf("expected d2=[%s], got %#v", ids[0], d2)
+	}
+	if len(d3) != 0 {
+		t.Errorf("expected d3=[], got %#v", d3)
+	}
+	// The lazy compute should have stamped the result for next time.
+	n := g.GetNode(seed)
+	if n == nil || n.Meta == nil {
+		t.Fatalf("lazy Lookup should have stamped result on %s", seed)
+	}
+	if _, ok := n.Meta[MetaReachBuild]; !ok {
+		t.Errorf("lazy Lookup should have stamped MetaReachBuild on %s", seed)
+	}
+}
+
+// TestLookup_NonSeedKindStaysFalse asserts that Lookup never tries to
+// lazy-compute for a node whose kind is not an impact seed (file,
+// import, param, …). Consumers that pass a non-seed ID get hit=false
+// so the live-BFS fallback in AnalyzeImpact handles the edge case
+// (impact analysis from a file node walks file-import edges, not
+// callers — semantics outside reach's mandate).
+func TestLookup_NonSeedKindStaysFalse(t *testing.T) {
+	g, _ := newCallChain(t, 3)
+	fileNode := &graph.Node{ID: "test.go", Kind: graph.KindFile, FilePath: "test.go"}
+	g.AddNode(fileNode)
+	if _, _, _, hit := Lookup(g, "test.go"); hit {
+		t.Error("Lookup must return hit=false for a non-impact-seed kind")
 	}
 }
 

@@ -676,11 +676,16 @@ func (w *Watcher) patchGraph(path string, kind ChangeKind) {
 
 	// Rebuild the reachability index so AnalyzeImpact /
 	// explain_change_impact stay correct against the patched topology.
-	// Runs post-patch (final state, not a half-applied delta) and
-	// only when the patch actually changed nodes or edges — a no-op
-	// patch leaves the existing stamps valid.
+	// Lazy reach: instead of eagerly recomputing every seed's reach
+	// after a watcher-driven patch (the old reach.BuildIndex call
+	// here paid the full O(seeds) cost on every file edit), we just
+	// invalidate the build counter so subsequent AnalyzeImpact calls
+	// recompute on demand against the fresh graph. No-op patches
+	// (nodesAdded == 0 && nodesRemoved == 0 && edgesAdded == 0 &&
+	// edgesRemoved == 0) leave the counter alone so existing caches
+	// stay valid.
 	if nodesAdded+nodesRemoved+edgesAdded+edgesRemoved > 0 {
-		reach.BuildIndex(w.indexer.graph)
+		reach.InvalidateIndex()
 	}
 
 	w.historyMu.Lock()

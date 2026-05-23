@@ -320,26 +320,125 @@ type Entry struct {
 	Label string
 }
 
-// Lookup returns the precomputed per-depth reach for seedID and a
-// hit boolean. hit=false means the seed lacks a build stamp — either
-// the index has not been built yet, the node was added after the
-// last build, or its kind is not an impact seed. Callers must fall
-// back to a live walk in that case.
+// Lookup returns the per-depth reach for seedID. On a fresh cache hit
+// (build counter matches current generation) it returns the cached
+// tiers in sub-millisecond. On a miss — first call for this seed, or
+// the global build counter has advanced past the stamped value
+// because the graph mutated — it runs the BFS on demand under
+// g.ResolveMutex(), caches the result onto n.Meta, and returns the
+// fresh tiers. Returns hit=false only when seedID names no node or
+// names a node whose kind is not an impact seed (KindFunction,
+// KindMethod, KindType, KindInterface).
+//
+// This is the "lazy reach index" — the eager BuildIndex pass that
+// used to walk every impact seed during cold-index has been removed
+// from the IndexCtx hot path because the breakeven was untenable on
+// monorepo graphs: ~2000 s of cold-index work on k8s to save ~10 ms
+// per query, requiring ~200 k queries to break even. The lazy form
+// pays the 10 ms only on the first AnalyzeImpact call that names a
+// given seed, then caches forever. BuildIndex remains available for
+// `gortex enrich reach` (explicit prebuild) and for callers that
+// want to pay the cost up front under controlled conditions.
 func Lookup(g *graph.Graph, seedID string) (d1, d2, d3 []Entry, hit bool) {
 	if g == nil {
 		return nil, nil, nil, false
 	}
 	n := g.GetNode(seedID)
-	if n == nil || n.Meta == nil {
+	if n == nil {
 		return nil, nil, nil, false
 	}
-	if _, ok := n.Meta[MetaReachBuild]; !ok {
+	if !ImpactSeedKind(n.Kind) {
+		return nil, nil, nil, false
+	}
+
+	currentBuild := atomic.LoadUint64(&buildCounter)
+	// Fast path: existing stamp matches the current build generation.
+	if d1, d2, d3, ok := readCached(n, currentBuild); ok {
+		return d1, d2, d3, true
+	}
+
+	// Slow path: compute the tiers and cache them. Acquire the resolve
+	// mutex so the Meta writes don't race other graph-wide passes that
+	// already serialise on it (markTestSymbolsAndEmitEdges, clone
+	// detection, ResolveTemporalCalls).
+	mu := g.ResolveMutex()
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Re-check after acquiring the lock: another goroutine may have
+	// computed and cached this seed while we were waiting.
+	if d1, d2, d3, ok := readCached(n, currentBuild); ok {
+		return d1, d2, d3, true
+	}
+
+	tiers := compute(g, seedID)
+	if n.Meta == nil {
+		n.Meta = make(map[string]any, 10)
+	}
+	n.Meta[MetaReachBuild] = currentBuild
+	setOrDeleteStrings(n.Meta, MetaReachD1, tiers[0].IDs)
+	setOrDeleteStrings(n.Meta, MetaReachD2, tiers[1].IDs)
+	setOrDeleteStrings(n.Meta, MetaReachD3, tiers[2].IDs)
+	setOrDeleteFloats(n.Meta, MetaReachD1Conf, tiers[0].Conf)
+	setOrDeleteFloats(n.Meta, MetaReachD2Conf, tiers[1].Conf)
+	setOrDeleteFloats(n.Meta, MetaReachD3Conf, tiers[2].Conf)
+	setOrDeleteStrings(n.Meta, MetaReachD1Label, tiers[0].Labels)
+	setOrDeleteStrings(n.Meta, MetaReachD2Label, tiers[1].Labels)
+	setOrDeleteStrings(n.Meta, MetaReachD3Label, tiers[2].Labels)
+
+	d1 = readTier(n.Meta, MetaReachD1, MetaReachD1Conf, MetaReachD1Label)
+	d2 = readTier(n.Meta, MetaReachD2, MetaReachD2Conf, MetaReachD2Label)
+	d3 = readTier(n.Meta, MetaReachD3, MetaReachD3Conf, MetaReachD3Label)
+	return d1, d2, d3, true
+}
+
+// readCached reads the stamped reach tiers off n.Meta when the stamp
+// matches currentBuild. Returns ok=false when the stamp is missing
+// (never built), stale (graph has changed since), or has the wrong
+// Go type (snapshot from an older format).
+func readCached(n *graph.Node, currentBuild uint64) (d1, d2, d3 []Entry, ok bool) {
+	if n.Meta == nil {
+		return nil, nil, nil, false
+	}
+	raw, present := n.Meta[MetaReachBuild]
+	if !present {
+		return nil, nil, nil, false
+	}
+	var stamped uint64
+	switch v := raw.(type) {
+	case uint64:
+		stamped = v
+	case uint32:
+		stamped = uint64(v)
+	case int:
+		stamped = uint64(v)
+	case int64:
+		stamped = uint64(v)
+	default:
+		return nil, nil, nil, false
+	}
+	if stamped != currentBuild {
 		return nil, nil, nil, false
 	}
 	d1 = readTier(n.Meta, MetaReachD1, MetaReachD1Conf, MetaReachD1Label)
 	d2 = readTier(n.Meta, MetaReachD2, MetaReachD2Conf, MetaReachD2Label)
 	d3 = readTier(n.Meta, MetaReachD3, MetaReachD3Conf, MetaReachD3Label)
 	return d1, d2, d3, true
+}
+
+// InvalidateIndex advances the global build counter so every future
+// Lookup recomputes against the new graph state. Call this whenever
+// the graph mutates in a way that could change reach sets — at the
+// end of every IndexCtx / IncrementalReindex / global-pass run.
+//
+// The cached Meta entries on nodes that survived the mutation are
+// not deleted; they're simply tagged with a stale build counter, so
+// the next Lookup on each falls through to a fresh compute. This is
+// strictly cheaper than walking all nodes to clear Meta — the
+// invalidation is O(1) and only the seeds actually queried pay the
+// recompute cost.
+func InvalidateIndex() {
+	atomic.AddUint64(&buildCounter, 1)
 }
 
 // readTier reconstructs an []Entry from the parallel arrays. Missing
