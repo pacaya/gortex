@@ -59,9 +59,20 @@ func newNotebookManager(repoPath string) *notebookManager {
 
 // Save persists a notebook entry. Generates an ID when missing.
 // Returns the entry as it landed on disk (id + timestamps set).
+//
+// Errors when the manager has no backing directory — the daemon's
+// multi-repo path historically called InitNotebook("") which left
+// nm.dir empty, and the old behaviour was to *silently succeed*: the
+// caller got an ID and timestamps back but no entry ever landed on
+// disk, so notebook_list / notebook_find / notebook_show / notebook_used
+// all returned empty afterwards. Honest failure beats phantom success.
 func (nm *notebookManager) Save(entry notebookEntry) (notebookEntry, error) {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
+
+	if nm.dir == "" {
+		return notebookEntry{}, errors.New("notebook is not initialised")
+	}
 
 	if entry.ID == "" {
 		entry.ID = newNotebookID()
@@ -72,9 +83,6 @@ func (nm *notebookManager) Save(entry notebookEntry) (notebookEntry, error) {
 	}
 	entry.Updated = now
 
-	if nm.dir == "" {
-		return entry, nil
-	}
 	if err := os.MkdirAll(nm.dir, 0o755); err != nil {
 		return entry, fmt.Errorf("mkdir notebook: %w", err)
 	}

@@ -22,6 +22,7 @@ import (
 	gortexmcp "github.com/zzet/gortex/internal/mcp"
 	"github.com/zzet/gortex/internal/parser"
 	"github.com/zzet/gortex/internal/parser/languages"
+	"github.com/zzet/gortex/internal/platform"
 	"github.com/zzet/gortex/internal/progress"
 	"github.com/zzet/gortex/internal/query"
 	"github.com/zzet/gortex/internal/savings"
@@ -458,7 +459,12 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	srv.InitFeedback("", "")
 	srv.InitNotes("", "")
 	srv.InitMemories("", "")
-	srv.InitNotebook("")
+	// Daemon mode has no single repo to anchor a per-repo notebook
+	// against, but the agent still wants persistence across daemon
+	// restarts and shared visibility across sessions. Fall back to a
+	// global notebook under the legacy data dir; CLI mode keeps the
+	// per-repo .gortex/notebook/ path wired in cmd/gortex/mcp.go.
+	srv.InitNotebook(filepath.Join(platform.LegacyDataDir(), "notebook-cache"))
 	srv.InitCombo("", "", gortexmcp.ModeAI)
 	srv.InitFrecency("", "", gortexmcp.ModeAI)
 

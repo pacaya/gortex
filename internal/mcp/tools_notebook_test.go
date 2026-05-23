@@ -211,12 +211,15 @@ func TestNotebook_FrontmatterRoundTrip(t *testing.T) {
 
 func TestNotebook_NoDirManagerStillSafe(t *testing.T) {
 	nm := newNotebookManager("")
-	// Save returns an entry but doesn't error.
-	e, err := nm.Save(notebookEntry{Title: "x"})
-	require.NoError(t, err)
-	assert.NotEmpty(t, e.ID)
-	// Get / List / Find return empty/false on a no-disk manager.
-	_, ok := nm.Get(e.ID)
+	// Save must NOT silently succeed — the prior behaviour returned a
+	// fresh ID and timestamps but never persisted, so subsequent
+	// list/find/show/used all returned empty and the caller had no
+	// signal anything was wrong. Honest error here.
+	_, err := nm.Save(notebookEntry{Title: "x"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not initialised")
+	// Get / List / Find continue to return empty/false consistently.
+	_, ok := nm.Get("anything")
 	assert.False(t, ok)
 	assert.Empty(t, nm.List())
 }
