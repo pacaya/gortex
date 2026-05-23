@@ -96,14 +96,30 @@ var hashParams = func() [NumHashes][2]uint64 {
 // signature. The bool result is false when the body has fewer than
 // MinTokens normalised tokens, in which case the caller should skip
 // clone detection for that symbol entirely.
+//
+// Wraps ComputeSignatureWithTokens; callers that need the token count
+// for length-stratified LSH should call the *WithTokens variant
+// directly.
 func ComputeSignature(body string) (Signature, bool) {
+	sig, _, ok := ComputeSignatureWithTokens(body)
+	return sig, ok
+}
+
+// ComputeSignatureWithTokens is ComputeSignature plus the normalised-
+// token count of the body. The token count is what
+// DetectPairsStratifiedWithStats uses to length-bucket items: pairs at
+// the 0.82 Jaccard threshold differ in token count by at most ~22%
+// (Jaccard ≤ min/max ⇒ max ≤ min/0.82), so items in non-adjacent
+// length classes cannot be real clones and skipping their cross-class
+// comparisons is exact, not approximate.
+func ComputeSignatureWithTokens(body string) (Signature, int, bool) {
 	tokens := Tokenize(body)
 	if len(tokens) < MinTokens {
-		return Signature{}, false
+		return Signature{}, 0, false
 	}
 	shingles := shingleSet(tokens)
 	if len(shingles) == 0 {
-		return Signature{}, false
+		return Signature{}, 0, false
 	}
 
 	var sig Signature
@@ -121,7 +137,7 @@ func ComputeSignature(body string) (Signature, bool) {
 			}
 		}
 	}
-	return sig, true
+	return sig, len(tokens), true
 }
 
 // shingleSet returns the deduplicated set of k-gram hashes for a token

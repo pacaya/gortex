@@ -2,14 +2,31 @@ package clones
 
 import (
 	"hash/fnv"
+	"runtime"
 	"sort"
+	"sync"
 )
 
+// maxSeenCandidates bounds the dedup map size inside EmitCandidatesTo.
+// Once the map hits this many entries it is dropped and dedup is
+// disabled for the remainder of the walk; surviving duplicates land
+// the same candidate pair through the Jaccard filter twice, which is
+// strictly cheap (64 uint32 compares) compared to the alternative of
+// the map growing into the hundreds of MB on a k8s-scale graph.
+// Pair semantic output is unaffected — emit-side deduplication is
+// the caller's responsibility (DetectPairsWithStats hands every
+// Jaccard survivor to its slice).
+const maxSeenCandidates = 8_000_000
+
 // Item pairs a graph node ID with its MinHash signature — the input
-// unit for the LSH detection pass.
+// unit for the LSH detection pass. TokenCount carries the normalised-
+// token count of the body and is used by DetectPairsStratifiedWithStats
+// to length-bucket items before LSH; zero is treated as "unknown" and
+// places the item in every class (the legacy single-bucket path).
 type Item struct {
-	ID  string
-	Sig Signature
+	ID         string
+	Sig        Signature
+	TokenCount int
 }
 
 // Pair is a detected clone relationship between two symbols, carrying
@@ -114,16 +131,37 @@ const maxBucketSize = 256
 // (A < B) form. This is the candidate set the exact Jaccard filter
 // runs over — it is a superset of the true clone pairs.
 //
-// Memory note: the dedup uses a uint64-keyed map (FNV-1a hash of the
-// canonicalised pair) instead of map[[2]string]struct{}. For 10M
-// candidates the string-pair version held ~600 MB of map state; the
-// uint64 form is ~120 MB. The 64-bit hash space has a negligible false-
-// positive rate at this candidate volume, and a missed duplicate just
-// means one redundant Jaccard estimate, which is cheap.
+// Materialises the candidate set in memory. For huge graphs prefer
+// EmitCandidatesTo, which streams the pairs through a callback without
+// holding the full slice.
 func (ix *Index) CandidatePairs() []Pair {
-	seen := make(map[uint64]struct{})
 	var pairs []Pair
-	var skippedBuckets, skippedBucketItems int
+	skippedBuckets, skippedBucketItems := ix.EmitCandidatesTo(func(p Pair) bool {
+		pairs = append(pairs, p)
+		return true
+	})
+	ix.lastSkippedBuckets = skippedBuckets
+	ix.lastSkippedBucketItems = skippedBucketItems
+	return pairs
+}
+
+// EmitCandidatesTo walks the band buckets and calls emit(p) for each
+// candidate pair in canonical (A < B) form. emit returns true to keep
+// walking, false to stop early. Returns the per-bucket-cap telemetry
+// for the walk that just completed.
+//
+// Memory: a single uint64-keyed dedup map (FNV-1a hash of the
+// canonicalised pair). On a fan-out beyond maxSeenCandidates the map
+// is released and dedup is disabled for the rest of the walk — the
+// caller's Jaccard filter then runs twice on any duplicate, which is
+// strictly cheap relative to holding hundreds of MB of map state. The
+// previous slice-based CandidatePairs grew a parallel []Pair plus the
+// dedup map; on k8s with 150k items both reached multi-GB and OOMed
+// the daemon mid-detection. Streaming the candidate set caps in-flight
+// memory at the dedup map alone (~120 MB at 8M entries) regardless of
+// the global candidate count.
+func (ix *Index) EmitCandidatesTo(emit func(Pair) bool) (skippedBuckets, skippedBucketItems int) {
+	seen := make(map[uint64]struct{})
 	for b := range Bands {
 		for _, ids := range ix.bands[b] {
 			if len(ids) < 2 {
@@ -143,22 +181,32 @@ func (ix *Index) CandidatePairs() []Pair {
 					if a > c {
 						a, c = c, a
 					}
-					key := pairKey(a, c)
-					if _, ok := seen[key]; ok {
-						continue
+					if seen != nil {
+						key := pairKey(a, c)
+						if _, ok := seen[key]; ok {
+							continue
+						}
+						seen[key] = struct{}{}
+						if len(seen) >= maxSeenCandidates {
+							// Release the backing storage for GC and
+							// stop deduplicating. Subsequent duplicates
+							// pass through the Jaccard filter twice — a
+							// known, bounded redundancy.
+							seen = nil
+						}
 					}
-					seen[key] = struct{}{}
-					pairs = append(pairs, Pair{A: a, B: c})
+					if !emit(Pair{A: a, B: c}) {
+						ix.lastSkippedBuckets = skippedBuckets
+						ix.lastSkippedBucketItems = skippedBucketItems
+						return
+					}
 				}
 			}
 		}
 	}
-	// Stash the bucket-skip telemetry so callers (DetectPairs) can
-	// surface it via the logger without changing this function's
-	// signature, which is exported.
 	ix.lastSkippedBuckets = skippedBuckets
 	ix.lastSkippedBucketItems = skippedBucketItems
-	return pairs
+	return
 }
 
 // pairKey produces a 64-bit hash of a canonicalised (a < c) ID pair,
@@ -197,34 +245,24 @@ func DetectPairs(items []Item, threshold float64) []Pair {
 }
 
 // DetectPairsWithStats is DetectPairs plus the per-bucket-cap
-// telemetry from the underlying Index.CandidatePairs run. Callers that
-// want to know how much fan-out the cap dropped (warmup-time
+// telemetry from the underlying Index.EmitCandidatesTo walk. Callers
+// that want to know how much fan-out the cap dropped (warmup-time
 // orchestrator logging) use this; everything else can stay on
 // DetectPairs and ignore the counters.
+//
+// Streaming-collect wrapper: the Jaccard filter runs in a parallel
+// worker pool over the candidate stream (no in-memory candidate
+// slice), and surviving pairs are appended to the output. The
+// candidate explosion that used to dominate cold-index memory on
+// huge graphs is replaced by a bounded-channel pipeline.
 func DetectPairsWithStats(items []Item, threshold float64) (pairs []Pair, skippedBuckets, skippedBucketItems int) {
-	if threshold <= 0 {
-		threshold = DefaultThreshold
-	}
-	ix := NewIndex()
-	for _, it := range items {
-		ix.Add(it.ID, it.Sig)
-	}
-	candidates := ix.CandidatePairs()
-	skippedBuckets, skippedBucketItems = ix.SkippedBuckets()
-	out := make([]Pair, 0, len(candidates))
-	for _, p := range candidates {
-		sa, oka := ix.sigs[p.A]
-		sb, okb := ix.sigs[p.B]
-		if !oka || !okb {
-			continue
-		}
-		sim := EstimateJaccard(sa, sb)
-		if sim < threshold {
-			continue
-		}
-		p.Similarity = sim
+	var mu sync.Mutex
+	var out []Pair
+	skippedBuckets, skippedBucketItems = DetectPairsStreamingWithStats(items, threshold, func(p Pair) {
+		mu.Lock()
 		out = append(out, p)
-	}
+		mu.Unlock()
+	})
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Similarity != out[j].Similarity {
 			return out[i].Similarity > out[j].Similarity
@@ -235,6 +273,76 @@ func DetectPairsWithStats(items []Item, threshold float64) (pairs []Pair, skippe
 		return out[i].B < out[j].B
 	})
 	return out, skippedBuckets, skippedBucketItems
+}
+
+// DetectPairsStreamingWithStats is the streaming form of
+// DetectPairsWithStats: each surviving clone pair is handed to emit
+// in completion order rather than collected into a slice. Use this
+// when the caller can act on each pair as it arrives (write an edge
+// to the graph, log a result) so the surviving-pair set never has to
+// be materialised globally.
+//
+// emit is called from a parallel worker pool. The function serialises
+// the emit callback via an internal mutex so callers don't need their
+// own — emit can do non-thread-safe work directly. The caller can
+// expect at most NumCPU concurrent in-flight Jaccard estimates and
+// one in-flight emit at a time.
+//
+// Returns the per-bucket-cap telemetry from the underlying LSH walk.
+func DetectPairsStreamingWithStats(items []Item, threshold float64, emit func(Pair)) (skippedBuckets, skippedBucketItems int) {
+	if threshold <= 0 {
+		threshold = DefaultThreshold
+	}
+	if len(items) < 2 {
+		return 0, 0
+	}
+
+	ix := NewIndex()
+	for _, it := range items {
+		ix.Add(it.ID, it.Sig)
+	}
+
+	workers := runtime.NumCPU()
+	if workers < 1 {
+		workers = 1
+	}
+	// Buffer at workers*16 so the producer (single goroutine walking
+	// band buckets) can stay ahead of the slowest consumer without
+	// stalling on per-pair channel back-pressure. Bigger buffers don't
+	// help — the producer's rate is bounded by map iteration, not by
+	// allocation.
+	candCh := make(chan Pair, workers*16)
+	var wg sync.WaitGroup
+	var emitMu sync.Mutex
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range candCh {
+				sa, oka := ix.sigs[p.A]
+				sb, okb := ix.sigs[p.B]
+				if !oka || !okb {
+					continue
+				}
+				sim := EstimateJaccard(sa, sb)
+				if sim < threshold {
+					continue
+				}
+				p.Similarity = sim
+				emitMu.Lock()
+				emit(p)
+				emitMu.Unlock()
+			}
+		}()
+	}
+
+	skippedBuckets, skippedBucketItems = ix.EmitCandidatesTo(func(p Pair) bool {
+		candCh <- p
+		return true
+	})
+	close(candCh)
+	wg.Wait()
+	return skippedBuckets, skippedBucketItems
 }
 
 // ClusterPairs groups detected pairs into connected components via

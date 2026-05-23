@@ -16,6 +16,14 @@ import (
 // and safe across multi-repo graphs.
 const cloneSigMetaKey = "clone_sig"
 
+// cloneTokensMetaKey is the Node.Meta key under which the normalised-
+// token count of a function/method body is stored alongside the clone
+// signature. Used by the length-stratified LSH pass to bucket items
+// into overlapping size classes so a pair with size ratio > ~1.6
+// (Jaccard ≤ 0.625, well below the 0.82 clone threshold) is never
+// considered as a candidate.
+const cloneTokensMetaKey = "clone_tokens"
+
 // applyCloneSignatures is the per-file half of clone detection. It runs
 // inside applyCoverageDomains (gated on the "clones" coverage domain),
 // slices each function/method body out of the file source, computes a
@@ -52,7 +60,7 @@ func applyCloneSignatures(src []byte, result *parser.ExtractionResult) {
 		if body == "" {
 			continue
 		}
-		sig, ok := clones.ComputeSignature(body)
+		sig, tokens, ok := clones.ComputeSignatureWithTokens(body)
 		if !ok {
 			continue
 		}
@@ -60,6 +68,7 @@ func applyCloneSignatures(src []byte, result *parser.ExtractionResult) {
 			n.Meta = map[string]any{}
 		}
 		n.Meta[cloneSigMetaKey] = clones.EncodeSignature(sig)
+		n.Meta[cloneTokensMetaKey] = tokens
 	}
 }
 
@@ -213,14 +222,27 @@ func detectClonesAndEmitEdges(g *graph.Graph, threshold float64) CloneDetectionS
 		if !ok {
 			continue
 		}
-		items = append(items, clones.Item{ID: n.ID, Sig: sig})
+		// Read the stamped token count when present. Legacy nodes
+		// indexed before the stamp was added simply get TokenCount=0,
+		// which lengthClassesOf treats as "unknown" → all classes,
+		// preserving the unstratified behaviour for them.
+		tokens := 0
+		switch v := n.Meta[cloneTokensMetaKey].(type) {
+		case int:
+			tokens = v
+		case int64:
+			tokens = int(v)
+		case float64:
+			tokens = int(v)
+		}
+		items = append(items, clones.Item{ID: n.ID, Sig: sig, TokenCount: tokens})
 	}
 	stats.Items = len(items)
 	if len(items) < 2 {
 		return stats
 	}
 
-	detected, sb, sbi := clones.DetectPairsWithStats(items, threshold)
+	detected, sb, sbi := clones.DetectPairsStratifiedWithStats(items, threshold)
 	stats.SkippedBuckets = sb
 	stats.SkippedBucketItems = sbi
 	stats.Pairs = len(detected)
