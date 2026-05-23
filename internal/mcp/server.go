@@ -417,13 +417,22 @@ type lastSearchState struct {
 // savings.Store is attached, each record() call also increments the persistent
 // cumulative totals so "Gortex saved $X this month"-style narratives survive
 // server restarts.
+//
+// parent, when non-nil, is the process-wide aggregate (s.tokenStats) that
+// every per-session counter feeds. Without the fan-out, a fresh session's
+// counter is zero-initialised and graph_stats called from any new session
+// always reports `token_savings.calls_counted: 0` even when the daemon has
+// served thousands of source-fetching calls — the shared default never
+// receives observations because every real call carries a session ID. The
+// parent link aggregates so graph_stats shows a meaningful live total.
 type tokenStats struct {
 	mu             sync.Mutex
 	tokensSaved    int64 // cumulative tokens saved vs reading full files
 	tokensReturned int64 // cumulative tokens actually returned
 	callCount      int64 // number of source-reading tool invocations
 	persistent     *savings.Store
-	repoPath       string // forwarded to savings for per-repo aggregation
+	parent         *tokenStats // process-wide aggregate (nil for the root)
+	repoPath       string      // forwarded to savings for per-repo aggregation
 }
 
 // record adds a single savings observation. node is the symbol whose
@@ -445,8 +454,22 @@ func (ts *tokenStats) record(node *graph.Node, tool string, returned, fullFile i
 	ts.tokensReturned += returned
 	ts.callCount++
 	store := ts.persistent
+	parent := ts.parent
 	fallbackRepo := ts.repoPath
 	ts.mu.Unlock()
+
+	// Fan out to the process-wide aggregate so graph_stats called
+	// outside this session — or from a freshly-created session that
+	// has not itself made a recorded call yet — sees a live counter
+	// that reflects daemon-wide activity. The parent never has a
+	// further parent (we only nest one level deep), so this is bounded.
+	if parent != nil {
+		parent.mu.Lock()
+		parent.tokensSaved += saved
+		parent.tokensReturned += returned
+		parent.callCount++
+		parent.mu.Unlock()
+	}
 
 	// Repo: prefer the node's RepoPrefix so multi-repo daemons attribute
 	// correctly to the actual repo the symbol lives in. Fall back to the
@@ -716,6 +739,9 @@ func NewServer(engine *query.Engine, g *graph.Graph, idx *indexer.Indexer, watch
 		guardRules: guardRules,
 		toolScopes: newScopeRegistry(),
 	}
+	// Wire the process-wide tokenStats as the parent of every
+	// per-session counter so record() fanout aggregates daemon-wide.
+	s.sessions.setParentTokenStats(s.tokenStats)
 	// mcpServer is constructed after s exists so the per-session tool
 	// filter can close over s — toolSurfaceFilter varies the tools/list
 	// surface by the session's planning mode (see tools_mode.go).

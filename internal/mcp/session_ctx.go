@@ -93,13 +93,16 @@ type sessionLocal struct {
 // persistent savings store pointer is threaded in so per-session
 // record() calls still contribute to cumulative totals on disk — each
 // session's in-memory counters are isolated but the file they flush to
-// is shared.
-func newSessionLocal(persistent *savings.Store, repoPath string) *sessionLocal {
+// is shared. parent, when non-nil, is the process-wide tokenStats
+// aggregate; every per-session record() call also bumps it so the
+// shared default reflects daemon-wide live activity.
+func newSessionLocal(persistent *savings.Store, repoPath string, parent *tokenStats) *sessionLocal {
 	return &sessionLocal{
 		session: newSessionState(),
 		tokenStats: &tokenStats{
 			persistent: persistent,
 			repoPath:   repoPath,
+			parent:     parent,
 		},
 	}
 }
@@ -118,10 +121,31 @@ type sessionMap struct {
 	sessions   map[string]*sessionLocal
 	persistent *savings.Store
 	repoPath   string
+	// parent is the process-wide tokenStats aggregate. Each per-session
+	// counter created by get() inherits it as its parent so record()
+	// calls fan out to the daemon-wide totals.
+	parent *tokenStats
 }
 
 func newSessionMap() *sessionMap {
 	return &sessionMap{sessions: make(map[string]*sessionLocal)}
+}
+
+// setParentTokenStats installs the process-wide tokenStats so every
+// session created here aggregates into it. Called once at server
+// construction (Server.attachSessionMap) before any client connects.
+func (m *sessionMap) setParentTokenStats(parent *tokenStats) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.parent = parent
+	for _, sl := range m.sessions {
+		if sl.tokenStats == nil {
+			continue
+		}
+		sl.tokenStats.mu.Lock()
+		sl.tokenStats.parent = parent
+		sl.tokenStats.mu.Unlock()
+	}
 }
 
 // get returns the session state for id, creating it if absent. Never
@@ -131,7 +155,7 @@ func (m *sessionMap) get(id string) *sessionLocal {
 	defer m.mu.Unlock()
 	sl, ok := m.sessions[id]
 	if !ok {
-		sl = newSessionLocal(m.persistent, m.repoPath)
+		sl = newSessionLocal(m.persistent, m.repoPath, m.parent)
 		m.sessions[id] = sl
 	}
 	return sl
