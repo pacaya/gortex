@@ -107,15 +107,31 @@ func main() {
 		die("abs: %v", err)
 	}
 
+	// Resolve which backends to run. -only overrides every -skip flag.
+	wantMem := !*skipMemory
+	wantBolt := !*skipBolt
+	wantSQLite := !*skipSQLite
+	wantKuzu := !*skipKuzu
+	wantCayley := !*skipCayley
+	wantDuckDB := !*skipDuckDB
+	if *only != "" {
+		set := map[string]bool{}
+		for _, s := range strings.Split(*only, ",") {
+			set[strings.TrimSpace(s)] = true
+		}
+		wantMem, wantBolt, wantSQLite = set["memory"], set["bolt"], set["sqlite"]
+		wantKuzu, wantCayley, wantDuckDB = set["kuzu"], set["cayley"], set["duckdb"]
+	}
+
 	var results []benchResult
-	if !*skipMemory {
+	if wantMem {
 		fmt.Fprintln(os.Stderr, "[memory] indexing through in-memory Store...")
 		results = append(results, runBackend("memory", absRoot, *workers, *querySize,
 			func() (graph.Store, func() int64, error) {
 				return graph.New(), func() int64 { return 0 }, nil
 			}))
 	}
-	if !*skipBolt {
+	if wantBolt {
 		fmt.Fprintln(os.Stderr, "[bbolt] indexing through bbolt on-disk Store...")
 		results = append(results, runBackend("bbolt", absRoot, *workers, *querySize,
 			func() (graph.Store, func() int64, error) {
@@ -136,7 +152,7 @@ func main() {
 				return s, diskFn, nil
 			}))
 	}
-	if !*skipSQLite {
+	if wantSQLite {
 		fmt.Fprintln(os.Stderr, "[sqlite] indexing through sqlite on-disk Store...")
 		results = append(results, runBackend("sqlite", absRoot, *workers, *querySize,
 			func() (graph.Store, func() int64, error) {
@@ -157,23 +173,6 @@ func main() {
 				return s, diskFn, nil
 			}))
 	}
-	wantKuzu := !*skipKuzu
-	wantCayley := !*skipCayley
-	wantDuckDB := !*skipDuckDB
-	wantMem := !*skipMemory
-	wantBolt := !*skipBolt
-	wantSQLite := !*skipSQLite
-	if *only != "" {
-		set := map[string]bool{}
-		for _, s := range strings.Split(*only, ",") {
-			set[strings.TrimSpace(s)] = true
-		}
-		wantMem, wantBolt, wantSQLite = set["memory"], set["bolt"], set["sqlite"]
-		wantKuzu, wantCayley, wantDuckDB = set["kuzu"], set["cayley"], set["duckdb"]
-	}
-	_ = wantMem
-	_ = wantBolt
-	_ = wantSQLite
 	if wantKuzu {
 		fmt.Fprintln(os.Stderr, "[kuzu] indexing through KuzuDB (Cypher) Store...")
 		results = append(results, runBackend("kuzu", absRoot, *workers, *querySize,
