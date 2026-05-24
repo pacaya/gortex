@@ -436,18 +436,44 @@ func (s *Store) AddBatch(nodes []*graph.Node, edges []*graph.Edge) {
 	// Pre-filter the inputs so the Appender path only sees rows we
 	// actually intend to insert, and pre-delete every colliding key
 	// so the appended rows don't violate the UNIQUE constraints.
+	//
+	// Also dedupe WITHIN the input slice: the indexer's per-file
+	// AddBatch frequently includes the same node ID multiple times
+	// when a file declares the same identifier in different scopes
+	// (e.g. a `buf` local variable in several functions inside the
+	// same file). The pre-delete handles cross-batch dups; this
+	// dedupes within-batch so the Appender doesn't trip its own
+	// uniqueness check. Last-write-wins matches the per-row AddNode
+	// semantics (INSERT OR REPLACE).
+	seenNodeIDs := make(map[string]int, len(nodes)) // id → index in validNodes
 	validNodes := make([]*graph.Node, 0, len(nodes))
 	for _, n := range nodes {
 		if n == nil || n.ID == "" {
 			continue
 		}
+		if idx, ok := seenNodeIDs[n.ID]; ok {
+			validNodes[idx] = n // last-write-wins
+			continue
+		}
+		seenNodeIDs[n.ID] = len(validNodes)
 		validNodes = append(validNodes, n)
 	}
+	type edgeKey struct {
+		from, to, kind, file string
+		line                 int
+	}
+	seenEdgeKeys := make(map[edgeKey]int, len(edges))
 	validEdges := make([]*graph.Edge, 0, len(edges))
 	for _, e := range edges {
 		if e == nil {
 			continue
 		}
+		k := edgeKey{e.From, e.To, string(e.Kind), e.FilePath, e.Line}
+		if idx, ok := seenEdgeKeys[k]; ok {
+			validEdges[idx] = e // last-write-wins on (from,to,kind,file,line)
+			continue
+		}
+		seenEdgeKeys[k] = len(validEdges)
 		validEdges = append(validEdges, e)
 	}
 	if len(validNodes) == 0 && len(validEdges) == 0 {
