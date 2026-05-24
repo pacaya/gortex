@@ -1510,7 +1510,7 @@ func (idx *Indexer) Index(root string) (*IndexResult, error) {
 // is pulled from ctx via progress.FromContext — attach one with
 // progress.WithReporter to receive stage updates. If no reporter is attached,
 // stage calls are silently dropped.
-func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, error) {
+func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexResult, retErr error) {
 	start := time.Now()
 	reporter := progress.FromContext(ctx)
 
@@ -1519,6 +1519,54 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 		return nil, err
 	}
 	idx.rootPath = absRoot
+
+	// In-memory shadow for cold-start indexing on disk-backed stores.
+	// The disk backends (kuzu / duckdb / cayley) pay ms-level per-call
+	// cost on every read; running the resolver against the disk store
+	// turns its ~100k+ point lookups into many minutes of wall time.
+	// Instead, swap idx.graph to an in-memory *Graph for the whole
+	// IndexCtx pipeline — parse, resolve, all subpasses, every
+	// per-edge MERGE/MATCH stays in memory and pays nanoseconds. At
+	// the end, dump the final state to the disk backend via one
+	// BulkLoad cycle, so the disk has the post-resolve graph and the
+	// bench's query workload runs against the persisted state.
+	//
+	// Guards:
+	//   - Backend must implement graph.BulkLoader (kuzu / duckdb /
+	//     cayley today; bbolt and sqlite skip because their per-call
+	//     overhead is already amortised and the in-memory copy would
+	//     cost more RAM than it saves).
+	//   - Store must be empty (NodeCount == 0 && EdgeCount == 0). The
+	//     final dump is BulkLoad's INSERT-only fast path — running it
+	//     against a non-empty store would corrupt or duplicate.
+	//     Incremental / re-index flows fall through to the per-call
+	//     AddBatch path against the disk store directly.
+	//   - The swap happens before the parse worker pool starts and is
+	//     committed before IndexCtx returns. retErr from the named
+	//     return suppresses the commit when the pipeline errored —
+	//     the disk store stays empty rather than capturing partial
+	//     state.
+	var diskTarget graph.Store
+	var inMemShadow *graph.Graph
+	if bl, ok := idx.graph.(graph.BulkLoader); ok && idx.graph.NodeCount() == 0 && idx.graph.EdgeCount() == 0 {
+		diskTarget = idx.graph
+		inMemShadow = graph.New()
+		idx.graph = inMemShadow
+		defer func() {
+			if retErr != nil {
+				idx.graph = diskTarget
+				return
+			}
+			reporter.Report("persisting bulk graph", 0, 0)
+			bl.BeginBulkLoad()
+			diskTarget.AddBatch(inMemShadow.AllNodes(), inMemShadow.AllEdges())
+			if ferr := bl.FlushBulk(); ferr != nil {
+				retErr = fmt.Errorf("indexer: persist bulk graph: %w", ferr)
+			}
+			reporter.Report("persisting bulk graph", 1, 1)
+			idx.graph = diskTarget
+		}()
+	}
 
 	reporter.Report("walking files", 0, 0)
 
@@ -1634,22 +1682,6 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	var fileCount int64
 	var skippedByTimeout int64
 	var skippedByMinified int64
-
-	// Bulk-load fast path: when the backing Store implements
-	// graph.BulkLoader AND the store is empty (true on every cold
-	// IndexCtx — the bench / daemon both open a fresh backend), the
-	// per-file AddBatch calls below buffer into the backend instead of
-	// round-tripping through its query parser per call. FlushBulk after
-	// wg.Wait() commits everything through the backend's native bulk
-	// primitive (Kuzu COPY FROM, DuckDB long-lived Appender, Cayley
-	// batched ApplyDeltas with deferred mirror rebuild). Backends that
-	// don't implement BulkLoader (in-memory, bbolt, sqlite) skip the
-	// bracket entirely and serve AddBatch inline as today.
-	var bulkLoader graph.BulkLoader
-	if bl, ok := idx.graph.(graph.BulkLoader); ok && idx.graph.NodeCount() == 0 && idx.graph.EdgeCount() == 0 {
-		bulkLoader = bl
-		bulkLoader.BeginBulkLoad()
-	}
 
 	var wg sync.WaitGroup
 	for range workers {
@@ -1801,17 +1833,6 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	}
 	close(fileCh)
 	wg.Wait()
-
-	// Commit the per-file AddBatch buffer through the backend's native
-	// bulk-load primitive. Reported as its own stage so the bench can
-	// see where the parse-phase write cost lands on disk backends.
-	if bulkLoader != nil {
-		reporter.Report("flushing bulk load", 0, 0)
-		if err := bulkLoader.FlushBulk(); err != nil {
-			return nil, fmt.Errorf("indexer: bulk-load flush: %w", err)
-		}
-		reporter.Report("flushing bulk load", 1, 1)
-	}
 
 	if processed > 0 {
 		reporter.Report("parsing", int(processed), totalFiles)
@@ -2019,7 +2040,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (*IndexResult, er
 	idx.indexGen.Add(1) // invalidate the trigram search cache
 
 	nodes, edges := idx.repoNodeEdgeCount()
-	result := &IndexResult{
+	result = &IndexResult{
 		NodeCount:        nodes,
 		EdgeCount:        edges,
 		FileCount:        int(fileCount),
