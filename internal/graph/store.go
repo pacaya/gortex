@@ -2,6 +2,26 @@ package graph
 
 import "sync"
 
+// EdgeReindex is the per-edge payload for ReindexEdges. Edge points
+// at the (already mutated) Edge value the caller wants the store to
+// re-bind; OldTo is the To target the edge had BEFORE the mutation,
+// so the store can drop the stale in-edge index entry for OldTo
+// while writing the new one for Edge.To.
+type EdgeReindex struct {
+	Edge  *Edge
+	OldTo string
+}
+
+// EdgeProvenanceUpdate is the per-edge payload for
+// SetEdgeProvenanceBatch. Edge points at the stored Edge whose
+// origin should be promoted; NewOrigin is the target tier. The store
+// only persists the change (and bumps EdgeIdentityRevisions) when
+// NewOrigin differs from the currently stored Origin.
+type EdgeProvenanceUpdate struct {
+	Edge      *Edge
+	NewOrigin string
+}
+
 // Store is the persistence-and-query backend the rest of gortex sees
 // behind the *Graph type. The only implementation today is the
 // in-memory *Graph; future implementations will include an on-disk
@@ -39,6 +59,18 @@ type Store interface {
 	AddEdge(e *Edge)
 	SetEdgeProvenance(e *Edge, newOrigin string) bool
 	ReindexEdge(e *Edge, oldTo string)
+	// Batched siblings of the per-edge mutators. Same semantics, but
+	// disk backends amortise the per-call transaction overhead by
+	// committing in implementation-chosen chunks (the in-memory
+	// backend just loops). The resolver fans out per-edge mutations
+	// across thousands of edges in a single ResolveAll pass, so the
+	// per-call form was unusable on disk backends without these.
+	// Callers MUST first mutate the *Edge fields they want persisted
+	// (To / Kind / Origin / …) before handing the entry over — these
+	// methods read the post-mutation Edge state and update the
+	// backend's indexes accordingly.
+	ReindexEdges(batch []EdgeReindex)
+	SetEdgeProvenanceBatch(batch []EdgeProvenanceUpdate) (changed int)
 	RemoveEdge(from, to string, kind EdgeKind) bool
 	EvictFile(filePath string) (nodesRemoved, edgesRemoved int)
 	EvictRepo(repoPrefix string) (nodesRemoved, edgesRemoved int)

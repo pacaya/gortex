@@ -771,20 +771,139 @@ func (s *Store) ReindexEdge(e *graph.Edge, oldTo string) {
 		return
 	}
 	_ = s.db.Update(func(tx *bbolt.Tx) error {
-		// Build the old key by temporarily swapping To back.
-		newTo := e.To
-		e.To = oldTo
-		oldKey := edgeKey(e)
-		e.To = newTo
-		// Drop the old edge + its adjacency rows.
-		edges := tx.Bucket(bucketEdges)
-		_ = edges.Delete(oldKey)
-		_ = tx.Bucket(bucketIdxEdgeOut).Delete(outEdgeIdxKey(e.From, oldKey))
-		_ = tx.Bucket(bucketIdxEdgeIn).Delete(inEdgeIdxKey(oldTo, oldKey))
-		// Insert under the new key.
-		_, _, err := s.putEdgeTx(tx, e)
-		return err
+		return s.reindexEdgeTx(tx, e, oldTo)
 	})
+}
+
+// reindexEdgeTx is the per-edge mutation logic factored out of
+// ReindexEdge so ReindexEdges can call it inside its own batched
+// transaction without one Update-per-edge overhead.
+func (s *Store) reindexEdgeTx(tx *bbolt.Tx, e *graph.Edge, oldTo string) error {
+	// Build the old key by temporarily swapping To back.
+	newTo := e.To
+	e.To = oldTo
+	oldKey := edgeKey(e)
+	e.To = newTo
+	edges := tx.Bucket(bucketEdges)
+	_ = edges.Delete(oldKey)
+	_ = tx.Bucket(bucketIdxEdgeOut).Delete(outEdgeIdxKey(e.From, oldKey))
+	_ = tx.Bucket(bucketIdxEdgeIn).Delete(inEdgeIdxKey(oldTo, oldKey))
+	_, _, err := s.putEdgeTx(tx, e)
+	return err
+}
+
+// reindexChunkSize bounds the number of edge re-binds per bbolt
+// transaction. Same sweet spot as addBatchChunkSize for the same
+// reason: bbolt's commit phase pays per dirty page, so one giant Tx
+// over thousands of mutations is O(N log N). 5000 amortises per-tx
+// overhead while keeping the dirty set bounded.
+const reindexChunkSize = 5000
+
+// ReindexEdges chunks the batch into reindexChunkSize-mutation
+// transactions and runs each inside one bbolt Update — folding 10k
+// resolver-pass mutations from 10k commits down to 2.
+func (s *Store) ReindexEdges(batch []graph.EdgeReindex) {
+	if len(batch) == 0 {
+		return
+	}
+	for i := 0; i < len(batch); i += reindexChunkSize {
+		end := min(i+reindexChunkSize, len(batch))
+		chunk := batch[i:end]
+		_ = s.db.Update(func(tx *bbolt.Tx) error {
+			for _, r := range chunk {
+				if r.Edge == nil {
+					continue
+				}
+				if err := s.reindexEdgeTx(tx, r.Edge, r.OldTo); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+}
+
+// setEdgeProvenanceTx is the per-edge SetEdgeProvenance body factored
+// out so the batch variant can call it inside one Tx. Returns true
+// when the stored Origin actually changed (callers tally for the
+// revision counter). Mirrors the in-memory contract: caller's *Edge
+// pointer is also mutated so post-call inspection sees the new
+// Origin / re-derived Tier.
+func (s *Store) setEdgeProvenanceTx(tx *bbolt.Tx, e *graph.Edge, newOrigin string) (bool, error) {
+	if e == nil {
+		return false, nil
+	}
+	ek := edgeKey(e)
+	edges := tx.Bucket(bucketEdges)
+	raw := edges.Get(ek)
+	if raw == nil {
+		return false, nil
+	}
+	stored, derr := decodeEdge(raw)
+	if derr != nil || stored == nil {
+		return false, derr
+	}
+	if stored.Origin == newOrigin {
+		return false, nil
+	}
+	stored.Origin = newOrigin
+	if stored.Tier != "" {
+		stored.Tier = graph.ResolvedBy(newOrigin)
+	}
+	e.Origin = newOrigin
+	if e.Tier != "" {
+		e.Tier = graph.ResolvedBy(newOrigin)
+	}
+	enc, eerr := encodeEdge(stored)
+	if eerr != nil {
+		return false, eerr
+	}
+	if err := edges.Put(ek, enc); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SetEdgeProvenanceBatch chunks the batch the same way ReindexEdges
+// does and bumps the persistent identity-revision counter per actual
+// change, keeping the in-memory SetEdgeProvenance's per-edge "real
+// change?" semantics intact while collapsing the disk-side write
+// amplification.
+func (s *Store) SetEdgeProvenanceBatch(batch []graph.EdgeProvenanceUpdate) int {
+	if len(batch) == 0 {
+		return 0
+	}
+	s.provMu.Lock()
+	defer s.provMu.Unlock()
+	totalChanged := 0
+	for i := 0; i < len(batch); i += reindexChunkSize {
+		end := min(i+reindexChunkSize, len(batch))
+		chunk := batch[i:end]
+		chunkChanged := 0
+		_ = s.db.Update(func(tx *bbolt.Tx) error {
+			for _, u := range chunk {
+				if u.Edge == nil {
+					continue
+				}
+				ok, err := s.setEdgeProvenanceTx(tx, u.Edge, u.NewOrigin)
+				if err != nil {
+					return err
+				}
+				if ok {
+					chunkChanged++
+					// Bump in-tx so a crash mid-chunk leaves the
+					// revision counter consistent with the partial
+					// edges actually persisted.
+					if err := bumpEdgeIdentityRevisions(tx); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+		totalChanged += chunkChanged
+	}
+	return totalChanged
 }
 
 // RemoveEdge drops the edge with the given (from, to, kind) tuple.

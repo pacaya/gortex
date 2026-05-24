@@ -484,6 +484,37 @@ func (g *Graph) ResolveMutex() *sync.Mutex {
 	return &g.resolveMu
 }
 
+// ReindexEdges is the batched sibling of ReindexEdge. The in-memory
+// store has no per-call commit overhead so the implementation is a
+// straight loop; the value of the batch API lives in the disk
+// backends, where it collapses N transaction commits into one.
+func (g *Graph) ReindexEdges(batch []EdgeReindex) {
+	for _, r := range batch {
+		if r.Edge == nil {
+			continue
+		}
+		g.ReindexEdge(r.Edge, r.OldTo)
+	}
+}
+
+// SetEdgeProvenanceBatch is the batched sibling of SetEdgeProvenance.
+// Same story as ReindexEdges: per-call in memory, one transaction in
+// the disk backends. Returns the number of edges whose Origin
+// actually changed (matches the sum of per-edge SetEdgeProvenance
+// boolean returns).
+func (g *Graph) SetEdgeProvenanceBatch(batch []EdgeProvenanceUpdate) int {
+	changed := 0
+	for _, u := range batch {
+		if u.Edge == nil {
+			continue
+		}
+		if g.SetEdgeProvenance(u.Edge, u.NewOrigin) {
+			changed++
+		}
+	}
+	return changed
+}
+
 // shardIdx picks the shard index for an ID using FNV-1a. Inlined to
 // avoid the per-call hash-object allocation that the stdlib's
 // fnv.New32a() incurs — shardIdx is on the hottest path in the graph

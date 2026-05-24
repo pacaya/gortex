@@ -52,7 +52,9 @@ func RunConformance(t *testing.T, factory Factory) {
 	t.Run("RepoStats", func(t *testing.T) { testRepoStats(t, factory) })
 	t.Run("RepoPrefixes", func(t *testing.T) { testRepoPrefixes(t, factory) })
 	t.Run("SetEdgeProvenance", func(t *testing.T) { testSetEdgeProvenance(t, factory) })
+	t.Run("SetEdgeProvenanceBatch", func(t *testing.T) { testSetEdgeProvenanceBatch(t, factory) })
 	t.Run("ReindexEdge", func(t *testing.T) { testReindexEdge(t, factory) })
+	t.Run("ReindexEdges", func(t *testing.T) { testReindexEdges(t, factory) })
 	t.Run("Concurrency", func(t *testing.T) { testConcurrency(t, factory) })
 	t.Run("EdgeIdentityRevisions", func(t *testing.T) { testEdgeIdentityRevisions(t, factory) })
 	t.Run("VerifyEdgeIdentities", func(t *testing.T) { testVerifyEdgeIdentities(t, factory) })
@@ -461,6 +463,102 @@ func testSetEdgeProvenance(t *testing.T, factory Factory) {
 	out := s.GetOutEdges("a")
 	if len(out) != 1 || out[0].Origin != graph.OriginLSPResolved {
 		t.Fatalf("Origin did not propagate: %+v", out)
+	}
+}
+
+func testReindexEdges(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	// Build a small graph with three out-edges from "a" pointing at
+	// three different targets, then re-bind all three to a fourth
+	// target in one batched call.
+	s.AddNode(mkNode("a", "A", "x.go", graph.KindFunction))
+	s.AddNode(mkNode("b", "B", "x.go", graph.KindFunction))
+	s.AddNode(mkNode("c", "C", "x.go", graph.KindFunction))
+	s.AddNode(mkNode("d", "D", "x.go", graph.KindFunction))
+	s.AddNode(mkNode("z", "Z", "x.go", graph.KindFunction))
+
+	e1 := mkEdge("a", "b", graph.EdgeCalls)
+	e1.Line = 1
+	e2 := mkEdge("a", "c", graph.EdgeCalls)
+	e2.Line = 2
+	e3 := mkEdge("a", "d", graph.EdgeCalls)
+	e3.Line = 3
+	s.AddEdge(e1)
+	s.AddEdge(e2)
+	s.AddEdge(e3)
+
+	// Mutate each edge's To, then hand the batch over. After the
+	// call, all three edges must show as in-edges of z; none of the
+	// originals must remain.
+	e1.To, e2.To, e3.To = "z", "z", "z"
+	s.ReindexEdges([]graph.EdgeReindex{
+		{Edge: e1, OldTo: "b"},
+		{Edge: e2, OldTo: "c"},
+		{Edge: e3, OldTo: "d"},
+	})
+
+	for _, oldID := range []string{"b", "c", "d"} {
+		if got := len(s.GetInEdges(oldID)); got != 0 {
+			t.Fatalf("GetInEdges(%q) after batch reindex = %d, want 0", oldID, got)
+		}
+	}
+	if got := len(s.GetInEdges("z")); got != 3 {
+		t.Fatalf("GetInEdges(z) after batch reindex = %d, want 3", got)
+	}
+	if got := len(s.GetOutEdges("a")); got != 3 {
+		t.Fatalf("GetOutEdges(a) after batch reindex = %d, want 3", got)
+	}
+
+	// Empty batch is a no-op.
+	s.ReindexEdges(nil)
+	s.ReindexEdges([]graph.EdgeReindex{})
+}
+
+func testSetEdgeProvenanceBatch(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	s.AddNode(mkNode("a", "A", "x.go", graph.KindFunction))
+	s.AddNode(mkNode("b", "B", "x.go", graph.KindFunction))
+
+	e1 := mkEdge("a", "b", graph.EdgeCalls)
+	e1.Line = 1
+	e1.Origin = graph.OriginTextMatched
+	e2 := mkEdge("a", "b", graph.EdgeCalls)
+	e2.Line = 2
+	e2.Origin = graph.OriginTextMatched
+	e3 := mkEdge("a", "b", graph.EdgeCalls)
+	e3.Line = 3
+	e3.Origin = graph.OriginLSPResolved // already at target tier — should be no-op
+	s.AddEdge(e1)
+	s.AddEdge(e2)
+	s.AddEdge(e3)
+
+	changed := s.SetEdgeProvenanceBatch([]graph.EdgeProvenanceUpdate{
+		{Edge: e1, NewOrigin: graph.OriginLSPResolved},
+		{Edge: e2, NewOrigin: graph.OriginLSPResolved},
+		{Edge: e3, NewOrigin: graph.OriginLSPResolved},
+	})
+	if changed != 2 {
+		t.Fatalf("SetEdgeProvenanceBatch reported %d changed, want 2 (one was already at target tier)", changed)
+	}
+	// Verify both promotions landed in the persisted edges.
+	out := s.GetOutEdges("a")
+	if len(out) != 3 {
+		t.Fatalf("GetOutEdges(a) = %d, want 3", len(out))
+	}
+	for _, e := range out {
+		if e.Origin != graph.OriginLSPResolved {
+			t.Fatalf("edge %s->%s Origin = %q, want lsp_resolved", e.From, e.To, e.Origin)
+		}
+	}
+
+	// Empty batch is a no-op and returns 0.
+	if got := s.SetEdgeProvenanceBatch(nil); got != 0 {
+		t.Fatalf("empty batch returned %d, want 0", got)
+	}
+	if got := s.SetEdgeProvenanceBatch([]graph.EdgeProvenanceUpdate{}); got != 0 {
+		t.Fatalf("empty batch returned %d, want 0", got)
 	}
 }
 

@@ -526,6 +526,128 @@ func (s *Store) ReindexEdge(e *graph.Edge, oldTo string) {
 	}
 }
 
+// reindexChunkSize bounds the number of edge re-binds per BEGIN/COMMIT.
+// Same shape as the bbolt sibling: large enough to amortise the
+// per-tx overhead (BEGIN+COMMIT plus WAL fsync) but small enough that
+// the WAL doesn't balloon and a crash mid-batch only loses ≤chunk
+// mutations.
+const reindexChunkSize = 5000
+
+// ReindexEdges chunks the batch into reindexChunkSize-mutation
+// transactions and runs each through prepared statements re-used
+// across the chunk. Per-edge ReindexEdge was the resolver hot path
+// (10k+ calls = 10k+ BEGIN/COMMIT pairs); this collapses them to two.
+func (s *Store) ReindexEdges(batch []graph.EdgeReindex) {
+	if len(batch) == 0 {
+		return
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	for i := 0; i < len(batch); i += reindexChunkSize {
+		end := minInt(i+reindexChunkSize, len(batch))
+		chunk := batch[i:end]
+		tx, err := s.db.Begin()
+		if err != nil {
+			panicOnFatal(err)
+			return
+		}
+		delStmt := tx.Stmt(s.stmtDeleteEdgeByKey)
+		insStmt := tx.Stmt(s.stmtInsertEdge)
+		for _, r := range chunk {
+			if r.Edge == nil || r.OldTo == r.Edge.To {
+				continue
+			}
+			if _, err := delStmt.Exec(r.Edge.From, r.OldTo, string(r.Edge.Kind), r.Edge.FilePath, r.Edge.Line); err != nil {
+				_ = tx.Rollback()
+				panicOnFatal(err)
+				return
+			}
+			if err := s.insertEdgeLocked(insStmt, r.Edge); err != nil {
+				_ = tx.Rollback()
+				panicOnFatal(err)
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			panicOnFatal(err)
+			return
+		}
+	}
+}
+
+// SetEdgeProvenanceBatch chunks origin promotions into one BEGIN/
+// COMMIT per chunk and bumps the in-process revision counter once
+// per actual change, matching the per-edge SetEdgeProvenance's
+// semantics. Returns the total number of edges whose Origin changed.
+func (s *Store) SetEdgeProvenanceBatch(batch []graph.EdgeProvenanceUpdate) int {
+	if len(batch) == 0 {
+		return 0
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	totalChanged := 0
+	for i := 0; i < len(batch); i += reindexChunkSize {
+		end := minInt(i+reindexChunkSize, len(batch))
+		chunk := batch[i:end]
+		tx, err := s.db.Begin()
+		if err != nil {
+			panicOnFatal(err)
+			return totalChanged
+		}
+		selStmt := tx.Stmt(s.stmtSelectEdgeOrigin)
+		updStmt := tx.Stmt(s.stmtUpdateEdgeOrigin)
+		chunkChanged := 0
+		for _, u := range chunk {
+			if u.Edge == nil {
+				continue
+			}
+			var storedOrigin string
+			row := selStmt.QueryRow(u.Edge.From, u.Edge.To, string(u.Edge.Kind), u.Edge.FilePath, u.Edge.Line)
+			if err := row.Scan(&storedOrigin); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				_ = tx.Rollback()
+				panicOnFatal(err)
+				return totalChanged
+			}
+			if storedOrigin == u.NewOrigin {
+				continue
+			}
+			newTier := u.Edge.Tier
+			if newTier != "" {
+				newTier = graph.ResolvedBy(u.NewOrigin)
+			}
+			if _, err := updStmt.Exec(u.NewOrigin, newTier, u.Edge.From, u.Edge.To, string(u.Edge.Kind), u.Edge.FilePath, u.Edge.Line); err != nil {
+				_ = tx.Rollback()
+				panicOnFatal(err)
+				return totalChanged
+			}
+			u.Edge.Origin = u.NewOrigin
+			if u.Edge.Tier != "" {
+				u.Edge.Tier = newTier
+			}
+			chunkChanged++
+		}
+		if err := tx.Commit(); err != nil {
+			panicOnFatal(err)
+			return totalChanged
+		}
+		if chunkChanged > 0 {
+			s.edgeIdentityRevs.Add(int64(chunkChanged))
+		}
+		totalChanged += chunkChanged
+	}
+	return totalChanged
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // RemoveEdge deletes every edge between (from, to) with the given
 // kind. Returns true iff at least one row was deleted.
 func (s *Store) RemoveEdge(from, to string, kind graph.EdgeKind) bool {
