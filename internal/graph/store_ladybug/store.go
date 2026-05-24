@@ -1396,7 +1396,46 @@ func (s *Store) FlushBulk() error {
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
+	// COPY FROM is INSERT-only — fast on an empty table, but a
+	// duplicate primary key collides (unresolved::* stubs cross
+	// chunks under streaming-flush). When the store already has
+	// data, fall back to the per-call AddNode/AddEdge loop which
+	// is idempotent on duplicate keys via MERGE semantics.
+	if s.nodeCountLocked() > 0 || s.edgeCountLocked() > 0 {
+		for _, n := range nodes {
+			if n == nil || n.ID == "" {
+				continue
+			}
+			s.upsertNodeLocked(n)
+		}
+		for _, e := range edges {
+			if e == nil {
+				continue
+			}
+			s.upsertEdgeLocked(e)
+		}
+		return nil
+	}
 	return s.copyBulkLocked(nodes, edges)
+}
+
+func (s *Store) nodeCountLocked() int {
+	rows := s.querySelectLocked(`MATCH (n:Node) RETURN count(n)`, nil)
+	if len(rows) == 0 {
+		return 0
+	}
+	n, _ := rows[0][0].(int64)
+	return int(n)
+}
+
+func (s *Store) edgeCountLocked() int {
+	rows := s.querySelectLocked(`MATCH ()-[e:Edge]->() RETURN count(e)`, nil)
+	if len(rows) == 0 {
+		return 0
+	}
+	n, _ := rows[0][0].(int64)
+	return int(n)
 }
 
 // copyBulkLocked dedupes the bulk buffers, writes them to temp CSV

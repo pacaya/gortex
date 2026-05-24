@@ -1407,7 +1407,42 @@ func (s *Store) FlushBulk() error {
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+
+	// COPY FROM is INSERT-only — fast on an empty table, but a
+	// duplicate primary key (unresolved::* stubs appear in
+	// multiple parse chunks under streaming-flush) violates the
+	// uniqueness constraint and the whole COPY aborts. When the
+	// store already has data — which is the case on every chunk
+	// except the first under streaming-flush — fall back to the
+	// per-call UNWIND-MERGE path that is idempotent on duplicate
+	// keys.
+	if s.nodeCountLocked() > 0 || s.edgeCountLocked() > 0 {
+		s.addNodesUnwindLocked(nodes)
+		s.addEdgesUnwindLocked(edges)
+		return nil
+	}
 	return s.copyBulkLocked(nodes, edges)
+}
+
+// nodeCountLocked / edgeCountLocked are the writeMu-already-held
+// variants of NodeCount / EdgeCount. They avoid the re-entrant lock
+// the public methods would take.
+func (s *Store) nodeCountLocked() int {
+	rows := s.querySelectLocked(`MATCH (n:Node) RETURN count(n)`, nil)
+	if len(rows) == 0 {
+		return 0
+	}
+	n, _ := rows[0][0].(int64)
+	return int(n)
+}
+
+func (s *Store) edgeCountLocked() int {
+	rows := s.querySelectLocked(`MATCH ()-[e:Edge]->() RETURN count(e)`, nil)
+	if len(rows) == 0 {
+		return 0
+	}
+	n, _ := rows[0][0].(int64)
+	return int(n)
 }
 
 // copyBulkLocked dedupes the bulk buffers, writes them to temp CSV

@@ -1486,14 +1486,68 @@ func (s *Store) FlushBulk() error {
 		return nil
 	}
 
-	// Single Appender pass — no pre-DELETE because the table is empty
-	// (BeginBulkLoad's contract requires NodeCount == 0 at bracket
-	// entry), and the buffers are deduped above so no collisions can
-	// arise from within the bulk window either.
+	// When the store already has data — which is the case on every
+	// chunk except the first under streaming-flush — pre-DELETE the
+	// colliding rows before the Appender pass so the UNIQUE index
+	// doesn't reject the second insert of an `unresolved::*` stub.
+	// Empty-store case (the cold-load contract) skips the DELETE
+	// because no collisions can exist yet.
+	if s.nodeCountLocked() > 0 || s.edgeCountLocked() > 0 {
+		if err := s.preDeleteColliders(validNodes, validEdges); err != nil {
+			return fmt.Errorf("bulk pre-delete: %w", err)
+		}
+	}
 	if err := s.appendNodesAndEdges(validNodes, validEdges); err != nil {
 		return fmt.Errorf("bulk appender: %w", err)
 	}
 	return nil
+}
+
+// preDeleteColliders removes any row that would collide with the
+// upcoming Appender pass. Held under writeMu.
+func (s *Store) preDeleteColliders(nodes []*graph.Node, edges []*graph.Edge) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	commit := false
+	defer func() {
+		if !commit {
+			_ = tx.Rollback()
+		}
+	}()
+	for _, n := range nodes {
+		if _, err := tx.Stmt(s.stmtDeleteNode).Exec(n.ID); err != nil {
+			return err
+		}
+	}
+	for _, e := range edges {
+		if _, err := tx.Stmt(s.stmtDeleteEdgeLogical).Exec(e.From, e.To, string(e.Kind), e.FilePath, e.Line); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	commit = true
+	return nil
+}
+
+// nodeCountLocked / edgeCountLocked are the writeMu-already-held
+// variants of NodeCount / EdgeCount. They avoid the re-entrant lock
+// the public methods would take.
+func (s *Store) nodeCountLocked() int {
+	row := s.stmtNodeCount.QueryRow()
+	var n int
+	_ = row.Scan(&n)
+	return n
+}
+
+func (s *Store) edgeCountLocked() int {
+	row := s.stmtEdgeCount.QueryRow()
+	var n int
+	_ = row.Scan(&n)
+	return n
 }
 
 // -- BackendResolver implementation --------------------------------------
