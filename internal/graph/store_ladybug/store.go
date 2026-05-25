@@ -847,6 +847,23 @@ func (s *Store) GetOutEdges(nodeID string) []*graph.Edge {
 	return rowsToEdges(rows)
 }
 
+// GetRepoEdges returns every edge whose source node has the given
+// RepoPrefix. Implemented as one Cypher MATCH over the (Node)-[Edge]->
+// pattern with a source-side repo_prefix filter — equivalent to the
+// GetRepoNodes × GetOutEdges nested walk callers used before, but
+// drives the join inside the engine. Eliminates the per-source-node
+// query round-trip that dominates Ladybug warmup on multi-repo
+// workspaces (one extractor call against gortex's ~68k repo nodes
+// previously fired ~68k Cypher queries).
+func (s *Store) GetRepoEdges(repoPrefix string) []*graph.Edge {
+	if repoPrefix == "" {
+		return nil
+	}
+	const q = `MATCH (a:Node {repo_prefix: $r})-[e:Edge]->(b:Node) RETURN ` + edgeReturnCols
+	rows := s.querySelect(q, map[string]any{"r": repoPrefix})
+	return rowsToEdges(rows)
+}
+
 // GetInEdges returns every edge whose To matches nodeID.
 func (s *Store) GetInEdges(nodeID string) []*graph.Edge {
 	const q = `MATCH (a:Node)-[e:Edge]->(b:Node {id: $id}) RETURN ` + edgeReturnCols

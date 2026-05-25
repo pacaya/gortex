@@ -101,6 +101,7 @@ type Store struct {
 	stmtDeleteEdgeLogical *sql.Stmt
 	stmtOutEdges          *sql.Stmt
 	stmtInEdges           *sql.Stmt
+	stmtRepoEdges         *sql.Stmt
 	stmtAllEdges          *sql.Stmt
 	stmtEdgeCount         *sql.Stmt
 	stmtRemoveEdge        *sql.Stmt
@@ -182,7 +183,7 @@ func (s *Store) Close() error {
 		s.stmtFileNodes, s.stmtRepoNodes,
 		s.stmtAllNodes, s.stmtNodeCount,
 		s.stmtInsertEdge, s.stmtDeleteEdgeLogical,
-		s.stmtOutEdges, s.stmtInEdges,
+		s.stmtOutEdges, s.stmtInEdges, s.stmtRepoEdges,
 		s.stmtAllEdges, s.stmtEdgeCount, s.stmtRemoveEdge,
 		s.stmtUpdateEdgeOrigin, s.stmtSelectEdgeOrigin, s.stmtDeleteEdgeByKey,
 		s.stmtSelectFileNodeIDs, s.stmtSelectRepoNodeIDs,
@@ -249,6 +250,13 @@ func (s *Store) prepare() error {
 		`SELECT `+edgeColsNoID+` FROM edges WHERE from_id = ?`)
 	prep(&s.stmtInEdges,
 		`SELECT `+edgeColsNoID+` FROM edges WHERE to_id = ?`)
+	prep(&s.stmtRepoEdges,
+		`SELECT e.from_id, e.to_id, e.kind, e.file_path, e.line,
+		        e.confidence, e.confidence_label, e.origin, e.tier,
+		        e.cross_repo, e.meta
+		   FROM edges e
+		   JOIN nodes n ON n.id = e.from_id
+		  WHERE n.repo_prefix = ?`)
 	prep(&s.stmtAllEdges,
 		`SELECT `+edgeColsNoID+` FROM edges`)
 	prep(&s.stmtEdgeCount,
@@ -980,6 +988,18 @@ func (s *Store) GetInEdges(nodeID string) []*graph.Edge {
 
 func (s *Store) AllEdges() []*graph.Edge {
 	return s.queryEdges(s.stmtAllEdges)
+}
+
+// GetRepoEdges returns every edge whose source node has the given
+// RepoPrefix. The pre-Store idiom — GetRepoNodes(r) followed by
+// GetOutEdges(n.ID) per node — was O(repo_nodes) prepared-statement
+// invocations; this collapses the walk into a single JOIN driven by
+// the nodes.repo_prefix index.
+func (s *Store) GetRepoEdges(repoPrefix string) []*graph.Edge {
+	if repoPrefix == "" {
+		return nil
+	}
+	return s.queryEdges(s.stmtRepoEdges, repoPrefix)
 }
 
 func (s *Store) queryEdges(stmt *sql.Stmt, args ...any) []*graph.Edge {

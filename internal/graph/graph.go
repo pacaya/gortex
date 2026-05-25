@@ -1572,6 +1572,32 @@ func (g *Graph) GetRepoNodes(repoPrefix string) []*Node {
 	return out
 }
 
+// GetRepoEdges returns every edge whose source node has the given
+// RepoPrefix — the in-memory reference implementation of the
+// Store-interface method. Walks each shard's byRepo bucket and
+// concatenates that node's outEdges in place (no per-node
+// GetOutEdges call, so no per-call slice copy). Equivalent in
+// observable behaviour to the GetRepoNodes(r) × GetOutEdges loop
+// callers used before this method existed; meant to give disk
+// backends a single-query hook without changing in-memory cost.
+// Empty repoPrefix returns nil (callers use AllEdges() instead).
+func (g *Graph) GetRepoEdges(repoPrefix string) []*Edge {
+	if repoPrefix == "" {
+		return nil
+	}
+	var out []*Edge
+	for _, s := range g.shards {
+		s.mu.RLock()
+		for _, n := range s.byRepo[repoPrefix] {
+			if src := s.outEdges[n.ID]; len(src) > 0 {
+				out = append(out, src...)
+			}
+		}
+		s.mu.RUnlock()
+	}
+	return out
+}
+
 // EvictRepo removes all nodes with matching RepoPrefix and all edges
 // referencing those nodes. Returns counts of removed nodes and edges.
 func (g *Graph) EvictRepo(repoPrefix string) (nodesRemoved, edgesRemoved int) {

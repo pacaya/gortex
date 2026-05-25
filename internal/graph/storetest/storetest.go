@@ -48,6 +48,7 @@ func RunConformance(t *testing.T, factory Factory) {
 	t.Run("FindNodesByNameInRepo", func(t *testing.T) { testFindNodesByNameInRepo(t, factory) })
 	t.Run("GetFileNodes", func(t *testing.T) { testGetFileNodes(t, factory) })
 	t.Run("GetRepoNodes", func(t *testing.T) { testGetRepoNodes(t, factory) })
+	t.Run("GetRepoEdges", func(t *testing.T) { testGetRepoEdges(t, factory) })
 	t.Run("GetNodeByQualName", func(t *testing.T) { testGetNodeByQualName(t, factory) })
 	t.Run("Stats", func(t *testing.T) { testStats(t, factory) })
 	t.Run("RepoStats", func(t *testing.T) { testRepoStats(t, factory) })
@@ -393,6 +394,67 @@ func testGetRepoNodes(t *testing.T, factory Factory) {
 	want := []string{"r1/a.go::Foo", "r1/b.go::Bar"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("GetRepoNodes(r1) = %v, want %v", got, want)
+	}
+}
+
+// testGetRepoEdges asserts that GetRepoEdges returns every edge whose
+// SOURCE node carries the requested RepoPrefix, regardless of where
+// the target lives — same-repo intra edges, cross-repo edges (source
+// in r1 → target in r2), AND unresolved::* targets all count. Edges
+// whose source is in a different repo (or unscoped) MUST NOT appear.
+// Empty prefix returns nil so callers don't accidentally fall through
+// to a full-graph scan.
+func testGetRepoEdges(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	// r1 has two nodes that originate outgoing edges; r2 has a target
+	// node and one of its own source nodes.
+	s.AddNode(mkRepoNode("r1/a.go::Foo", "Foo", "r1/a.go", "r1", graph.KindFunction))
+	s.AddNode(mkRepoNode("r1/b.go::Bar", "Bar", "r1/b.go", "r1", graph.KindFunction))
+	s.AddNode(mkRepoNode("r2/x.go::Baz", "Baz", "r2/x.go", "r2", graph.KindFunction))
+	s.AddNode(mkRepoNode("r2/y.go::Qux", "Qux", "r2/y.go", "r2", graph.KindFunction))
+
+	// r1-intra (Foo → Bar) — same repo.
+	s.AddEdge(mkEdge("r1/a.go::Foo", "r1/b.go::Bar", graph.EdgeCalls))
+	// r1 → r2 cross-repo (Foo → Baz).
+	s.AddEdge(mkEdge("r1/a.go::Foo", "r2/x.go::Baz", graph.EdgeCalls))
+	// r1 → unresolved (Bar → unresolved::Missing) — counts because
+	// source is in r1.
+	s.AddEdge(mkEdge("r1/b.go::Bar", "unresolved::Missing", graph.EdgeCalls))
+	// r2-intra (Qux → Baz) — MUST NOT appear in r1's slice.
+	s.AddEdge(mkEdge("r2/y.go::Qux", "r2/x.go::Baz", graph.EdgeCalls))
+	// r2 → r1 cross-repo (Qux → Foo) — MUST NOT appear in r1's slice
+	// because the source is in r2.
+	s.AddEdge(mkEdge("r2/y.go::Qux", "r1/a.go::Foo", graph.EdgeCalls))
+
+	gotR1 := sortEdgeKeys(s.GetRepoEdges("r1"))
+	wantR1 := sortEdgeKeys([]*graph.Edge{
+		mkEdge("r1/a.go::Foo", "r1/b.go::Bar", graph.EdgeCalls),
+		mkEdge("r1/a.go::Foo", "r2/x.go::Baz", graph.EdgeCalls),
+		mkEdge("r1/b.go::Bar", "unresolved::Missing", graph.EdgeCalls),
+	})
+	if fmt.Sprint(gotR1) != fmt.Sprint(wantR1) {
+		t.Fatalf("GetRepoEdges(r1) =\n  %v\nwant\n  %v", gotR1, wantR1)
+	}
+
+	gotR2 := sortEdgeKeys(s.GetRepoEdges("r2"))
+	wantR2 := sortEdgeKeys([]*graph.Edge{
+		mkEdge("r2/y.go::Qux", "r2/x.go::Baz", graph.EdgeCalls),
+		mkEdge("r2/y.go::Qux", "r1/a.go::Foo", graph.EdgeCalls),
+	})
+	if fmt.Sprint(gotR2) != fmt.Sprint(wantR2) {
+		t.Fatalf("GetRepoEdges(r2) =\n  %v\nwant\n  %v", gotR2, wantR2)
+	}
+
+	// Empty prefix MUST return nothing (use AllEdges for the global
+	// view). Disk backends must not fall through to a full scan.
+	if got := s.GetRepoEdges(""); len(got) != 0 {
+		t.Fatalf("GetRepoEdges(\"\") = %d edges, want 0", len(got))
+	}
+
+	// Unknown prefix MUST return empty (no panic, no fallthrough).
+	if got := s.GetRepoEdges("nope"); len(got) != 0 {
+		t.Fatalf("GetRepoEdges(nope) = %d edges, want 0", len(got))
 	}
 }
 

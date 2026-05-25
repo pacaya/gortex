@@ -95,6 +95,19 @@ type Store interface {
 	GetOutEdges(nodeID string) []*Edge
 	GetInEdges(nodeID string) []*Edge
 
+	// GetRepoEdges returns every edge whose source node has the given
+	// RepoPrefix. Equivalent to GetRepoNodes(r) followed by
+	// GetOutEdges(n.ID) for every n, but executes as a single backend
+	// query — critical on disk backends (Ladybug, SQLite, DuckDB)
+	// where the per-node loop is O(repo_nodes) round-trips. The
+	// in-memory backend forwards to that same nested walk; the disk
+	// backends push the join into one server-side query.
+	//
+	// Empty repoPrefix returns nothing — use AllEdges() for the
+	// global view. Nodes with an empty RepoPrefix are unreachable
+	// through this method by design (they don't belong to any repo).
+	GetRepoEdges(repoPrefix string) []*Edge
+
 	// --- Bulk reads ------------------------------------------------
 
 	AllNodes() []*Node
