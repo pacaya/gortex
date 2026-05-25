@@ -235,8 +235,14 @@ func indexFixture(t *testing.T, checkoutName string) fixtureResult {
 		// cross-repo singletons (one `dep::foo`, `module::pypi:requests`,
 		// `builtin::go::len` shared across every repo that uses them)
 		// and don't carry RepoPrefix; skip them so the parity gate
-		// stays precise about what it gates.
+		// stays precise about what it gates. KindFunction nodes
+		// with meta.external=true are the per-symbol stubs the
+		// external-call attribution materialises for stdlib/dep
+		// targets — same rule.
 		if n.Kind == graph.KindContract || n.Kind == graph.KindModule || n.Kind == graph.KindBuiltin {
+			continue
+		}
+		if ext, _ := n.Meta["external"].(bool); ext {
 			continue
 		}
 		if n.RepoPrefix == "" {

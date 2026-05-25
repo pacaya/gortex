@@ -185,6 +185,13 @@ func TestTrackRepoCtx_FirstOfManyStillGetsPrefix(t *testing.T) {
 		if n.Kind == graph.KindModule || n.Kind == graph.KindBuiltin {
 			continue
 		}
+		if ext, _ := n.Meta["external"].(bool); ext {
+			// External call targets the resolver materialises as
+			// KindFunction with meta.external=true are cross-repo
+			// singletons (one `stdlib::fmt::Sprintf` shared across
+			// every repo that calls it) — same as KindModule.
+			continue
+		}
 		if n.RepoPrefix == "" {
 			missingPrefix = append(missingPrefix, n.ID)
 			continue

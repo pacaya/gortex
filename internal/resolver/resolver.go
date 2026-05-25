@@ -392,6 +392,17 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	// type-drift analysis) into one-hop lookups.
 	r.attributeGoBuiltins()
 
+	// Materialise stdlib / dep / external call targets as
+	// KindFunction nodes with KindModule parents so cross-package
+	// queries (`find_usages(stdlib::fmt::Sprintf)`,
+	// `get_callers(dep::github.com/stretchr/testify/assert::True)`,
+	// "what's our usage surface on encoding/json") become one-hop
+	// lookups. Must run AFTER resolveExtern (which classifies
+	// `unresolved::extern::*` into the stdlib/dep/external buckets)
+	// so we materialise the post-classification state, not the
+	// pre-classification shape.
+	r.attributeGoExternalCalls()
+
 	// Relative-import resolution for Python and Dart files. Runs
 	// before module attribution so internal-target stems never get
 	// mis-mapped to a phantom pypi/pub package.
@@ -675,6 +686,7 @@ func (r *Resolver) ResolveFile(filePath string) *ResolveStats {
 	r.bindBareNameScopeRefs()
 	r.bindGenericParamRefs()
 	r.attributeGoBuiltins()
+	r.attributeGoExternalCalls()
 
 	return stats
 }
