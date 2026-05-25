@@ -286,6 +286,47 @@ func (s *Store) StronglyConnectedComponents(opts graph.ComponentOpts) ([]graph.C
 	return s.runComponentAlgo("strongly_connected_components", opts)
 }
 
+// KCoreDecomposition runs the k-core decomposition over a
+// projected subgraph and returns one hit per node carrying its
+// k-degree — the largest k for which the node stays in the
+// k-core after iterative degree-< k pruning.
+//
+// Ladybug's CALL k_core_decomposition takes no tuning knobs
+// (the algorithm always computes the full decomposition); the
+// only per-call shaping comes from PROJECT_GRAPH's NodeKinds /
+// EdgeKinds filter.
+func (s *Store) KCoreDecomposition(opts graph.KCoreOpts) ([]graph.KCoreHit, error) {
+	projOpts := projectionOpts{nodeKinds: opts.NodeKinds, edgeKinds: opts.EdgeKinds}
+
+	var hits []graph.KCoreHit
+	err := s.withProjection(projOpts, func(name string) error {
+		q := fmt.Sprintf(
+			`CALL k_core_decomposition('%s') RETURN node.id AS id, k_degree`,
+			name,
+		)
+		rows, err := querySelectSafe(s, q, nil)
+		if err != nil {
+			return fmt.Errorf("k_core_decomposition: %w", err)
+		}
+		hits = make([]graph.KCoreHit, 0, len(rows))
+		for _, row := range rows {
+			if len(row) < 2 {
+				continue
+			}
+			id, _ := row[0].(string)
+			if id == "" {
+				continue
+			}
+			hits = append(hits, graph.KCoreHit{NodeID: id, KDegree: asInt64(row[1])})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return hits, nil
+}
+
 // runComponentAlgo is the shared shape for the two component
 // algos. cypherCall is the algo's CALL name; both algos return
 // the same (node, group_id) shape.

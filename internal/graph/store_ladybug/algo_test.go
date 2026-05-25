@@ -249,3 +249,27 @@ func TestComponentFinder_SCC_RespectsMaxIterations(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, hits, 7)
 }
+
+func TestKCorer_FindsCore(t *testing.T) {
+	s := seedAlgoTestGraph(t)
+	hits, err := s.KCoreDecomposition(graph.KCoreOpts{})
+	require.NoError(t, err)
+	require.Len(t, hits, 7)
+	// Every node in the hub-and-spoke + two-triangle graph has at
+	// least 3 neighbours when edges are treated as undirected, so
+	// k_degree of every node should be exactly 3 (the whole graph
+	// is its own 3-core).
+	for _, h := range hits {
+		assert.Equal(t, int64(3), h.KDegree,
+			"every node should have k-degree 3; got %v", hits)
+	}
+}
+
+func TestKCorer_ConsecutiveCallsDoNotLeak(t *testing.T) {
+	s := seedAlgoTestGraph(t)
+	for i := 0; i < 3; i++ {
+		hits, err := s.KCoreDecomposition(graph.KCoreOpts{})
+		require.NoError(t, err, "consecutive KCore call %d must succeed", i)
+		require.Len(t, hits, 7)
+	}
+}

@@ -574,3 +574,38 @@ type ComponentFinder interface {
 	WeaklyConnectedComponents(opts ComponentOpts) ([]ComponentHit, error)
 	StronglyConnectedComponents(opts ComponentOpts) ([]ComponentHit, error)
 }
+
+// KCoreOpts tunes k-core decomposition. NodeKinds / EdgeKinds
+// restrict the projection. The algorithm itself takes no
+// per-call parameters — it always computes the full
+// decomposition (every node gets its k-degree).
+type KCoreOpts struct {
+	NodeKinds []NodeKind
+	EdgeKinds []EdgeKind
+}
+
+// KCoreHit is one row of the k-core output: the node ID plus the
+// largest k for which the node remains in the k-core after
+// iteratively pruning nodes with degree < k. A node's KDegree is
+// its position in the core hierarchy — high values mean the node
+// sits inside a densely connected centre.
+type KCoreHit struct {
+	NodeID  string
+	KDegree int64
+}
+
+// KCorer is an optional interface backends MAY implement to
+// expose engine-native k-core decomposition. When the store
+// implements it, the daemon's `analyze kind=kcore` path delegates
+// to the engine-native implementation; otherwise
+// analysis.ComputeKCore runs in-process.
+//
+// k-core finds the densest subgraph: the k-core of a graph is
+// the largest subgraph where every node has at least k
+// neighbours. The k-degree of a node is the largest k for which
+// it stays in the k-core — useful for "find the hub-of-hubs", or
+// "what's the core infrastructure code that everything depends
+// on".
+type KCorer interface {
+	KCoreDecomposition(opts KCoreOpts) ([]KCoreHit, error)
+}

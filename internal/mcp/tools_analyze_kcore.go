@@ -1,0 +1,132 @@
+// kcore — find the densely connected core of the graph.
+//
+// k-core decomposition assigns every node a k-degree: the largest
+// k for which the node remains in the k-core after iteratively
+// pruning nodes with degree < k. Nodes with high k-degree sit at
+// the densely connected centre of the graph — useful for "what's
+// the core infrastructure every other layer depends on", and as a
+// complement to PageRank (which weights by random-walk authority,
+// not local density).
+//
+// Routing:
+//
+//   - When the backing graph.Store implements graph.KCorer (today
+//     only store_ladybug), the analyzer delegates to the engine-
+//     native parallel implementation.
+//
+//   - Otherwise analysis.ComputeKCore runs in-process. The
+//     implementation is the classic Batagelj & Zaversnik bucket
+//     algorithm — O(V + E), no recursion.
+
+package mcp
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/zzet/gortex/internal/analysis"
+	"github.com/zzet/gortex/internal/graph"
+)
+
+// kcoreRow is the per-symbol shape the analyzer returns.
+type kcoreRow struct {
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	Kind     string `json:"kind,omitempty"`
+	FilePath string `json:"file_path,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	KDegree  int    `json:"k_degree"`
+}
+
+func (s *Server) handleAnalyzeKCore(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+
+	limit := 20
+	if v, ok := args["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+	}
+	minDegree := 0
+	if v, ok := args["min_degree"].(float64); ok && v > 0 {
+		minDegree = int(v)
+	}
+
+	hits := s.runKCore(graph.KCoreOpts{
+		NodeKinds: parseKindFilter(stringArg(args, "kind")),
+	})
+
+	// Filter by min_degree (drop trivial low-core nodes), then cap.
+	if minDegree > 0 {
+		filtered := hits[:0]
+		for _, h := range hits {
+			if h.KDegree >= int64(minDegree) {
+				filtered = append(filtered, h)
+			}
+		}
+		hits = filtered
+	}
+	if limit > 0 && limit < len(hits) {
+		hits = hits[:limit]
+	}
+
+	rows := make([]kcoreRow, 0, len(hits))
+	for _, h := range hits {
+		n := s.graph.GetNode(h.NodeID)
+		row := kcoreRow{ID: h.NodeID, KDegree: int(h.KDegree)}
+		if n != nil {
+			row.Name = n.Name
+			row.Kind = string(n.Kind)
+			row.FilePath = n.FilePath
+			row.Line = n.StartLine
+		}
+		rows = append(rows, row)
+	}
+
+	if s.isGCX(ctx, req) {
+		return s.gcxResponseWithBudget(req)(encodeAnalyze("kcore", rows))
+	}
+	if isCompact(req) {
+		var b strings.Builder
+		for _, r := range rows {
+			fmt.Fprintf(&b, "%s %s %s:%d k=%d\n", r.Kind, r.ID, r.FilePath, r.Line, r.KDegree)
+		}
+		return mcp.NewToolResultText(b.String()), nil
+	}
+	return s.respondJSONOrTOON(ctx, req, map[string]any{"kcore": rows, "count": len(rows)})
+}
+
+// runKCore picks the engine-native KCorer when available,
+// otherwise falls back to the in-process implementation. Returns
+// hits sorted by k-degree descending (the engine-native CALL
+// returns them unordered; the in-process ComputeKCore returns
+// already sorted — normalise both here so the handler doesn't
+// have to re-sort).
+func (s *Server) runKCore(opts graph.KCoreOpts) []graph.KCoreHit {
+	if store := s.backendStore(); store != nil {
+		if kc, ok := store.(graph.KCorer); ok {
+			hits, err := kc.KCoreDecomposition(opts)
+			if err == nil {
+				sort.Slice(hits, func(i, j int) bool {
+					if hits[i].KDegree != hits[j].KDegree {
+						return hits[i].KDegree > hits[j].KDegree
+					}
+					return hits[i].NodeID < hits[j].NodeID
+				})
+				return hits
+			}
+			// Engine-native error falls through.
+		}
+	}
+	res := analysis.ComputeKCore(s.graph, analysis.KCoreOptions{
+		NodeKinds: opts.NodeKinds,
+		EdgeKinds: opts.EdgeKinds,
+	})
+	out := make([]graph.KCoreHit, len(res))
+	for i, h := range res {
+		out[i] = graph.KCoreHit{NodeID: h.NodeID, KDegree: int64(h.KDegree)}
+	}
+	return out
+}
