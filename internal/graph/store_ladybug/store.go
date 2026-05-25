@@ -22,7 +22,8 @@ import (
 // Store is the KuzuDB-backed graph.Store implementation.
 type Store struct {
 	db   *lbug.Database
-	conn *lbug.Connection
+	conn *lbug.Connection // setup connection — DDL + extension installs
+	pool *connPool        // per-Store fan-out for query traffic
 
 	// writeMu serialises every mutation. KuzuDB's C engine is
 	// thread-safe internally but the Go binding shares a single
@@ -73,10 +74,26 @@ type Store struct {
 // Compile-time assertion: *Store satisfies graph.Store.
 var _ graph.Store = (*Store)(nil)
 
+// connPoolSize is the per-Store connection-pool fan-out.
+// MultiIndexer runs one parse goroutine per repo; with 4 active
+// repos and per-repo shadow drains, 8 gives ample headroom for
+// concurrent reads + drains without queue contention. ladybug's
+// C engine handles its own internal threadpool per query, so
+// over-sizing the pool here mostly burns memory without buying
+// extra parallelism.
+const connPoolSize = 8
+
 // Open opens (or creates) a KuzuDB database at path and applies the
 // schema. The path is a directory KuzuDB owns end-to-end; an empty
 // directory is initialised on first open and reused on every
 // subsequent open.
+//
+// Opens one "setup" connection for DDL + extension installs, then
+// a pool of additional connections for parallel query traffic.
+// MultiIndexer's per-repo goroutines each borrow their own pool
+// connection so concurrent reads + drains don't serialise on a
+// single Connection handle (the Go binding races in cgo without
+// a per-connection serialisation point).
 func Open(path string) (*Store, error) {
 	db, err := lbug.OpenDatabase(path, lbug.DefaultSystemConfig())
 	if err != nil {
@@ -96,11 +113,20 @@ func Open(path string) (*Store, error) {
 		}
 		res.Close()
 	}
-	return &Store{db: db, conn: conn}, nil
+	pool, err := newConnPool(db, connPoolSize)
+	if err != nil {
+		conn.Close()
+		db.Close()
+		return nil, fmt.Errorf("store_ladybug: init conn pool: %w", err)
+	}
+	return &Store{db: db, conn: conn, pool: pool}, nil
 }
 
 // Close closes the underlying connection and database.
 func (s *Store) Close() error {
+	if s.pool != nil {
+		s.pool.close()
+	}
 	if s.conn != nil {
 		s.conn.Close()
 	}
@@ -1282,39 +1308,37 @@ func stringSliceToAny(in []string) []any {
 // error channel and the in-memory store can't fail either, so a
 // fatal storage failure cannot be ignored.
 func (s *Store) runWriteLocked(query string, args map[string]any) {
-	res, err := s.executeOrQuery(query, args)
+	res, release, err := s.executeOrQuery(query, args)
 	if err != nil {
 		panicOnFatal(err)
 		return
 	}
 	res.Close()
+	release()
 }
 
 // querySelect runs a read-shaped Cypher statement and materialises
-// every row before returning. Holds writeMu for the conn.Query
-// lifecycle: the Go binding shares one C connection handle across
-// goroutines; concurrent conn.Query calls (e.g. several per-repo
-// Indexers each doing NodeCount on shadow-swap entry) race in the
-// C layer and SIGSEGV. writeMu is now the connection-serialisation
-// mutex (the name predates the read-also-needs-it discovery).
+// every row before returning. The connection pool gives each
+// caller its own private connection so concurrent reads no longer
+// need a serialisation mutex — every per-repo Indexer's
+// NodeCount / shadow-swap probe runs in parallel.
 //
-// We consume the iterator to release the connection — open
-// iterators hold the kuzu_query handle and re-entrant store calls
-// would deadlock waiting for it.
+// We still consume the iterator before releasing the connection
+// to the pool — open iterators hold the kuzu_query handle and
+// the connection isn't safe to reuse until the result is closed.
 func (s *Store) querySelect(query string, args map[string]any) [][]any {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	return s.querySelectInner(query, args)
 }
 
 // querySelectInner is the unlocked body shared between querySelect
 // (locks) and querySelectLocked (caller already holds writeMu).
 func (s *Store) querySelectInner(query string, args map[string]any) [][]any {
-	res, err := s.executeOrQuery(query, args)
+	res, release, err := s.executeOrQuery(query, args)
 	if err != nil {
 		panicOnFatal(err)
 		return nil
 	}
+	defer release()
 	defer res.Close()
 	var rows [][]any
 	for res.HasNext() {
@@ -1346,16 +1370,41 @@ func (s *Store) querySelectLocked(query string, args map[string]any) [][]any {
 // requires the Prepare → Execute path for parameterised statements;
 // a bare Query with `$arg` placeholders is rejected. Statements
 // without parameters fall through to a direct Query for clarity.
-func (s *Store) executeOrQuery(query string, args map[string]any) (*lbug.QueryResult, error) {
-	if len(args) == 0 {
-		return s.conn.Query(query)
+//
+// Borrows a connection from s.pool so concurrent calls don't race
+// in cgo. Returns a release function the caller MUST defer — the
+// connection cannot return to the pool until the QueryResult has
+// been fully consumed (open iterators hold the kuzu_query handle
+// on the borrowed connection). Falls back to the setup s.conn if
+// the pool isn't ready (test fixtures that construct Store{}
+// directly); release() is a no-op in that case.
+func (s *Store) executeOrQuery(query string, args map[string]any) (*lbug.QueryResult, func(), error) {
+	conn := s.conn
+	release := func() {}
+	if s.pool != nil {
+		conn = s.pool.get()
+		release = func() { s.pool.put(conn) }
 	}
-	stmt, err := s.conn.Prepare(query)
+	if len(args) == 0 {
+		res, err := conn.Query(query)
+		if err != nil {
+			release()
+			return nil, func() {}, err
+		}
+		return res, release, nil
+	}
+	stmt, err := conn.Prepare(query)
 	if err != nil {
-		return nil, fmt.Errorf("prepare: %w", err)
+		release()
+		return nil, func() {}, fmt.Errorf("prepare: %w", err)
 	}
 	defer stmt.Close()
-	return s.conn.Execute(stmt, args)
+	res, err := conn.Execute(stmt, args)
+	if err != nil {
+		release()
+		return nil, func() {}, err
+	}
+	return res, release, nil
 }
 
 // panicOnFatal turns a non-nil engine error into a panic so callers
@@ -1424,29 +1473,19 @@ func (s *Store) FlushBulk() error {
 	s.bulkActive = false
 	s.bulkMu.Unlock()
 
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	// COPY FROM is INSERT-only — fast on an empty table, but a
-	// duplicate primary key collides (unresolved::* stubs cross
-	// chunks under streaming-flush). When the store already has
-	// data, fall back to the per-call AddNode/AddEdge loop which
-	// is idempotent on duplicate keys via MERGE semantics.
-	if s.nodeCountLocked() > 0 || s.edgeCountLocked() > 0 {
-		for _, n := range nodes {
-			if n == nil || n.ID == "" {
-				continue
-			}
-			s.upsertNodeLocked(n)
-		}
-		for _, e := range edges {
-			if e == nil {
-				continue
-			}
-			s.upsertEdgeLocked(e)
-		}
-		return nil
-	}
+	// Always take the COPY path. The prior fallback to per-row
+	// upsertNodeLocked when the store was non-empty existed to
+	// dodge PRIMARY KEY conflicts between concurrent FlushBulks
+	// (and between streaming-flush chunks within a single
+	// IndexCtx). With per-repo-prefixed stubs (internal/graph/stub.go)
+	// no two per-repo Indexers can emit the same Node ID, so the
+	// fallback is now dead weight — it forced the gortex repo
+	// onto 190k per-row MERGEs holding writeMu for minutes while
+	// every other repo's FlushBulk queued behind it.
+	//
+	// copyBulkLocked itself runs its COPY queries through the
+	// connection pool, so two concurrent FlushBulks parallelise
+	// instead of serialising on a single Connection handle.
 	return s.copyBulkLocked(nodes, edges)
 }
 
@@ -1471,7 +1510,45 @@ func (s *Store) edgeCountLocked() int {
 // copyBulkLocked dedupes the bulk buffers, writes them to temp CSV
 // files, and runs COPY FROM for each table. Must be called with
 // s.writeMu held.
+//
+// Multi-repo wrinkle: extractors emit `unresolved::<name>` targets
+// before the resolver runs. Most are resolved in the per-repo
+// shadow, but a residue always remains (truly unresolved symbols,
+// or names the language extractor can't bind without semantic
+// context). Across repos those `unresolved::*` ids collide on the
+// COPY's PRIMARY KEY. Rewrite them to `<repoPrefix>::unresolved::*`
+// using the repo prefix taken from any node in the batch (one
+// per-repo Indexer's drain carries nodes from a single repo).
 func (s *Store) copyBulkLocked(nodes []*graph.Node, edges []*graph.Edge) error {
+	repoPrefix := ""
+	for _, n := range nodes {
+		if n != nil && n.RepoPrefix != "" {
+			repoPrefix = n.RepoPrefix
+			break
+		}
+	}
+	if repoPrefix != "" {
+		const unresolvedTag = "unresolved::"
+		rewrite := func(id string) string {
+			if id == "" || !strings.HasPrefix(id, unresolvedTag) {
+				return id
+			}
+			return repoPrefix + "::" + id
+		}
+		for _, e := range edges {
+			if e == nil {
+				continue
+			}
+			e.From = rewrite(e.From)
+			e.To = rewrite(e.To)
+		}
+		for _, n := range nodes {
+			if n == nil {
+				continue
+			}
+			n.ID = rewrite(n.ID)
+		}
+	}
 	// Dedup nodes by ID (last write wins). The in-memory store's
 	// AddBatch overwrites on duplicate ID; mirror that here.
 	nodePos := make(map[string]int, len(nodes))
@@ -1555,11 +1632,9 @@ func (s *Store) copyBulkLocked(nodes []*graph.Node, edges []*graph.Edge) error {
 		// delimiter naively. Code identifiers and names never contain
 		// tabs, so TSV sidesteps the quoting problem entirely.
 		copyQ := fmt.Sprintf("COPY Node FROM '%s' (HEADER=false, DELIM='\t')", escapeCypherStringLit(nodesPath))
-		res, err := s.conn.Query(copyQ)
-		if err != nil {
+		if err := s.runCopyPooled(copyQ); err != nil {
 			return fmt.Errorf("copy nodes: %w", err)
 		}
-		res.Close()
 	}
 
 	if len(edges) > 0 {
@@ -1568,13 +1643,35 @@ func (s *Store) copyBulkLocked(nodes []*graph.Node, edges []*graph.Edge) error {
 			return fmt.Errorf("write edges tsv: %w", err)
 		}
 		copyQ := fmt.Sprintf("COPY Edge FROM '%s' (HEADER=false, DELIM='\t')", escapeCypherStringLit(edgesPath))
-		res, err := s.conn.Query(copyQ)
-		if err != nil {
+		if err := s.runCopyPooled(copyQ); err != nil {
 			return fmt.Errorf("copy edges: %w", err)
 		}
-		res.Close()
 	}
 
+	return nil
+}
+
+// runCopyPooled runs a parameter-less COPY query. Holds writeMu
+// for the duration: Ladybug only allows ONE write transaction
+// at a time per database; concurrent COPYs from different
+// connections fail with "Cannot start a new write transaction
+// in the system". The pool still parallelises READS (querySelect
+// no longer locks), but writes serialise here at the Go layer
+// to match ladybug's MVCC contract.
+//
+// The COPY query itself is parameter-less so we go straight
+// through conn.Query on a pooled connection.
+func (s *Store) runCopyPooled(copyQ string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	res, release, err := s.executeOrQuery(copyQ, nil)
+	if err != nil {
+		return err
+	}
+	if res != nil {
+		res.Close()
+	}
+	release()
 	return nil
 }
 
