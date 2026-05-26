@@ -39,10 +39,7 @@ func (s *Server) handleAnalyzeRoutes(ctx context.Context, req mcp.CallToolReques
 		Line    int    `json:"line"`
 	}
 	var rows []*routeRow
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeHandlesRoute {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeHandlesRoute) {
 		contractNode := s.graph.GetNode(e.To)
 		if contractNode == nil {
 			continue
@@ -154,10 +151,7 @@ func (s *Server) handleAnalyzeModels(ctx context.Context, req mcp.CallToolReques
 		Line       int    `json:"line"`
 	}
 	var rows []*modelRow
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeModelsTable {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeModelsTable) {
 		modelNode := s.graph.GetNode(e.From)
 		if modelNode == nil {
 			continue
@@ -269,10 +263,7 @@ func (s *Server) componentsRollup(ctx context.Context, req mcp.CallToolRequest, 
 		stats[id] = row
 		return row
 	}
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeRendersChild {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeRendersChild) {
 		parent := get(e.From)
 		parent.FanOut++
 		// Skip the child if it never resolved to a real node — leaving
@@ -454,7 +445,7 @@ func (s *Server) handleAnalyzeDbtModels(ctx context.Context, req mcp.CallToolReq
 
 	// Second pass: tally columns (EdgeMemberOf → model) and lineage
 	// (EdgeDependsOn between two model nodes) in one walk of AllEdges.
-	for _, e := range s.graph.AllEdges() {
+	for e := range edgesByKinds(s.graph, graph.EdgeMemberOf, graph.EdgeDependsOn) {
 		switch e.Kind {
 		case graph.EdgeMemberOf:
 			if r := rowByID[e.To]; r != nil {
