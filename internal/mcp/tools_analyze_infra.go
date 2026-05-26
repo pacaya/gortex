@@ -67,12 +67,14 @@ func (s *Server) handleAnalyzeK8sResources(ctx context.Context, req mcp.CallTool
 			c.usesEnv++
 		}
 	}
-	for _, e := range s.graph.AllEdges() {
-		switch e.Kind {
-		case graph.EdgeDependsOn, graph.EdgeConfigures, graph.EdgeMounts,
-			graph.EdgeExposes, graph.EdgeUsesEnv:
-			bump(e.From, e.Kind)
-		}
+	for e := range edgesByKinds(s.graph,
+		graph.EdgeDependsOn,
+		graph.EdgeConfigures,
+		graph.EdgeMounts,
+		graph.EdgeExposes,
+		graph.EdgeUsesEnv,
+	) {
+		bump(e.From, e.Kind)
 	}
 
 	var rows []*resourceRow
@@ -148,10 +150,7 @@ func (s *Server) handleAnalyzeImages(ctx context.Context, req mcp.CallToolReques
 	}
 
 	consumers := make(map[string]int)
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeDependsOn {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeDependsOn) {
 		consumers[e.To]++
 	}
 
@@ -227,11 +226,8 @@ func (s *Server) handleAnalyzeKustomize(ctx context.Context, req mcp.CallToolReq
 			c.res++
 		}
 	}
-	for _, e := range s.graph.AllEdges() {
-		switch e.Kind {
-		case graph.EdgeDependsOn, graph.EdgeReferences:
-			bump(e.From, e.Kind)
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeDependsOn, graph.EdgeReferences) {
+		bump(e.From, e.Kind)
 	}
 
 	var rows []*overlayRow
