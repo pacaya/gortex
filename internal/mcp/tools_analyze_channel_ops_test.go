@@ -30,7 +30,7 @@ func callAnalyzeChannelOps(t *testing.T, srv *Server, args map[string]any) map[s
 	return out
 }
 
-func addChannelEdge(g *graph.Graph, kind graph.EdgeKind, from, to, file string, line int) {
+func addChannelEdge(g graph.Store, kind graph.EdgeKind, from, to, file string, line int) {
 	g.AddEdge(&graph.Edge{
 		From:     from,
 		To:       to,

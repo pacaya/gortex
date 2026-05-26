@@ -22,7 +22,7 @@ import (
 // setupNavServer indexes a Go source with a deeper call graph and a type
 // carrying several methods, so the nav tool's into / up / sibling moves
 // have real candidates to choose between.
-func setupNavServer(t *testing.T) (*Server, *graph.Graph) {
+func setupNavServer(t *testing.T) (*Server, graph.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	src := `package svc
@@ -73,7 +73,7 @@ func navResult(t *testing.T, result *mcplib.CallToolResult) map[string]any {
 }
 
 // navFindMethod returns the graph ID of a method named `name`.
-func navFindMethod(t *testing.T, g *graph.Graph, name string) string {
+func navFindMethod(t *testing.T, g graph.Store, name string) string {
 	t.Helper()
 	for _, n := range g.AllNodes() {
 		if n.Name == name && (n.Kind == graph.KindMethod || n.Kind == graph.KindFunction) {

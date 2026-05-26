@@ -33,7 +33,7 @@ func callAnalyzeOrphanTables(t *testing.T, srv *Server, args map[string]any) map
 // addTable + addQuery + addMigration are tiny helpers that mirror the
 // shape the indexer produces. Kept inside the test so it doesn't grow
 // production-side scaffolding.
-func addTable(g *graph.Graph, id, table, dialect string) {
+func addTable(g graph.Store, id, table, dialect string) {
 	g.AddNode(&graph.Node{
 		ID:   id,
 		Kind: graph.KindTable,
@@ -45,7 +45,7 @@ func addTable(g *graph.Graph, id, table, dialect string) {
 	})
 }
 
-func addQueryEdge(g *graph.Graph, fromID, toID string) {
+func addQueryEdge(g graph.Store, fromID, toID string) {
 	g.AddEdge(&graph.Edge{
 		From: fromID,
 		To:   toID,
@@ -53,7 +53,7 @@ func addQueryEdge(g *graph.Graph, fromID, toID string) {
 	})
 }
 
-func addMigrationEdge(g *graph.Graph, fromID, toID string) {
+func addMigrationEdge(g graph.Store, fromID, toID string) {
 	g.AddEdge(&graph.Edge{
 		From: fromID,
 		To:   toID,

@@ -12,7 +12,7 @@ import (
 // buildHotspotRerankFixture seeds three function nodes with deterministic
 // complexity scores AND varying blame / releases metadata so the
 // novelty / directional modes can reorder them in predictable ways.
-func buildHotspotRerankFixture(t *testing.T, now time.Time) (*graph.Graph, []analysis.HotspotEntry) {
+func buildHotspotRerankFixture(t *testing.T, now time.Time) (graph.Store, []analysis.HotspotEntry) {
 	t.Helper()
 	g := graph.New()
 

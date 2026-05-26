@@ -38,7 +38,7 @@ func callAnalyzeHealth(t *testing.T, srv *Server, extra map[string]any) map[stri
 // addHealthFn drops one function node into the graph with the given
 // id/file. Avoids re-using `addFn` from tools_analyze_concurrency_test.go
 // to keep this test file self-contained.
-func addHealthFn(g *graph.Graph, id, file string, meta map[string]any) *graph.Node {
+func addHealthFn(g graph.Store, id, file string, meta map[string]any) *graph.Node {
 	n := &graph.Node{
 		ID: id, Kind: graph.KindFunction, Name: id,
 		FilePath: file, StartLine: 1, EndLine: 5,

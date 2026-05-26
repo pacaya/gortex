@@ -33,7 +33,7 @@ func callAnalyzeCrossRepo(t *testing.T, srv *Server, args map[string]any) map[st
 
 // seedCrossRepoGraph wires three repos with a handful of cross-repo
 // edges so the analyzer has something to group.
-func seedCrossRepoGraph(g *graph.Graph) {
+func seedCrossRepoGraph(g graph.Store) {
 	add := func(id, repo string) {
 		g.AddNode(&graph.Node{ID: id, Kind: graph.KindFunction, Name: id, FilePath: id, RepoPrefix: repo})
 	}

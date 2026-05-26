@@ -30,7 +30,7 @@ func callAnalyzeStringEmitters(t *testing.T, srv *Server, args map[string]any) m
 	return out
 }
 
-func addStringNode(g *graph.Graph, id, value, ctx string) {
+func addStringNode(g graph.Store, id, value, ctx string) {
 	g.AddNode(&graph.Node{
 		ID:   id,
 		Kind: graph.KindString,
@@ -39,7 +39,7 @@ func addStringNode(g *graph.Graph, id, value, ctx string) {
 	})
 }
 
-func addStringEmitEdge(g *graph.Graph, from, to, ctx, method string) {
+func addStringEmitEdge(g graph.Store, from, to, ctx, method string) {
 	g.AddEdge(&graph.Edge{
 		From: from,
 		To:   to,

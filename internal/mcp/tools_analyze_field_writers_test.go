@@ -30,11 +30,11 @@ func callAnalyzeFieldWriters(t *testing.T, srv *Server, args map[string]any) map
 	return out
 }
 
-func addFieldNode(g *graph.Graph, id, name string) {
+func addFieldNode(g graph.Store, id, name string) {
 	g.AddNode(&graph.Node{ID: id, Kind: graph.KindField, Name: name})
 }
 
-func addWriteEdge(g *graph.Graph, from, to string) {
+func addWriteEdge(g graph.Store, from, to string) {
 	g.AddEdge(&graph.Edge{From: from, To: to, Kind: graph.EdgeWrites})
 }
 

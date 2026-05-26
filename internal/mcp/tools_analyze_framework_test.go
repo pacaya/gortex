@@ -30,7 +30,7 @@ func callAnalyzeFramework(t *testing.T, srv *Server, kind string, args map[strin
 	return out
 }
 
-func addContractNode(g *graph.Graph, id, ctype string, meta map[string]any) {
+func addContractNode(g graph.Store, id, ctype string, meta map[string]any) {
 	full := map[string]any{"type": ctype, "role": "provider"}
 	for k, v := range meta {
 		full[k] = v
@@ -40,7 +40,7 @@ func addContractNode(g *graph.Graph, id, ctype string, meta map[string]any) {
 	})
 }
 
-func addHandlesRouteEdge(g *graph.Graph, from, to, file string, line int) {
+func addHandlesRouteEdge(g graph.Store, from, to, file string, line int) {
 	g.AddEdge(&graph.Edge{
 		From: from, To: to, Kind: graph.EdgeHandlesRoute,
 		FilePath: file, Line: line,
@@ -97,7 +97,7 @@ func TestAnalyzeRoutes_FilterByKind(t *testing.T) {
 	}
 }
 
-func addModelTableEdge(g *graph.Graph, from, to, orm, table, derivation string) {
+func addModelTableEdge(g graph.Store, from, to, orm, table, derivation string) {
 	g.AddNode(&graph.Node{ID: to, Kind: graph.KindTable, Name: table, Language: "go", Meta: map[string]any{"dialect": "orm"}})
 	g.AddEdge(&graph.Edge{
 		From: from, To: to, Kind: graph.EdgeModelsTable,
@@ -151,7 +151,7 @@ func TestAnalyzeModels_FilterByTableSubstring(t *testing.T) {
 	}
 }
 
-func addRendersChildEdge(g *graph.Graph, from, to, name string, line int) {
+func addRendersChildEdge(g graph.Store, from, to, name string, line int) {
 	g.AddEdge(&graph.Edge{
 		From: from, To: to, Kind: graph.EdgeRendersChild,
 		Line: line,
@@ -224,7 +224,7 @@ func TestAnalyzeComponents_EmptyOnNoEdges(t *testing.T) {
 	}
 }
 
-func addDbtModelNode(g *graph.Graph, id, name, framework, resourceType, materialized string) {
+func addDbtModelNode(g graph.Store, id, name, framework, resourceType, materialized string) {
 	g.AddNode(&graph.Node{
 		ID: id, Kind: graph.KindTable, Name: name, Language: "sql",
 		FilePath: name + ".sql", StartLine: 1,
@@ -235,7 +235,7 @@ func addDbtModelNode(g *graph.Graph, id, name, framework, resourceType, material
 	})
 }
 
-func addDbtColumn(g *graph.Graph, modelID, col string) {
+func addDbtColumn(g graph.Store, modelID, col string) {
 	colID := modelID + "::" + col
 	g.AddNode(&graph.Node{ID: colID, Kind: graph.KindColumn, Name: col, Language: "sql"})
 	g.AddEdge(&graph.Edge{From: colID, To: modelID, Kind: graph.EdgeMemberOf})

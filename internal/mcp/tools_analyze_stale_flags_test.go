@@ -33,7 +33,7 @@ func callAnalyzeStaleFlags(t *testing.T, srv *Server, args map[string]any) map[s
 
 // addFlagWithCallers wires a flag node + N caller functions, each
 // stamped with last_authored.timestamp = ageDays ago.
-func addFlagWithCallers(g *graph.Graph, flagID, provider, name string, callers map[string]int /* callerID → ageDays */) {
+func addFlagWithCallers(g graph.Store, flagID, provider, name string, callers map[string]int /* callerID → ageDays */) {
 	g.AddNode(&graph.Node{
 		ID:   flagID,
 		Kind: graph.KindFlag,

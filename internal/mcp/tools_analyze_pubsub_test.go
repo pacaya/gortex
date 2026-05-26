@@ -30,7 +30,7 @@ func callAnalyzePubsub(t *testing.T, srv *Server, args map[string]any) map[strin
 	return out
 }
 
-func addPubsubTopic(g *graph.Graph, id, name, transport string) {
+func addPubsubTopic(g graph.Store, id, name, transport string) {
 	g.AddNode(&graph.Node{
 		ID:   id,
 		Kind: graph.KindEvent,
@@ -39,7 +39,7 @@ func addPubsubTopic(g *graph.Graph, id, name, transport string) {
 	})
 }
 
-func addListensOnEdge(g *graph.Graph, from, to string) {
+func addListensOnEdge(g graph.Store, from, to string) {
 	g.AddEdge(&graph.Edge{From: from, To: to, Kind: graph.EdgeListensOn})
 }
 

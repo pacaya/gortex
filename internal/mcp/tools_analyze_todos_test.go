@@ -12,7 +12,7 @@ import (
 // addTodoNode is a small helper for these tests — wires a KindTodo
 // node directly into the graph without going through the indexer's
 // per-file pipeline.
-func addTodoNode(g *graph.Graph, id string, line int, meta map[string]any) {
+func addTodoNode(g graph.Store, id string, line int, meta map[string]any) {
 	g.AddNode(&graph.Node{
 		ID:        id,
 		Kind:      graph.KindTodo,

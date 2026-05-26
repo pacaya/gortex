@@ -30,7 +30,7 @@ func callAnalyzeErrorSurface(t *testing.T, srv *Server, args map[string]any) map
 	return out
 }
 
-func addThrowsEdge(g *graph.Graph, from, to, file string, line int) {
+func addThrowsEdge(g graph.Store, from, to, file string, line int) {
 	g.AddEdge(&graph.Edge{
 		From:     from,
 		To:       to,

@@ -30,7 +30,7 @@ func callAnalyzeConfigReaders(t *testing.T, srv *Server, args map[string]any) ma
 	return out
 }
 
-func addConfigKeyNode(g *graph.Graph, id, name, source string) {
+func addConfigKeyNode(g graph.Store, id, name, source string) {
 	g.AddNode(&graph.Node{
 		ID:   id,
 		Kind: graph.KindConfigKey,
@@ -39,7 +39,7 @@ func addConfigKeyNode(g *graph.Graph, id, name, source string) {
 	})
 }
 
-func addReadConfigEdge(g *graph.Graph, from, to string) {
+func addReadConfigEdge(g graph.Store, from, to string) {
 	g.AddEdge(&graph.Edge{From: from, To: to, Kind: graph.EdgeReadsConfig})
 }
 

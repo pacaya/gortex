@@ -30,7 +30,7 @@ func callAnalyzeEventEmitters(t *testing.T, srv *Server, args map[string]any) ma
 	return out
 }
 
-func addEventNode(g *graph.Graph, id, name, kind string) {
+func addEventNode(g graph.Store, id, name, kind string) {
 	g.AddNode(&graph.Node{
 		ID:   id,
 		Kind: graph.KindEvent,
@@ -39,7 +39,7 @@ func addEventNode(g *graph.Graph, id, name, kind string) {
 	})
 }
 
-func addEmitsEdge(g *graph.Graph, from, to, method string) {
+func addEmitsEdge(g graph.Store, from, to, method string) {
 	e := &graph.Edge{From: from, To: to, Kind: graph.EdgeEmits}
 	if method != "" {
 		e.Meta = map[string]any{"method": method}

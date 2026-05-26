@@ -33,7 +33,7 @@ func callAnalyzeOwnership(t *testing.T, srv *Server, args map[string]any) map[st
 
 // addBlameNode wires a function node with synthetic last_authored
 // meta keyed off email + timestamp.
-func addBlameNode(g *graph.Graph, id, file, email string, ts int64) {
+func addBlameNode(g graph.Store, id, file, email string, ts int64) {
 	g.AddNode(&graph.Node{
 		ID:        id,
 		Kind:      graph.KindFunction,

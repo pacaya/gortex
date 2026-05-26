@@ -34,7 +34,7 @@ func callAnalyzeGoroutineSpawns(t *testing.T, srv *Server, args map[string]any) 
 // site is unique under the graph's edge-dedup key. Meta is dropped
 // when mode is empty so the analyzer's "modeless spawn" path is
 // exercisable.
-func addSpawnEdge(g *graph.Graph, from, to, mode string, line int) {
+func addSpawnEdge(g graph.Store, from, to, mode string, line int) {
 	e := &graph.Edge{From: from, To: to, Kind: graph.EdgeSpawns, FilePath: "f.go", Line: line}
 	if mode != "" {
 		e.Meta = map[string]any{"mode": mode}

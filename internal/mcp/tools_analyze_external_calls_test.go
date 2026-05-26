@@ -30,7 +30,7 @@ func callAnalyzeExternalCalls(t *testing.T, srv *Server, args map[string]any) ma
 	return out
 }
 
-func addExternalModuleNode(g *graph.Graph, id, path, version, kind string) {
+func addExternalModuleNode(g graph.Store, id, path, version, kind string) {
 	g.AddNode(&graph.Node{
 		ID:       id,
 		Kind:     graph.KindModule,
@@ -44,7 +44,7 @@ func addExternalModuleNode(g *graph.Graph, id, path, version, kind string) {
 	})
 }
 
-func addExternalSymbolNode(g *graph.Graph, id, name, importPath, moduleID string, kind graph.NodeKind) {
+func addExternalSymbolNode(g graph.Store, id, name, importPath, moduleID string, kind graph.NodeKind) {
 	g.AddNode(&graph.Node{
 		ID:       id,
 		Kind:     kind,
@@ -63,7 +63,7 @@ func addExternalSymbolNode(g *graph.Graph, id, name, importPath, moduleID string
 	})
 }
 
-func addExternalCall(g *graph.Graph, from, to string) {
+func addExternalCall(g graph.Store, from, to string) {
 	g.AddEdge(&graph.Edge{
 		From: from,
 		To:   to,

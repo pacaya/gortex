@@ -11,7 +11,7 @@ import (
 
 // addCoveredNode wires a function node with synthetic
 // coverage_pct meta — emulating coverage.EnrichGraph output.
-func addCoveredNode(g *graph.Graph, id, file string, pct float64, numStmt, hit int) {
+func addCoveredNode(g graph.Store, id, file string, pct float64, numStmt, hit int) {
 	g.AddNode(&graph.Node{
 		ID:        id,
 		Kind:      graph.KindFunction,

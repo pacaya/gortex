@@ -36,7 +36,7 @@ func callAnalyze(t *testing.T, srv *Server, kind string, extra map[string]any) m
 // addEmitToKindString builds a (caller, KindString) emit pair with
 // the given context and meta. Used by the registry-downstream
 // analyzers' tests.
-func addEmitToKindString(g *graph.Graph, caller, strID, value, ctx string, nodeMeta, edgeMeta map[string]any) {
+func addEmitToKindString(g graph.Store, caller, strID, value, ctx string, nodeMeta, edgeMeta map[string]any) {
 	meta := map[string]any{
 		"context": ctx,
 		"value":   value,

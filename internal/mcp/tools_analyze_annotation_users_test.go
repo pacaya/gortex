@@ -30,7 +30,7 @@ func callAnalyzeAnnotationUsers(t *testing.T, srv *Server, args map[string]any) 
 	return out
 }
 
-func addAnnotationNode(g *graph.Graph, id, name string) {
+func addAnnotationNode(g graph.Store, id, name string) {
 	g.AddNode(&graph.Node{
 		ID:   id,
 		Kind: graph.KindType,
@@ -39,7 +39,7 @@ func addAnnotationNode(g *graph.Graph, id, name string) {
 	})
 }
 
-func addAnnotatedEdge(g *graph.Graph, from, to, args string) {
+func addAnnotatedEdge(g graph.Store, from, to, args string) {
 	e := &graph.Edge{From: from, To: to, Kind: graph.EdgeAnnotated, FilePath: "x.go", Line: 1}
 	if args != "" {
 		e.Meta = map[string]any{"args": args}

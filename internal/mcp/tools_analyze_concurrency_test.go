@@ -34,15 +34,15 @@ func concurrencyServer(t *testing.T) *Server {
 	return NewServer(eng, g, idx, nil, zap.NewNop(), nil)
 }
 
-func addFn(g *graph.Graph, id, name, path string) {
+func addFn(g graph.Store, id, name, path string) {
 	g.AddNode(&graph.Node{ID: id, Kind: graph.KindFunction, Name: name, FilePath: path, Language: "go"})
 }
 
-func addField(g *graph.Graph, id, name, path string) {
+func addField(g graph.Store, id, name, path string) {
 	g.AddNode(&graph.Node{ID: id, Kind: graph.KindField, Name: name, FilePath: path, Language: "go"})
 }
 
-func addEdge(g *graph.Graph, from, to string, kind graph.EdgeKind, path string, line int) {
+func addEdge(g graph.Store, from, to string, kind graph.EdgeKind, path string, line int) {
 	g.AddEdge(&graph.Edge{From: from, To: to, Kind: kind, FilePath: path, Line: line, Confidence: 1})
 }
 
@@ -328,15 +328,15 @@ func TestAnalyzeRaceWrites_GCXEncodesRow(t *testing.T) {
 // addMethod / addType / addTypedField build the node shapes the
 // concurrency classifier reads: a method linked to its receiver type
 // via EdgeMemberOf, and a typed field linked to its owning type.
-func addMethod(g *graph.Graph, id, name, path string) {
+func addMethod(g graph.Store, id, name, path string) {
 	g.AddNode(&graph.Node{ID: id, Kind: graph.KindMethod, Name: name, FilePath: path, Language: "go"})
 }
 
-func addType(g *graph.Graph, id, name, path string) {
+func addType(g graph.Store, id, name, path string) {
 	g.AddNode(&graph.Node{ID: id, Kind: graph.KindType, Name: name, FilePath: path, Language: "go"})
 }
 
-func addTypedField(g *graph.Graph, id, name, fieldType, path string) {
+func addTypedField(g graph.Store, id, name, fieldType, path string) {
 	g.AddNode(&graph.Node{
 		ID: id, Kind: graph.KindField, Name: name, FilePath: path, Language: "go",
 		Meta: map[string]any{"field_type": fieldType},

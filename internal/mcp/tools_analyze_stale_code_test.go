@@ -13,7 +13,7 @@ import (
 // addBlameEnrichedNode wires a function node with synthetic
 // last_authored meta — emulating what blame.EnrichGraph would have
 // produced after a real run.
-func addBlameEnrichedNode(g *graph.Graph, id, file string, line int, email, commit string, ageDays int) {
+func addBlameEnrichedNode(g graph.Store, id, file string, line int, email, commit string, ageDays int) {
 	ts := time.Now().Add(-time.Duration(ageDays*24) * time.Hour).Unix()
 	g.AddNode(&graph.Node{
 		ID:        id,

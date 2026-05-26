@@ -33,7 +33,7 @@ func callAnalyzeInfra(t *testing.T, srv *Server, kind string, args map[string]an
 	return out
 }
 
-func seedK8sFixture(g *graph.Graph) {
+func seedK8sFixture(g graph.Store) {
 	deploy := &graph.Node{
 		ID: "k8s::Deployment::prod::api", Kind: graph.KindResource,
 		Name: "api", FilePath: "k8s/api.yaml", StartLine: 1,
