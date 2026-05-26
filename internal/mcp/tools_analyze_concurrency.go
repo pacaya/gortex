@@ -72,10 +72,7 @@ func (s *Server) handleAnalyzeRaceWrites(ctx context.Context, req mcp.CallToolRe
 	}
 	var rows []raceRow
 
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeWrites {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeWrites) {
 		if !goroutineReachable[e.From] {
 			continue
 		}
@@ -162,10 +159,7 @@ func (s *Server) handleAnalyzeRaceWrites(ctx context.Context, req mcp.CallToolRe
 func (s *Server) buildGoroutineReachableSet() map[string]bool {
 	reach := map[string]bool{}
 	var roots []string
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeSpawns {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeSpawns) {
 		if !reach[e.To] {
 			reach[e.To] = true
 			roots = append(roots, e.To)
@@ -282,10 +276,7 @@ func (s *Server) handleAnalyzeUnclosedChannels(ctx context.Context, req mcp.Call
 	// channel"; the channel arg isn't tracked so the membership test
 	// is per-function, not per-channel.
 	closesIn := map[string]bool{}
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeCalls {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeCalls) {
 		if callTargetName(e) != "close" {
 			continue
 		}
@@ -303,10 +294,7 @@ func (s *Server) handleAnalyzeUnclosedChannels(ctx context.Context, req mcp.Call
 		Line      int
 	}
 	byChannel := map[string]*channelInfo{}
-	for _, e := range s.graph.AllEdges() {
-		if e.Kind != graph.EdgeSends && e.Kind != graph.EdgeRecvs {
-			continue
-		}
+	for e := range edgesByKinds(s.graph, graph.EdgeSends, graph.EdgeRecvs) {
 		info := byChannel[e.To]
 		if info == nil {
 			info = &channelInfo{
