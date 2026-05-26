@@ -1028,3 +1028,92 @@ type FileImportCountRow struct {
 type FileImportAggregator interface {
 	FileImportCounts(scope []string) []FileImportCountRow
 }
+
+// InDegreeForNodes is an optional capability backends MAY implement to
+// return the per-target incoming-edge count for the given node id set
+// in one backend round-trip. Unlike InEdgeCounter (which filters by
+// edge kind across the WHOLE graph), this counter is scoped to a
+// caller-supplied id set and counts EVERY incoming edge regardless of
+// kind. handleGetSurprisingConnections needs both the hub heuristic
+// and the per-edge anomaly walk, but the hub check only cares about
+// nodes already inside the session-scoped working set; counting every
+// edge across the table just to bucket by `To` materialises the entire
+// edge column (~286k rows over cgo on Ladybug).
+//
+// Empty ids returns nil — never a whole-table scan. Targets with zero
+// matching in-edges may be absent from the returned map (callers index
+// with `m[id]` and treat zero as the default).
+//
+// Optional capability — handleGetSurprisingConnections falls back to
+// the AllEdges-driven bucketing when the backend doesn't implement it.
+type InDegreeForNodes interface {
+	InDegreeForNodes(ids []string) map[string]int
+}
+
+// ReachableForwardByKinds is an optional capability backends MAY
+// implement to compute the set of node IDs reachable from the seed
+// frontier via outgoing edges whose Kind is in the supplied set, in
+// one backend round-trip. The Go fallback runs a layer-by-layer BFS
+// firing GetOutEdges per node — on Ladybug that's N+1 cgo round-trips
+// where N is the transitive frontier size; on a 100k-symbol repo with
+// a few thousand test functions the BFS easily issues tens of
+// thousands of edge fetches.
+//
+// reachableFromTests in handleGetUntestedSymbols is the primary
+// caller: seeds are every function/method in a test file, kinds are
+// {calls, references}, and the result is the closed set of symbols
+// covered transitively by the test surface. The capability runs one
+// variable-length match expression and ships the closure back as a
+// single id list.
+//
+// Empty seeds returns nil; an empty kinds set returns the seed set
+// unchanged (no edges to traverse). The returned map keys are the
+// reachable node IDs (including the seeds); the bool value is always
+// true — the shape mirrors the in-memory implementation's covered set
+// so the caller's index expression stays identical.
+//
+// Optional capability — reachableFromTests falls back to the
+// per-layer GetOutEdges BFS when the backend doesn't implement it.
+type ReachableForwardByKinds interface {
+	ReachableForwardByKinds(seeds []string, kinds []EdgeKind) map[string]bool
+}
+
+// ThrowerErrorRow is one tuple returned by ThrowerErrorSurfacer. ThrowerID
+// is the symbol that originates the EdgeThrows edges; ErrorTargets is the
+// distinct set of error-type node IDs the thrower reaches via EdgeThrows;
+// ErrorMsgs is the distinct set of literal error-message strings the
+// thrower emits (KindString nodes with meta.context = "error_msg", linked
+// by EdgeEmits). Throws is the count of underlying EdgeThrows edges (one
+// thrower may raise the same target multiple times from different sites).
+// FilePath / Line are the row metadata the legacy handler propagated from
+// the first edge / falling back to the thrower node — they ride here so
+// the analyzer never has to issue a follow-up GetNode lookup.
+type ThrowerErrorRow struct {
+	ThrowerID    string
+	FilePath     string
+	Line         int
+	Throws       int
+	ErrorTargets []string
+	ErrorMsgs    []string
+}
+
+// ThrowerErrorSurfacer is an optional capability backends MAY implement
+// to evaluate the analyze(error_surface) rollup entirely inside the
+// storage layer. The Go fallback walks EdgeThrows once for the per-
+// thrower aggregation, then issues GetOutEdges per surviving thrower
+// to attach the literal error-message strings. On Ladybug that's two
+// scans of the edge table plus an N+1 cgo loop for the per-thrower
+// emit walk; the capability runs two Cypher GROUP BYs and ships the
+// pre-shaped rows back.
+//
+// pathPrefix narrows the EdgeThrows rows by their stored FilePath
+// prefix; an empty prefix means "every thrower". Returned rows are
+// already deduplicated per (thrower, error_target) and per (thrower,
+// error_msg) — callers feed them directly into the analyzer's sort /
+// truncate path without further bucketing.
+//
+// Optional capability — handleAnalyzeErrorSurface falls back to the
+// AllEdges-driven loop when the backend doesn't implement it.
+type ThrowerErrorSurfacer interface {
+	ThrowerErrorSurface(pathPrefix string) []ThrowerErrorRow
+}

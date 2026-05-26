@@ -2429,3 +2429,135 @@ func (g *Graph) RepoPrefixes() []string {
 	}
 	return prefixes
 }
+
+// InDegreeForNodes is the in-memory reference implementation of the
+// InDegreeForNodes capability. Walks the per-target in-edge buckets
+// directly — the same arithmetic the disk backends push into a single
+// Cypher COUNT.
+func (g *Graph) InDegreeForNodes(ids []string) map[string]int {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		c := len(g.GetInEdges(id))
+		if c == 0 {
+			continue
+		}
+		out[id] = c
+	}
+	return out
+}
+
+// ReachableForwardByKinds is the in-memory reference implementation
+// of the ReachableForwardByKinds capability. Layer-by-layer BFS from
+// the seed frontier, following only edges whose Kind is in the
+// supplied set. Pure map / slice walks here — the win is the disk
+// backends fold the BFS into one variable-length Cypher match.
+func (g *Graph) ReachableForwardByKinds(seeds []string, kinds []EdgeKind) map[string]bool {
+	if len(seeds) == 0 {
+		return nil
+	}
+	covered := make(map[string]bool, len(seeds))
+	frontier := make([]string, 0, len(seeds))
+	for _, id := range seeds {
+		if id == "" || covered[id] {
+			continue
+		}
+		covered[id] = true
+		frontier = append(frontier, id)
+	}
+	if len(kinds) == 0 {
+		return covered
+	}
+	allowed := make(map[EdgeKind]struct{}, len(kinds))
+	for _, k := range kinds {
+		allowed[k] = struct{}{}
+	}
+	for len(frontier) > 0 {
+		next := frontier[:0:0]
+		for _, id := range frontier {
+			for _, e := range g.GetOutEdges(id) {
+				if e == nil {
+					continue
+				}
+				if _, ok := allowed[e.Kind]; !ok {
+					continue
+				}
+				if !covered[e.To] {
+					covered[e.To] = true
+					next = append(next, e.To)
+				}
+			}
+		}
+		frontier = next
+	}
+	return covered
+}
+
+// ThrowerErrorSurface is the in-memory reference implementation of
+// the ThrowerErrorSurfacer capability. Walks EdgeThrows once for the
+// per-thrower target dedup, then walks each thrower's out-edges for
+// the EdgeEmits → KindString(context=error_msg) attachment. The disk
+// backends collapse both passes into two Cypher GROUP BYs.
+func (g *Graph) ThrowerErrorSurface(pathPrefix string) []ThrowerErrorRow {
+	byThrower := map[string]*ThrowerErrorRow{}
+	addUnique := func(set []string, v string) []string {
+		for _, s := range set {
+			if s == v {
+				return set
+			}
+		}
+		return append(set, v)
+	}
+	for e := range g.EdgesByKind(EdgeThrows) {
+		if e == nil {
+			continue
+		}
+		if pathPrefix != "" && !strings.HasPrefix(e.FilePath, pathPrefix) {
+			continue
+		}
+		row, ok := byThrower[e.From]
+		if !ok {
+			file := e.FilePath
+			line := e.Line
+			n := g.GetNode(e.From)
+			if n != nil {
+				if file == "" {
+					file = n.FilePath
+				}
+				if line == 0 {
+					line = n.StartLine
+				}
+			}
+			row = &ThrowerErrorRow{ThrowerID: e.From, FilePath: file, Line: line}
+			byThrower[e.From] = row
+		}
+		row.Throws++
+		row.ErrorTargets = addUnique(row.ErrorTargets, e.To)
+	}
+	for thrower, row := range byThrower {
+		for _, e := range g.GetOutEdges(thrower) {
+			if e == nil || e.Kind != EdgeEmits {
+				continue
+			}
+			n := g.GetNode(e.To)
+			if n == nil || n.Kind != KindString {
+				continue
+			}
+			ctxLabel, _ := n.Meta["context"].(string)
+			if ctxLabel != "error_msg" {
+				continue
+			}
+			row.ErrorMsgs = addUnique(row.ErrorMsgs, n.Name)
+		}
+	}
+	out := make([]ThrowerErrorRow, 0, len(byThrower))
+	for _, r := range byThrower {
+		out = append(out, *r)
+	}
+	return out
+}

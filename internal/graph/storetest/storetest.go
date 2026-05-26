@@ -84,6 +84,9 @@ func RunConformance(t *testing.T, factory Factory) {
 	t.Run("EdgeKindCounter", func(t *testing.T) { testEdgeKindCounter(t, factory) })
 	t.Run("CrossRepoEdgeAggregator", func(t *testing.T) { testCrossRepoEdgeAggregator(t, factory) })
 	t.Run("FileImportAggregator", func(t *testing.T) { testFileImportAggregator(t, factory) })
+	t.Run("InDegreeForNodes", func(t *testing.T) { testInDegreeForNodes(t, factory) })
+	t.Run("ReachableForwardByKinds", func(t *testing.T) { testReachableForwardByKinds(t, factory) })
+	t.Run("ThrowerErrorSurfacer", func(t *testing.T) { testThrowerErrorSurfacer(t, factory) })
 }
 
 // -- fixture helpers ---------------------------------------------------
@@ -2199,5 +2202,242 @@ func testFileImportAggregator(t *testing.T, factory Factory) {
 	// Empty (non-nil) scope MUST return nil — never a whole-graph scan.
 	if got := ag.FileImportCounts([]string{}); got != nil {
 		t.Fatalf("FileImportCounts(empty scope) = %v, want nil", got)
+	}
+}
+
+// testInDegreeForNodes exercises the optional graph.InDegreeForNodes
+// capability. Seeds a tiny graph with three targets carrying 0 / 1 / 3
+// incoming edges (of mixed kinds) and asserts the counter returns the
+// per-target count restricted to the caller's id set.
+func testInDegreeForNodes(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	ic, ok := s.(graph.InDegreeForNodes)
+	if !ok {
+		t.Skip("backend does not implement graph.InDegreeForNodes")
+	}
+
+	s.AddNode(mkNode("Hub", "Hub", "a.go", graph.KindFunction))
+	s.AddNode(mkNode("Lonely", "Lonely", "a.go", graph.KindFunction))
+	s.AddNode(mkNode("Isolated", "Isolated", "a.go", graph.KindFunction))
+	s.AddNode(mkNode("C1", "C1", "a.go", graph.KindFunction))
+	s.AddNode(mkNode("C2", "C2", "a.go", graph.KindFunction))
+	s.AddNode(mkNode("C3", "C3", "a.go", graph.KindFunction))
+	s.AddNode(mkNode("Outside", "Outside", "a.go", graph.KindFunction))
+
+	e1 := mkEdge("C1", "Hub", graph.EdgeCalls)
+	e1.Line = 1
+	e2 := mkEdge("C2", "Hub", graph.EdgeReferences)
+	e2.Line = 2
+	e3 := mkEdge("C3", "Hub", graph.EdgeReads)
+	e3.Line = 3
+	e4 := mkEdge("C1", "Lonely", graph.EdgeCalls)
+	e4.Line = 4
+	// One incoming edge that targets Outside — must NOT surface when
+	// Outside is absent from the caller's id list.
+	e5 := mkEdge("C2", "Outside", graph.EdgeCalls)
+	e5.Line = 5
+	s.AddEdge(e1)
+	s.AddEdge(e2)
+	s.AddEdge(e3)
+	s.AddEdge(e4)
+	s.AddEdge(e5)
+
+	got := ic.InDegreeForNodes([]string{"Hub", "Lonely", "Isolated"})
+	if got["Hub"] != 3 {
+		t.Fatalf("InDegreeForNodes[Hub] = %d, want 3", got["Hub"])
+	}
+	if got["Lonely"] != 1 {
+		t.Fatalf("InDegreeForNodes[Lonely] = %d, want 1", got["Lonely"])
+	}
+	// Isolated and Outside are absent — the contract drops zero-count
+	// targets from the map.
+	if _, ok := got["Isolated"]; ok {
+		t.Fatalf("InDegreeForNodes[Isolated] surfaced with value %d, want absent", got["Isolated"])
+	}
+	if _, ok := got["Outside"]; ok {
+		t.Fatalf("InDegreeForNodes[Outside] surfaced — caller didn't ask for it")
+	}
+
+	// Empty ids => nil (never a whole-table scan).
+	if got := ic.InDegreeForNodes(nil); got != nil {
+		t.Fatalf("InDegreeForNodes(nil) = %v, want nil", got)
+	}
+	if got := ic.InDegreeForNodes([]string{}); got != nil {
+		t.Fatalf("InDegreeForNodes(empty) = %v, want nil", got)
+	}
+	// Duplicated ids dedup naturally.
+	dup := ic.InDegreeForNodes([]string{"Hub", "Hub", "Hub"})
+	if dup["Hub"] != 3 {
+		t.Fatalf("InDegreeForNodes(dup Hub) = %d, want 3", dup["Hub"])
+	}
+}
+
+// testReachableForwardByKinds exercises the optional
+// graph.ReachableForwardByKinds capability. Seeds a small directed
+// graph mixing allowed and disallowed edge kinds, then asserts the
+// closure from the seed set is the transitive subset reachable
+// through only the allowed kinds.
+func testReachableForwardByKinds(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	rf, ok := s.(graph.ReachableForwardByKinds)
+	if !ok {
+		t.Skip("backend does not implement graph.ReachableForwardByKinds")
+	}
+
+	// Layout:
+	//   Test -> A (calls)
+	//   A    -> B (calls)
+	//   B    -> C (references)
+	//   C    -> D (reads)  <-- disallowed kind: D unreachable
+	//   X    -> Y (calls)  <-- disjoint subgraph: neither in closure
+	for _, id := range []string{"Test", "A", "B", "C", "D", "X", "Y"} {
+		s.AddNode(mkNode(id, id, "a.go", graph.KindFunction))
+	}
+	e1 := mkEdge("Test", "A", graph.EdgeCalls)
+	e1.Line = 1
+	e2 := mkEdge("A", "B", graph.EdgeCalls)
+	e2.Line = 2
+	e3 := mkEdge("B", "C", graph.EdgeReferences)
+	e3.Line = 3
+	e4 := mkEdge("C", "D", graph.EdgeReads)
+	e4.Line = 4
+	e5 := mkEdge("X", "Y", graph.EdgeCalls)
+	e5.Line = 5
+	s.AddEdge(e1)
+	s.AddEdge(e2)
+	s.AddEdge(e3)
+	s.AddEdge(e4)
+	s.AddEdge(e5)
+
+	kinds := []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences}
+	got := rf.ReachableForwardByKinds([]string{"Test"}, kinds)
+	want := map[string]bool{"Test": true, "A": true, "B": true, "C": true}
+	for id := range want {
+		if !got[id] {
+			t.Fatalf("ReachableForwardByKinds: missing %q in closure %v", id, got)
+		}
+	}
+	if got["D"] {
+		t.Fatalf("ReachableForwardByKinds: D should not be reachable (reads is disallowed)")
+	}
+	if got["X"] || got["Y"] {
+		t.Fatalf("ReachableForwardByKinds: disjoint subgraph leaked: %v", got)
+	}
+
+	// Empty seeds => nil.
+	if got := rf.ReachableForwardByKinds(nil, kinds); got != nil {
+		t.Fatalf("ReachableForwardByKinds(nil) = %v, want nil", got)
+	}
+	// Empty kinds => seed set only.
+	zero := rf.ReachableForwardByKinds([]string{"Test"}, nil)
+	if !zero["Test"] || zero["A"] {
+		t.Fatalf("ReachableForwardByKinds(no kinds) = %v, want {Test:true}", zero)
+	}
+	// Duplicate seeds dedup naturally.
+	dup := rf.ReachableForwardByKinds([]string{"Test", "Test"}, kinds)
+	if !dup["Test"] || !dup["A"] || !dup["B"] || !dup["C"] {
+		t.Fatalf("ReachableForwardByKinds(dup seeds) = %v, want full closure", dup)
+	}
+}
+
+// testThrowerErrorSurfacer exercises the optional
+// graph.ThrowerErrorSurfacer capability. Seeds throwers with mixed
+// error targets and EdgeEmits→KindString attachments, asserts the
+// per-thrower row dedup + path-prefix filter both fire.
+func testThrowerErrorSurfacer(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	ts, ok := s.(graph.ThrowerErrorSurfacer)
+	if !ok {
+		t.Skip("backend does not implement graph.ThrowerErrorSurfacer")
+	}
+
+	// Throwers ThrowA (in pkg/keep/), ThrowB (in pkg/drop/). Targets
+	// ErrIO + ErrTimeout. ThrowA also emits two literal error_msg
+	// strings; one EdgeEmits goes to a non-error_msg context that
+	// must NOT surface in ErrorMsgs.
+	s.AddNode(mkNode("ThrowA", "ThrowA", "pkg/keep/a.go", graph.KindFunction))
+	s.AddNode(mkNode("ThrowB", "ThrowB", "pkg/drop/b.go", graph.KindFunction))
+	s.AddNode(mkNode("ErrIO", "ErrIO", "errors/io.go", graph.KindType))
+	s.AddNode(mkNode("ErrTimeout", "ErrTimeout", "errors/io.go", graph.KindType))
+
+	msgOK1 := mkNode("msg1", "open failed", "pkg/keep/a.go", graph.KindString)
+	msgOK1.Meta = map[string]any{"context": "error_msg"}
+	s.AddNode(msgOK1)
+	msgOK2 := mkNode("msg2", "timeout", "pkg/keep/a.go", graph.KindString)
+	msgOK2.Meta = map[string]any{"context": "error_msg"}
+	s.AddNode(msgOK2)
+	// Wrong context — must be filtered out.
+	msgWrong := mkNode("msg3", "log line", "pkg/keep/a.go", graph.KindString)
+	msgWrong.Meta = map[string]any{"context": "log_msg"}
+	s.AddNode(msgWrong)
+
+	// ThrowA throws ErrIO twice (dedup to one target) + ErrTimeout once.
+	e1 := mkEdge("ThrowA", "ErrIO", graph.EdgeThrows)
+	e1.FilePath = "pkg/keep/a.go"
+	e1.Line = 10
+	e2 := mkEdge("ThrowA", "ErrIO", graph.EdgeThrows)
+	e2.FilePath = "pkg/keep/a.go"
+	e2.Line = 12
+	e3 := mkEdge("ThrowA", "ErrTimeout", graph.EdgeThrows)
+	e3.FilePath = "pkg/keep/a.go"
+	e3.Line = 14
+	// ThrowB throws ErrIO once.
+	e4 := mkEdge("ThrowB", "ErrIO", graph.EdgeThrows)
+	e4.FilePath = "pkg/drop/b.go"
+	e4.Line = 4
+	// EdgeEmits attachments for ThrowA.
+	e5 := mkEdge("ThrowA", "msg1", graph.EdgeEmits)
+	e5.Line = 11
+	e6 := mkEdge("ThrowA", "msg2", graph.EdgeEmits)
+	e6.Line = 13
+	e7 := mkEdge("ThrowA", "msg3", graph.EdgeEmits)
+	e7.Line = 15
+	for _, e := range []*graph.Edge{e1, e2, e3, e4, e5, e6, e7} {
+		s.AddEdge(e)
+	}
+
+	rows := ts.ThrowerErrorSurface("")
+	byID := map[string]graph.ThrowerErrorRow{}
+	for _, r := range rows {
+		byID[r.ThrowerID] = r
+	}
+
+	a, ok := byID["ThrowA"]
+	if !ok {
+		t.Fatalf("ThrowerErrorSurface: ThrowA missing from rows %v", rows)
+	}
+	if a.Throws != 3 {
+		t.Fatalf("ThrowA.Throws = %d, want 3", a.Throws)
+	}
+	gotTargets := append([]string(nil), a.ErrorTargets...)
+	sort.Strings(gotTargets)
+	if fmt.Sprint(gotTargets) != fmt.Sprint([]string{"ErrIO", "ErrTimeout"}) {
+		t.Fatalf("ThrowA.ErrorTargets = %v, want [ErrIO ErrTimeout]", gotTargets)
+	}
+	gotMsgs := append([]string(nil), a.ErrorMsgs...)
+	sort.Strings(gotMsgs)
+	if fmt.Sprint(gotMsgs) != fmt.Sprint([]string{"open failed", "timeout"}) {
+		t.Fatalf("ThrowA.ErrorMsgs = %v, want [open failed timeout]", gotMsgs)
+	}
+
+	b, ok := byID["ThrowB"]
+	if !ok || b.Throws != 1 || len(b.ErrorTargets) != 1 || b.ErrorTargets[0] != "ErrIO" {
+		t.Fatalf("ThrowB row = %+v, want Throws=1 ErrorTargets=[ErrIO]", b)
+	}
+	if len(b.ErrorMsgs) != 0 {
+		t.Fatalf("ThrowB.ErrorMsgs = %v, want empty", b.ErrorMsgs)
+	}
+
+	// Path-prefix filter drops ThrowB (under pkg/drop/) and keeps ThrowA.
+	keep := ts.ThrowerErrorSurface("pkg/keep/")
+	if len(keep) != 1 || keep[0].ThrowerID != "ThrowA" {
+		t.Fatalf("ThrowerErrorSurface(pkg/keep/) = %v, want only ThrowA", keep)
+	}
+	drop := ts.ThrowerErrorSurface("pkg/missing/")
+	if len(drop) != 0 {
+		t.Fatalf("ThrowerErrorSurface(pkg/missing/) = %v, want empty", drop)
 	}
 }
