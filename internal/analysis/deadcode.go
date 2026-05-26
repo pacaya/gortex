@@ -627,7 +627,6 @@ const hotspotBetweennessWeight = 0.4
 // If threshold <= 0, the default threshold is mean + 2*stddev.
 func FindHotspots(g graph.Store, communities *CommunityResult, threshold float64) []HotspotEntry {
 	nodes := g.AllNodes()
-	edges := g.AllEdges()
 
 	// Build lookup maps for community membership
 	nodeToComm := make(map[string]string)
@@ -635,25 +634,34 @@ func FindHotspots(g graph.Store, communities *CommunityResult, threshold float64
 		nodeToComm = communities.NodeToComm
 	}
 
-	// Build edge maps for fan-in and fan-out computation
-	// fan_in: incoming calls + references
-	// fan_out: outgoing calls
-	fanIn := make(map[string]int)
-	fanOut := make(map[string]int)
-
-	for _, e := range edges {
-		if e.Kind == graph.EdgeCalls || e.Kind == graph.EdgeReferences {
-			fanIn[e.To]++
-		}
-		if e.Kind == graph.EdgeCalls {
-			fanOut[e.From]++
+	// Restrict the fan-count pass to the kinds hotspots cares about
+	// (function + method). Computed up front because NodeFanAggregator
+	// expects the candidate id list -- it never returns rows for ids
+	// the caller didn't ask for, so the cgo payload stays bounded by
+	// the candidate count rather than the whole graph.
+	candidateIDs := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Kind == graph.KindFunction || n.Kind == graph.KindMethod {
+			candidateIDs = append(candidateIDs, n.ID)
 		}
 	}
+	fanIn, fanOut := CollectFanCounts(g, candidateIDs,
+		[]graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences},
+		[]graph.EdgeKind{graph.EdgeCalls},
+	)
 
-	// Compute community crossings per node: outgoing edges to nodes in different communities
+	// Community crossings per node: outgoing edges (Calls or
+	// References) whose target sits in a different community than
+	// the source. Streamed per-kind via EdgesByKind so neither
+	// backend pays for an unfiltered AllEdges walk; the per-kind
+	// MATCH on disk backends is the same plan EdgesByKind feeds
+	// every other analyzer.
 	crossings := make(map[string]int)
-	for _, e := range edges {
-		if e.Kind == graph.EdgeCalls || e.Kind == graph.EdgeReferences {
+	countCrossings := func(kind graph.EdgeKind) {
+		for e := range g.EdgesByKind(kind) {
+			if e == nil {
+				continue
+			}
 			fromComm := nodeToComm[e.From]
 			toComm := nodeToComm[e.To]
 			if fromComm != "" && toComm != "" && fromComm != toComm {
@@ -661,6 +669,8 @@ func FindHotspots(g graph.Store, communities *CommunityResult, threshold float64
 			}
 		}
 	}
+	countCrossings(graph.EdgeCalls)
+	countCrossings(graph.EdgeReferences)
 
 	// Betweenness centrality — exact on small graphs, sampled on
 	// large ones. Normalized to 0-100 against the graph's own max so
@@ -947,4 +957,91 @@ func matchesExcludePattern(filePath, nodeID string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// CollectFanCounts returns per-id fan-in / fan-out counts filtered by
+// edge kind. Backends that implement graph.NodeFanAggregator serve
+// both counts from one bulk Cypher per direction (~candidateCount
+// rows over cgo instead of the full edge set); the fallback path
+// streams the requested kinds via EdgesByKind, accumulating into the
+// fan maps Go-side -- still no AllEdges materialisation, just an
+// in-memory walk of the per-kind edge buckets.
+//
+// Used by FindHotspots and the health_score analyzer. Both pass the
+// same fanInKinds / fanOutKinds pair today; the function signature
+// keeps them per-call so a future analyzer with a different kind
+// split can share the same plumbing.
+func CollectFanCounts(g graph.Store, ids []string, fanInKinds []graph.EdgeKind, fanOutKinds []graph.EdgeKind) (fanIn, fanOut map[string]int) {
+	fanIn = make(map[string]int, len(ids))
+	fanOut = make(map[string]int, len(ids))
+	if len(ids) == 0 {
+		return fanIn, fanOut
+	}
+	if agg, ok := g.(graph.NodeFanAggregator); ok {
+		for _, r := range agg.NodeFanCounts(ids, fanInKinds, fanOutKinds) {
+			if r.FanIn != 0 {
+				fanIn[r.NodeID] = r.FanIn
+			}
+			if r.FanOut != 0 {
+				fanOut[r.NodeID] = r.FanOut
+			}
+		}
+		return fanIn, fanOut
+	}
+
+	// Fallback path: stream the requested kinds via EdgesByKind and
+	// tally Go-side. ID-set membership keeps the maps bounded to
+	// candidate ids, matching the capability contract.
+	idSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			idSet[id] = struct{}{}
+		}
+	}
+	streamed := make(map[graph.EdgeKind]struct{}, len(fanInKinds)+len(fanOutKinds))
+	stream := func(kind graph.EdgeKind, toIn, toOut bool) {
+		if _, ok := streamed[kind]; ok {
+			return
+		}
+		streamed[kind] = struct{}{}
+		for e := range g.EdgesByKind(kind) {
+			if e == nil {
+				continue
+			}
+			if toIn {
+				if _, ok := idSet[e.To]; ok {
+					fanIn[e.To]++
+				}
+			}
+			if toOut {
+				if _, ok := idSet[e.From]; ok {
+					fanOut[e.From]++
+				}
+			}
+		}
+	}
+	inKinds := make(map[graph.EdgeKind]struct{}, len(fanInKinds))
+	for _, k := range fanInKinds {
+		inKinds[k] = struct{}{}
+	}
+	outKinds := make(map[graph.EdgeKind]struct{}, len(fanOutKinds))
+	for _, k := range fanOutKinds {
+		outKinds[k] = struct{}{}
+	}
+	allKinds := make([]graph.EdgeKind, 0, len(inKinds)+len(outKinds))
+	for k := range inKinds {
+		allKinds = append(allKinds, k)
+	}
+	for k := range outKinds {
+		if _, dup := inKinds[k]; dup {
+			continue
+		}
+		allKinds = append(allKinds, k)
+	}
+	for _, k := range allKinds {
+		_, toIn := inKinds[k]
+		_, toOut := outKinds[k]
+		stream(k, toIn, toOut)
+	}
+	return fanIn, fanOut
 }
