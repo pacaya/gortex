@@ -78,7 +78,7 @@ func (s *Server) buildSuggestedQueries(scoped []*graph.Node, inScope map[string]
 	}
 
 	// 1. Entry points — where the program starts executing.
-	for i, ep := range entryPoints(scoped, 3) {
+	for i, ep := range entryPoints(s.graph, inScope, 3) {
 		if i >= 2 {
 			break
 		}

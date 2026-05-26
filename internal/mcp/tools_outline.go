@@ -35,10 +35,18 @@ func (s *Server) handleGetRepoOutline(ctx context.Context, req mcp.CallToolReque
 	// outline is byte-identical to the legacy global view. inScope is
 	// the node-ID set used to bound the edge-driven and analyzer-driven
 	// sections; nil for an unbound session means "no filter".
-	scoped := s.scopedNodes(ctx)
 	_, _, bound := s.sessionScope(ctx)
+
+	// Pull the full scoped node slice only when the session is bound
+	// — the lang count, total-node count, and edge filter need it then.
+	// Unbound sessions get the same numbers from the backend's cached
+	// Stats() (one indexed groupby on disk backends) and the
+	// callable-only entry-point pass, neither of which materialises
+	// the whole node table over cgo.
+	var scoped []*graph.Node
 	var inScope map[string]bool
 	if bound {
+		scoped = s.scopedNodes(ctx)
 		inScope = make(map[string]bool, len(scoped))
 		for _, n := range scoped {
 			inScope[n.ID] = true
@@ -52,10 +60,22 @@ func (s *Server) handleGetRepoOutline(ctx context.Context, req mcp.CallToolReque
 		Nodes int    `json:"nodes"`
 	}
 	langCounts := make(map[string]int)
-	for _, n := range scoped {
-		if n.Language != "" {
-			langCounts[n.Language]++
+	totalScopedNodes := 0
+	if bound {
+		for _, n := range scoped {
+			if n.Language != "" {
+				langCounts[n.Language]++
+			}
 		}
+		totalScopedNodes = len(scoped)
+	} else {
+		// Unbound: Stats().ByLanguage already aggregates this server-
+		// side; the cgo cost is one GROUP BY instead of one row per node.
+		stats := s.graph.Stats()
+		for lang, c := range stats.ByLanguage {
+			langCounts[lang] = c
+		}
+		totalScopedNodes = stats.TotalNodes
 	}
 	var languages []langEntry
 	for name, n := range langCounts {
@@ -92,7 +112,7 @@ func (s *Server) handleGetRepoOutline(ctx context.Context, req mcp.CallToolReque
 	}
 
 	summary := map[string]any{
-		"total_nodes":      len(scoped),
+		"total_nodes":      totalScopedNodes,
 		"total_edges":      totalEdges,
 		"primary_language": primaryLang,
 		"languages":        languages,
@@ -157,7 +177,7 @@ func (s *Server) handleGetRepoOutline(ctx context.Context, req mcp.CallToolReque
 		"communities":         communitiesSection,
 		"hotspots":            hotspotsSection,
 		"most_imported_files": mostImportedFiles(s.graph, inScope, topMostImportedN),
-		"entry_points":        entryPoints(scoped, topEntryPointsN),
+		"entry_points":        entryPoints(s.graph, inScope, topEntryPointsN),
 	})
 }
 
@@ -262,18 +282,28 @@ func mostImportedFiles(g graph.Store, inScope map[string]bool, topN int) []map[s
 // (the Go / Rust / C convention) and top-level functions with no callers
 // in files named `main.*` or `cmd/**`. Good enough for the outline; a
 // fuller process-based walk is what `get_processes` does separately.
-func entryPoints(nodes []*graph.Node, topN int) []map[string]any {
+//
+// Lookup goes through FindNodesByName so the name index runs server-
+// side on disk backends — the legacy nodes-slice walk pulled the whole
+// node table just to keep the ~10 nodes literally named "main". When
+// an inScope filter is supplied (bound session), it's applied after
+// the name lookup so a bound session never sees mains from other
+// workspaces.
+func entryPoints(g graph.Store, inScope map[string]bool, topN int) []map[string]any {
 	type ep struct {
 		id       string
 		name     string
 		filePath string
 	}
 	var out []ep
-	for _, n := range nodes {
+	for _, n := range g.FindNodesByName("main") {
+		if n == nil {
+			continue
+		}
 		if n.Kind != graph.KindFunction && n.Kind != graph.KindMethod {
 			continue
 		}
-		if n.Name != "main" {
+		if inScope != nil && !inScope[n.ID] {
 			continue
 		}
 		out = append(out, ep{id: n.ID, name: n.Name, filePath: n.FilePath})
