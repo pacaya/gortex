@@ -1146,6 +1146,59 @@ func (s *Server) scopedNodes(ctx context.Context) []*graph.Node {
 	return out
 }
 
+// scopedNodesByKinds is the kind-pushdown sibling of scopedNodes for
+// handlers that only need a specific kind set. When the backend
+// implements graph.NodesByKindsScanner the kind predicate runs server-
+// side (one Cypher MATCH (n:Node) WHERE n.kind IN $kinds) instead of
+// the legacy AllNodes()-then-Go-side filter. The metadata analyzers
+// (todos, stale_code, stale_flags, ownership, coverage_gaps,
+// coverage_summary, cgo_users, wasm_users, orphan_tables,
+// unreferenced_tables) each keep one or two kinds out of the whole
+// node table; pushing that filter is the entire win.
+//
+// Workspace-bound sessions still narrow Go-side: the capability does
+// not know about ScopeAllows, and adding workspace_id to every analyze
+// query would tie the capability to the session-scope concept. The
+// secondary filter is cheap because the kind pushdown already shrank
+// the row count by 1-2 orders of magnitude.
+//
+// Empty kinds returns nil — defensive against caller bugs that would
+// otherwise drop into the full-AllNodes fallback path.
+func (s *Server) scopedNodesByKinds(ctx context.Context, kinds []graph.NodeKind) []*graph.Node {
+	if len(kinds) == 0 {
+		return nil
+	}
+	var nodes []*graph.Node
+	if scan, ok := s.graph.(graph.NodesByKindsScanner); ok {
+		nodes = scan.NodesByKinds(kinds)
+	} else {
+		// Fallback: same behaviour as scopedNodes, kind-filtered Go-side.
+		all := s.graph.AllNodes()
+		allowed := make(map[graph.NodeKind]struct{}, len(kinds))
+		for _, k := range kinds {
+			allowed[k] = struct{}{}
+		}
+		nodes = make([]*graph.Node, 0, len(all))
+		for _, n := range all {
+			if _, ok := allowed[n.Kind]; ok {
+				nodes = append(nodes, n)
+			}
+		}
+	}
+	sessWS, _, bound := s.sessionScope(ctx)
+	if !bound {
+		return nodes
+	}
+	opts := query.QueryOptions{WorkspaceID: sessWS}
+	out := make([]*graph.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if opts.ScopeAllows(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // scopedNodeSlice filters an existing node slice to the session's
 // workspace. Convenience for handlers that already hold a node list
 // (engine list methods that don't take QueryOptions).

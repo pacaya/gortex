@@ -857,10 +857,10 @@ func (s *Server) handleAnalyzeTodos(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	var rows []todoRow
-	for _, n := range s.scopedNodes(ctx) {
-		if n.Kind != graph.KindTodo {
-			continue
-		}
+	// Push the kind filter into the storage layer — todos are a
+	// tiny slice of the node table, so the AllNodes scan was the
+	// dominant cgo cost on Ladybug.
+	for _, n := range s.scopedNodesByKinds(ctx, []graph.NodeKind{graph.KindTodo}) {
 		tag, _ := n.Meta["tag"].(string)
 		assignee, _ := n.Meta["assignee"].(string)
 		ticket, _ := n.Meta["ticket"].(string)
@@ -1016,10 +1016,10 @@ func (s *Server) handleAnalyzeStaleCode(ctx context.Context, req mcp.CallToolReq
 		AgeDays   int    `json:"age_days"`
 	}
 	var rows []staleRow
-	for _, n := range s.scopedNodes(ctx) {
-		if _, ok := allowedKinds[n.Kind]; !ok {
-			continue
-		}
+	// Push the kind filter into the storage layer; the meta gate
+	// (last_authored.timestamp) stays in Go since the meta column is
+	// opaque to Cypher.
+	for _, n := range s.scopedNodesByKinds(ctx, allowedKindsSlice(allowedKinds)) {
 		la, ok := n.Meta["last_authored"].(map[string]any)
 		if !ok {
 			continue
@@ -1077,6 +1077,21 @@ func (s *Server) handleAnalyzeStaleCode(ctx context.Context, req mcp.CallToolReq
 		"total":          len(rows),
 		"older_than_day": olderThanDays,
 	})
+}
+
+// allowedKindsSlice returns the keys of an analyzer's allowedKinds
+// set so the caller can hand them to scopedNodesByKinds. Kept as a
+// helper rather than inlined at every call site so the order is
+// deterministic — not load-bearing for correctness (the capability
+// dedupes), but it keeps test expectations stable when the IN list
+// is logged.
+func allowedKindsSlice(allowed map[graph.NodeKind]struct{}) []graph.NodeKind {
+	out := make([]graph.NodeKind, 0, len(allowed))
+	for k := range allowed {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // parseAnalyzeKindsFilter parses a comma-separated kinds argument
@@ -1154,10 +1169,10 @@ func (s *Server) handleAnalyzeOwnership(ctx context.Context, req mcp.CallToolReq
 	}
 	byEmail := map[string]*ownerStats{}
 
-	for _, n := range s.scopedNodes(ctx) {
-		if _, ok := allowedKinds[n.Kind]; !ok {
-			continue
-		}
+	// Kind pushdown — owners are derived from the blame meta on
+	// function/method (or wider) nodes; the analyzer scans tens of
+	// thousands of irrelevant nodes without it on Ladybug.
+	for _, n := range s.scopedNodesByKinds(ctx, allowedKindsSlice(allowedKinds)) {
 		if pathPrefix != "" && !strings.HasPrefix(n.FilePath, pathPrefix) {
 			continue
 		}
@@ -1296,10 +1311,9 @@ func (s *Server) handleAnalyzeCoverageGaps(ctx context.Context, req mcp.CallTool
 		Hit     int     `json:"hit"`
 	}
 	var rows []gapRow
-	for _, n := range s.scopedNodes(ctx) {
-		if _, ok := allowedKinds[n.Kind]; !ok {
-			continue
-		}
+	// Kind pushdown — coverage_pct only ever lands on executable
+	// kinds, so the IN-list IS the candidate set.
+	for _, n := range s.scopedNodesByKinds(ctx, allowedKindsSlice(allowedKinds)) {
 		if pathPrefix != "" && !strings.HasPrefix(n.FilePath, pathPrefix) {
 			continue
 		}
@@ -1411,10 +1425,12 @@ func (s *Server) handleAnalyzeStaleFlags(ctx context.Context, req mcp.CallToolRe
 	var rows []staleFlag
 	unscored := 0
 
-	for _, n := range s.scopedNodes(ctx) {
-		if n.Kind != graph.KindFlag {
-			continue
-		}
+	// Kind pushdown — KindFlag is a few hundred nodes max even on
+	// the biggest workspaces, so pulling AllNodes() to find them
+	// was pure cgo overhead. The caller batch below still does per-
+	// flag GetInEdges; pushing that into a single Cypher join is a
+	// separate follow-up since the join semantics differ per flag.
+	for _, n := range s.scopedNodesByKinds(ctx, []graph.NodeKind{graph.KindFlag}) {
 		provider, _ := n.Meta["provider"].(string)
 		if providerFilter != "" && provider != providerFilter {
 			continue
@@ -1546,10 +1562,9 @@ func (s *Server) handleAnalyzeOrphanTables(ctx context.Context, req mcp.CallTool
 		QueryCount int    `json:"query_count"`
 	}
 	var rows []orphanRow
-	for _, n := range s.scopedNodes(ctx) {
-		if n.Kind != graph.KindTable {
-			continue
-		}
+	// Kind pushdown — only KindTable carries the providers/queries
+	// fan-in we care about; the rest of the node table is noise.
+	for _, n := range s.scopedNodesByKinds(ctx, []graph.NodeKind{graph.KindTable}) {
 		// Walk incoming edges to detect both providers (migrations)
 		// and consumers (query call sites).
 		hasProvider := false
@@ -1627,10 +1642,8 @@ func (s *Server) handleAnalyzeUnreferencedTables(ctx context.Context, req mcp.Ca
 		ProviderCount int    `json:"provider_count"`
 	}
 	var rows []unrefRow
-	for _, n := range s.scopedNodes(ctx) {
-		if n.Kind != graph.KindTable {
-			continue
-		}
+	// Kind pushdown — same story as orphan_tables.
+	for _, n := range s.scopedNodesByKinds(ctx, []graph.NodeKind{graph.KindTable}) {
 		providerCount := 0
 		queryCount := 0
 		for _, e := range s.graph.GetInEdges(n.ID) {
@@ -1714,10 +1727,8 @@ func (s *Server) handleAnalyzeCoverageSummary(ctx context.Context, req mcp.CallT
 	}
 	byDir := map[string]*dirStats{}
 
-	for _, n := range s.scopedNodes(ctx) {
-		if _, ok := allowedKinds[n.Kind]; !ok {
-			continue
-		}
+	// Kind pushdown — coverage_pct only lives on executable kinds.
+	for _, n := range s.scopedNodesByKinds(ctx, allowedKindsSlice(allowedKinds)) {
 		if pathPrefix != "" && !strings.HasPrefix(n.FilePath, pathPrefix) {
 			continue
 		}
@@ -1807,10 +1818,10 @@ func (s *Server) handleAnalyzeInteropUsers(ctx context.Context, req mcp.CallTool
 		ID   string `json:"id"`
 	}
 	var rows []interopFile
-	for _, n := range s.scopedNodes(ctx) {
-		if n.Kind != graph.KindFile {
-			continue
-		}
+	// Kind pushdown — uses_cgo / uses_wasm_bindgen sentinels only
+	// live on file nodes; pulling AllNodes() to find them was pure
+	// cgo overhead on Ladybug.
+	for _, n := range s.scopedNodesByKinds(ctx, []graph.NodeKind{graph.KindFile}) {
 		if v, _ := n.Meta[metaKey].(bool); !v {
 			continue
 		}
