@@ -174,13 +174,17 @@ func (s *Server) handleAnalyzeHealthScore(ctx context.Context, req mcp.CallToolR
 		nodeToComm = c.NodeToComm
 	}
 
-	scoped := s.scopedNodes(ctx)
+	// Pull only the candidate kinds from the store — most workspaces
+	// keep ~5-15% of nodes as functions/methods, so the kind pushdown
+	// drops the AllNodes materialisation by 1-2 orders of magnitude.
+	kindList := make([]graph.NodeKind, 0, len(allowedKinds))
+	for k := range allowedKinds {
+		kindList = append(kindList, k)
+	}
+	scoped := s.scopedNodesByKinds(ctx, kindList)
 	candidateIDs := make([]string, 0, len(scoped))
 	for _, n := range scoped {
 		if n == nil {
-			continue
-		}
-		if _, ok := allowedKinds[n.Kind]; !ok {
 			continue
 		}
 		if pathPrefix != "" && !strings.HasPrefix(n.FilePath, pathPrefix) {
@@ -217,9 +221,6 @@ func (s *Server) handleAnalyzeHealthScore(ctx context.Context, req mcp.CallToolR
 	rows := make([]healthScoreRow, 0, 128)
 	for _, n := range scoped {
 		if n == nil {
-			continue
-		}
-		if _, ok := allowedKinds[n.Kind]; !ok {
 			continue
 		}
 		if pathPrefix != "" && !strings.HasPrefix(n.FilePath, pathPrefix) {
