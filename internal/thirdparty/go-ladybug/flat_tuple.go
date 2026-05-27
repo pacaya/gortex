@@ -74,5 +74,6 @@ func (tuple *FlatTuple) GetValue(index uint64) (any, error) {
 	if status != C.LbugSuccess {
 		return nil, fmt.Errorf("failed to get value with status: %d", status)
 	}
+	defer C.lbug_value_destroy(&cValue)
 	return lbugValueToGoValue(cValue)
 }
