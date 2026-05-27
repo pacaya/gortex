@@ -2,23 +2,75 @@ package mcp
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"sort"
 	"strconv"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/zzet/gortex/internal/query"
 )
 
 // computeETag produces a short content hash suitable for conditional fetch.
-// The hash is computed from the JSON serialization of the data.
+// Streams the JSON serialization straight into the hash so we don't
+// allocate the full marshaled byte slice (significant on large
+// payloads — a 500-symbol SubGraph used to allocate ~100 KiB just to
+// feed sha256).
 func computeETag(data any) string {
-	b, err := json.Marshal(data)
-	if err != nil {
+	h := sha256.New()
+	if err := json.NewEncoder(h).Encode(data); err != nil {
 		return ""
 	}
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:8]) // 16 hex chars — collision-safe for session use
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8]) // 16 hex chars — collision-safe for session use
+}
+
+// etagSubGraph is a fast structural ETag specialised for query.SubGraph
+// payloads (the get_file_summary / get_editing_context hot path).
+// Instead of going through json.Marshal on every node + edge + Meta map
+// (which is the dominant cost for a 500-symbol file), it hashes a
+// stable structural fingerprint: each node's id + line range, each
+// edge's (from, to, kind), and the truncation / total counts. That
+// keeps the invariant the callers depend on — "the etag changes when
+// the file's listing changes" — without paying for the body of every
+// Meta map on every call.
+func etagSubGraph(sg *query.SubGraph) string {
+	if sg == nil {
+		return ""
+	}
+	h := sha256.New()
+	var buf [16]byte
+	for _, n := range sg.Nodes {
+		if n == nil {
+			continue
+		}
+		h.Write([]byte(n.ID))
+		binary.BigEndian.PutUint32(buf[0:4], uint32(n.StartLine))
+		binary.BigEndian.PutUint32(buf[4:8], uint32(n.EndLine))
+		h.Write(buf[:8])
+		h.Write([]byte{0})
+	}
+	h.Write([]byte{1})
+	for _, e := range sg.Edges {
+		if e == nil {
+			continue
+		}
+		h.Write([]byte(e.From))
+		h.Write([]byte{31})
+		h.Write([]byte(e.To))
+		h.Write([]byte{31})
+		h.Write([]byte(e.Kind))
+		h.Write([]byte{0})
+	}
+	binary.BigEndian.PutUint64(buf[0:8], uint64(sg.TotalNodes))
+	binary.BigEndian.PutUint64(buf[8:16], uint64(sg.TotalEdges))
+	h.Write(buf[:16])
+	if sg.Truncated {
+		h.Write([]byte{1})
+	}
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum[:8])
 }
 
 // notModifiedResult returns a minimal "not modified" response with the matching etag.
