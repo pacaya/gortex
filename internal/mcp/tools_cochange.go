@@ -116,19 +116,90 @@ func (s *Server) handleFindCoChangingSymbols(ctx context.Context, req mcp.CallTo
 	if symbolID != "" {
 		result["symbol_id"] = symbolID
 	}
+	// When the cache is empty AND the background mine has not finished
+	// yet, surface an in-progress marker so the caller can distinguish
+	// "this file has no co-change data" from "the daemon hasn't built
+	// the data yet". The mine is fired at daemon-ready by RunAnalysis;
+	// a fresh Ladybug daemon takes tens of seconds before the cache is
+	// populated.
+	if len(rows) == 0 && !s.coChangeReady() {
+		result["mining_in_progress"] = true
+		result["note"] = "co-change graph is still being mined; retry shortly"
+	}
 	return s.respondJSONOrTOON(ctx, req, result)
 }
 
-// ensureCoChange mines the co-change graph exactly once per daemon
-// lifetime. Safe for concurrent callers — later callers block until
-// the first mine completes, then return immediately.
+// ensureCoChange triggers the co-change mine if it has not run yet
+// and returns IMMEDIATELY — the mine itself runs asynchronously.
+//
+// Why async? On a disk backend (Ladybug) with no pre-existing
+// EdgeCoChange edges, mineCoChange spends 60+ seconds in
+// cochange.AddEdges: an AllNodes full-table scan plus thousands of
+// per-pair AddEdge cgo round-trips. Wrapping that in sync.Once.Do
+// turned every queued tool call into a blocked-for-60s caller. The
+// async shape keeps the request path off the slow path.
+//
+// PrewarmCoChange (called from RunAnalysis at daemon-ready) fires
+// the mine ahead of any user-visible call so the cache is already
+// populated by the time the first find_co_changing_symbols arrives.
+//
+// Returning immediately means the first user call may see an empty
+// cache when the prewarm goroutine has not yet completed. That is
+// the deliberate trade-off — the alternative is a 60s blocked tool
+// call. The handler surfaces an `in_progress` flag when the cache is
+// empty so callers know to retry rather than treating the file as
+// genuinely uncoupled.
 func (s *Server) ensureCoChange() {
-	s.cochangeOnce.Do(s.mineCoChange)
+	s.cochangeOnce.Do(func() {
+		go s.mineCoChange()
+	})
+}
+
+// PrewarmCoChange triggers the co-change mine in the background so a
+// later find_co_changing_symbols / search rerank call sees a
+// populated cache without blocking. Safe to call multiple times — the
+// underlying sync.Once still gates the work to one execution.
+//
+// Returns immediately whether mining is in progress, completed, or
+// freshly started.
+func (s *Server) PrewarmCoChange() {
+	go s.cochangeOnce.Do(s.mineCoChange)
+}
+
+// coChangeReady reports whether the mine has completed and the cache
+// is populated. Used by the handler to set an `in_progress` flag
+// when the cache is empty but mining is still running.
+func (s *Server) coChangeReady() bool {
+	s.cochangeMu.RLock()
+	defer s.cochangeMu.RUnlock()
+	return s.cochangeByFile != nil
 }
 
 // mineCoChange populates the co-change caches. It prefers EdgeCoChange
 // edges already present in the graph (an enriched snapshot); only when
-// none exist does it mine `git log` and materialise the edges.
+// none exist does it mine `git log`.
+//
+// The mine writes ONLY the in-memory caches — it deliberately does
+// not materialise EdgeCoChange edges back into the graph store.
+// Persisting tens of thousands of EdgeCoChange edges via AddEdge on a
+// disk backend (Ladybug) is several minutes of cgo INSERTs, and every
+// such insert grows the live edge count. The analyze[clusters]
+// partition cache is keyed on (NodeCount, EdgeCount,
+// EdgeIdentityRevisions); a background edge-count drift invalidates
+// it on every check, forcing a 40s Leiden recompute on each call.
+//
+// What we LOSE by skipping the persist:
+//   - A subsequent daemon start can no longer take the
+//     coChangeFromEdges fast path; it re-mines `git log` (typically
+//     5-15s) on every restart.
+//
+// What we KEEP:
+//   - find_co_changing_symbols reads the in-memory cache directly.
+//   - The search rerank's CoChangeOf hook reads the in-memory cache
+//     (not EdgeCoChange edges).
+//   - cochange.EnrichGraph (the CLI / external enrichment path) is
+//     untouched — that's a separate code path that explicitly opts
+//     into the AddEdges persist when the operator wants it.
 func (s *Server) mineCoChange() {
 	scores := map[string]map[string]float64{}
 	counts := map[string]map[string]int{}
@@ -143,7 +214,6 @@ func (s *Server) mineCoChange() {
 		if len(res.Pairs) == 0 {
 			continue
 		}
-		cochange.AddEdges(s.graph, res.Pairs, prefix)
 		for _, p := range res.Pairs {
 			fa, fb := p.FileA, p.FileB
 			if prefix != "" {

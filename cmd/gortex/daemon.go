@@ -385,6 +385,15 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 		// first" against a fully populated state.
 		if state.mcpServer != nil {
 			state.mcpServer.RunAnalysis()
+			// Co-change pre-warm: fire the git-history mine in the
+			// background so the first user-visible
+			// find_co_changing_symbols / search-rerank call sees a
+			// populated cache. On Ladybug the mine is dominated by
+			// the AllNodes + per-pair AddEdge disk-persist step that
+			// mineCoChange already defers into its own goroutine —
+			// but even the git log itself can take 10–30s on a large
+			// history, and we want that off every request path.
+			state.mcpServer.PrewarmCoChange()
 		}
 		elapsed := time.Since(start)
 		controller.MarkReady(elapsed)
