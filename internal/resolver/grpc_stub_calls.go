@@ -58,10 +58,15 @@ func ResolveGRPCStubCalls(g graph.Store) int {
 	idx := buildGRPCHandlerIndex(g)
 	resolved := 0
 	var reindexBatch []graph.EdgeReindex
-	// Push the kind filter into the store; iterate only EdgeCalls.
-	// The Meta["via"]=="grpc.stub" check still runs in Go because
-	// Meta is gob-encoded blob on disk backends — but the row count
-	// flowing through is already constrained to the call-edge slice.
+	// First pass: collect every grpc.stub edge plus the From IDs we'll
+	// need to read RepoPrefix off, so the per-edge GetNode below
+	// collapses to a single GetNodesByIDs batch on disk backends.
+	type stubEdge struct {
+		edge            *graph.Edge
+		service, method string
+	}
+	var stubs []stubEdge
+	fromIDs := make(map[string]struct{})
 	for e := range g.EdgesByKind(graph.EdgeCalls) {
 		if e == nil || e.Meta == nil {
 			continue
@@ -74,16 +79,28 @@ func ResolveGRPCStubCalls(g graph.Store) int {
 		if service == "" || method == "" {
 			continue
 		}
+		stubs = append(stubs, stubEdge{edge: e, service: service, method: method})
+		if e.From != "" {
+			fromIDs[e.From] = struct{}{}
+		}
+	}
+	fromList := make([]string, 0, len(fromIDs))
+	for id := range fromIDs {
+		fromList = append(fromList, id)
+	}
+	callerNodes := g.GetNodesByIDs(fromList)
 
+	for _, s := range stubs {
+		e := s.edge
 		callerRepo := ""
-		if from := g.GetNode(e.From); from != nil {
+		if from := callerNodes[e.From]; from != nil {
 			callerRepo = from.RepoPrefix
 		}
-		handlerID, origin, conf := idx.lookup(service, method, callerRepo)
+		handlerID, origin, conf := idx.lookup(s.service, s.method, callerRepo)
 
 		want := handlerID
 		if want == "" {
-			want = grpcStubPlaceholder(service, method)
+			want = grpcStubPlaceholder(s.service, s.method)
 		}
 		if e.To == want {
 			if handlerID != "" {
@@ -149,7 +166,8 @@ func (idx *grpcHandlerIndex) lookup(service, method, callerRepo string) (id, ori
 func buildGRPCHandlerIndex(g graph.Store) *grpcHandlerIndex {
 	typesByName := map[string][]*graph.Node{}
 	ifacesByName := map[string][]*graph.Node{}
-	for _, n := range g.AllNodes() {
+	typeAndIfaceNodes := nodesByKindsOrAll(g, graph.KindType, graph.KindInterface)
+	for _, n := range typeAndIfaceNodes {
 		switch n.Kind {
 		case graph.KindType:
 			typesByName[n.Name] = append(typesByName[n.Name], n)
@@ -159,28 +177,42 @@ func buildGRPCHandlerIndex(g graph.Store) *grpcHandlerIndex {
 	}
 
 	// methodsByType: type node ID → its method nodes (via EdgeMemberOf).
-	// implementorsByIface: interface node ID → implementing type node IDs.
+	// Use the MemberMethodsByType capability — projects only the four
+	// columns we read (id/name/file/line) per row, no per-edge GetNode.
+	rawMembers := memberMethodInfosByType(g)
 	methodsByType := map[string][]*graph.Node{}
+	for typeID, infos := range rawMembers {
+		nodes := make([]*graph.Node, 0, len(infos))
+		for _, m := range infos {
+			nodes = append(nodes, &graph.Node{
+				ID:         m.MethodID,
+				Kind:       graph.KindMethod,
+				Name:       m.Name,
+				FilePath:   m.FilePath,
+				StartLine:  m.StartLine,
+				RepoPrefix: m.RepoPrefix,
+			})
+		}
+		methodsByType[typeID] = nodes
+	}
+
+	// implementorsByIface: interface node ID → implementing type node
+	// IDs. Pull only EdgeImplements; the From IDs are kept as-is for the
+	// later impl filter (Unimplemented*).
 	implementorsByIface := map[string][]string{}
 	var registrations []*graph.Edge
-	for _, e := range g.AllEdges() {
+	for e := range g.EdgesByKind(graph.EdgeImplements) {
 		if e == nil {
 			continue
 		}
-		switch e.Kind {
-		case graph.EdgeMemberOf:
-			mn := g.GetNode(e.From)
-			if mn != nil && mn.Kind == graph.KindMethod {
-				methodsByType[e.To] = append(methodsByType[e.To], mn)
-			}
-		case graph.EdgeImplements:
-			implementorsByIface[e.To] = append(implementorsByIface[e.To], e.From)
-		case graph.EdgeCalls:
-			if e.Meta != nil {
-				if svc, _ := e.Meta["grpc_register_service"].(string); svc != "" {
-					registrations = append(registrations, e)
-				}
-			}
+		implementorsByIface[e.To] = append(implementorsByIface[e.To], e.From)
+	}
+	for e := range g.EdgesByKind(graph.EdgeCalls) {
+		if e == nil || e.Meta == nil {
+			continue
+		}
+		if svc, _ := e.Meta["grpc_register_service"].(string); svc != "" {
+			registrations = append(registrations, e)
 		}
 	}
 
@@ -188,6 +220,17 @@ func buildGRPCHandlerIndex(g graph.Store) *grpcHandlerIndex {
 		registration: map[string][]*graph.Node{},
 		iface:        map[string][]*graph.Node{},
 	}
+
+	// Prefetch the From nodes for every registration call so the
+	// per-registration repo / dir lookup collapses to a single batch
+	// GetNodesByIDs on disk backends.
+	regFromIDs := make([]string, 0, len(registrations))
+	for _, e := range registrations {
+		if e.From != "" {
+			regFromIDs = append(regFromIDs, e.From)
+		}
+	}
+	regFromNodes := g.GetNodesByIDs(regFromIDs)
 
 	// Signal 1: registration calls. Resolve the impl type named by the
 	// registration's second argument, then index its methods.
@@ -198,7 +241,7 @@ func buildGRPCHandlerIndex(g graph.Store) *grpcHandlerIndex {
 			continue
 		}
 		regRepo, regDir := "", ""
-		if from := g.GetNode(e.From); from != nil {
+		if from := regFromNodes[e.From]; from != nil {
 			regRepo = from.RepoPrefix
 			regDir = grpcParentDir(from.FilePath)
 		}
@@ -208,6 +251,29 @@ func buildGRPCHandlerIndex(g graph.Store) *grpcHandlerIndex {
 		}
 		idx.registration[service] = append(idx.registration[service], methodsByType[typeNode.ID]...)
 	}
+
+	// Prefetch every implementor type referenced by a `<Service>Server`
+	// interface so the per-implementor GetNode in Signal 2 collapses to
+	// a batch.
+	implTypeIDs := make(map[string]struct{})
+	for name, ifaceNodes := range ifacesByName {
+		const sfx = "Server"
+		if len(name) <= len(sfx) || !strings.HasSuffix(name, sfx) {
+			continue
+		}
+		for _, ifn := range ifaceNodes {
+			for _, typeID := range implementorsByIface[ifn.ID] {
+				if typeID != "" {
+					implTypeIDs[typeID] = struct{}{}
+				}
+			}
+		}
+	}
+	implTypeList := make([]string, 0, len(implTypeIDs))
+	for id := range implTypeIDs {
+		implTypeList = append(implTypeList, id)
+	}
+	implTypeNodes := g.GetNodesByIDs(implTypeList)
 
 	// Signal 2: the `<Service>Server` interface and the concrete types
 	// that implement it. The generated `Unimplemented<Service>Server`
@@ -221,7 +287,7 @@ func buildGRPCHandlerIndex(g graph.Store) *grpcHandlerIndex {
 		service := name[:len(name)-len(sfx)]
 		for _, ifn := range ifaceNodes {
 			for _, typeID := range implementorsByIface[ifn.ID] {
-				tn := g.GetNode(typeID)
+				tn := implTypeNodes[typeID]
 				if tn == nil || strings.HasPrefix(tn.Name, "Unimplemented") {
 					continue
 				}
