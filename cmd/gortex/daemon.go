@@ -485,34 +485,6 @@ func startReconcileJanitor(mi *indexer.MultiIndexer, interval time.Duration, log
 	return func() { close(stop) }
 }
 
-// startPeriodicMetadataSnapshots is the persistent-backend counterpart
-// to startPeriodicSnapshots. It skips the graph walk entirely (the
-// backend persists nodes/edges itself) and writes a metadata-only
-// snapshot — repos + contracts + vector — on every tick. The
-// metadata is what makes warm restart cheap: without an up-to-date
-// FileMtimes map on disk, every restart falls back to a full
-// TrackRepoCtx walk.
-func startPeriodicMetadataSnapshots(mi *indexer.MultiIndexer, version string, interval time.Duration, isReady func() bool, logger *zap.Logger) func() {
-	stop := make(chan struct{})
-	go func() {
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				if isReady != nil && !isReady() {
-					logger.Debug("snapshot: skipped tick — daemon still warming up")
-					continue
-				}
-				saveSnapshotMetadata(collectSnapshotRepos(mi), collectSnapshotContracts(mi), collectSnapshotVector(mi), version, logger)
-			case <-stop:
-				return
-			}
-		}
-	}()
-	return func() { close(stop) }
-}
-
 func startPeriodicSnapshots(g *graph.Graph, mi *indexer.MultiIndexer, version string, interval time.Duration, isReady func() bool, logger *zap.Logger) func() {
 	stop := make(chan struct{})
 	go func() {

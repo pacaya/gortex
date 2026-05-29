@@ -72,23 +72,6 @@ func (f *fileIDIndex) addNodes(nodes []*graph.Node) {
 	}
 }
 
-// remove forgets id under filePath. No-op when either is empty.
-func (f *fileIDIndex) remove(filePath, id string) {
-	if filePath == "" || id == "" {
-		return
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	set, ok := f.m[filePath]
-	if !ok {
-		return
-	}
-	delete(set, id)
-	if len(set) == 0 {
-		delete(f.m, filePath)
-	}
-}
-
 // removeFile drops every entry for filePath.
 func (f *fileIDIndex) removeFile(filePath string) {
 	if filePath == "" {
@@ -132,12 +115,4 @@ func (f *fileIDIndex) idsFor(filePath string) []string {
 		out = append(out, id)
 	}
 	return out
-}
-
-// reset clears the entire index. Used by tests + the populate-from-disk
-// path on store Open when the DB already holds data.
-func (f *fileIDIndex) reset() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.m = make(map[string]map[string]struct{})
 }

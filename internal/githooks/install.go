@@ -183,10 +183,10 @@ func HookPathFor(repoRoot, hook string) (string, error) {
 
 // StatusReport describes the current state of the post-commit hook.
 type StatusReport struct {
-	HookPath  string `json:"hook_path"`
-	Exists    bool   `json:"exists"`
-	Managed   bool   `json:"managed"` // true iff our marker block is present
-	Body      string `json:"body,omitempty"`
+	HookPath string `json:"hook_path"`
+	Exists   bool   `json:"exists"`
+	Managed  bool   `json:"managed"` // true iff our marker block is present
+	Body     string `json:"body,omitempty"`
 }
 
 // Status reports the current state of the post-commit hook. Never
@@ -252,7 +252,7 @@ func InstallHook(repoRoot, hook string, opts InstallOpts) (string, error) {
 	var out bytes.Buffer
 	if len(existing) == 0 {
 		out.WriteString("#!/bin/sh\n")
-		out.WriteString(fmt.Sprintf("# Installed by `gortex githook install %s`.\n", hook))
+		fmt.Fprintf(&out, "# Installed by `gortex githook install %s`.\n", hook)
 		out.WriteString("# Marker block below is regenerated on each install/uninstall;\n")
 		out.WriteString("# add your own commands outside the markers and they will be preserved.\n\n")
 		out.Write(newBlock.Bytes())

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -174,10 +173,8 @@ func forwardEnrichChurnToDaemon(cmd *cobra.Command, absPath string) error {
 	if absPath != "" {
 		payload["path"] = absPath
 	}
-	if _, err := os.Getwd(); err == nil {
-		// `printEnrichResult` reads payload["root"] for the TTY caption.
-		// We don't have a concrete root here (the daemon spans every
-		// tracked repo); leave it unset so the caption is silent.
-	}
+	// printEnrichResult reads payload["root"] for the TTY caption; the
+	// daemon spans every tracked repo so there is no single root — leave
+	// it unset and the caption stays silent.
 	return printEnrichResult(payload)
 }
