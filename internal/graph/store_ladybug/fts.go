@@ -179,15 +179,28 @@ func (s *Store) BulkUpsertSymbolFTS(repoPrefix string, items []graph.SymbolFTSIt
 	if err := writeSymbolFTSTSV(path, items); err != nil {
 		return fmt.Errorf("write SymbolFTS tsv: %w", err)
 	}
-	// HEADER=false maps columns by position (no chance of a
-	// header-name mismatch silently dropping rows). DELIM='\t'
-	// because Ladybug's CSV parser does not handle RFC-4180-style
-	// quoted strings containing commas — same convention the
-	// Node / Edge COPY paths use. Tokens never contain tabs (we
-	// strip them in writeSymbolFTSTSV) so this is safe.
-	copyQ := fmt.Sprintf("COPY SymbolFTS FROM '%s' (HEADER=false, DELIM='\\t')", escapeCypherStringLit(path))
-	if err := runCypherSafe(s, copyQ); err != nil {
-		return fmt.Errorf("copy SymbolFTS: %w", err)
+
+	// Load with LOAD FROM ... MERGE rather than COPY. Kuzu's COPY into a node
+	// table is only legal when the table is empty or already carries a
+	// materialised PK hash index; the per-repo DELETE above keeps sibling
+	// repos' rows, so SymbolFTS is non-empty by design and a direct COPY
+	// fails non-deterministically ("COPY into a non-empty primary-key node
+	// table without a hash index is not supported"). DROP TABLE + recreate
+	// (the SymbolVec remedy) would wipe the siblings. LOAD FROM scans the
+	// file as a row source and MERGEs straight into SymbolFTS in one
+	// statement — a DML write with no empty-table precondition, no staging
+	// table, and ~2x faster than COPY-into-temp + MERGE on a 20k-row corpus.
+	// The just-deleted rows re-enter as inserts; any survivor is upserted,
+	// matching UpsertSymbolFTS's MERGE semantics. column0/column1 are the
+	// positional names Ladybug assigns when header=false; DELIM='\t' because
+	// its CSV reader doesn't honour RFC-4180 quoting (tokens are tab-stripped
+	// in writeSymbolFTSTSV).
+	loadQ := fmt.Sprintf(
+		"LOAD FROM '%s' (header=false, delim='\\t') MERGE (f:SymbolFTS {id: column0}) SET f.tokens = column1",
+		escapeCypherStringLit(path),
+	)
+	if err := runCypherSafe(s, loadQ); err != nil {
+		return fmt.Errorf("load SymbolFTS: %w", err)
 	}
 	// Bulk-load invalidated the prior index; force a rebuild on
 	// next SearchSymbols.
