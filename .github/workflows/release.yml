@@ -314,11 +314,24 @@ jobs:
             --output-signature gortex_windows_amd64.zip.sig \
             --output-certificate gortex_windows_amd64.zip.pem \
             gortex_windows_amd64.zip
-          gh release upload "${GITHUB_REF#refs/tags/}" \
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release upload "$TAG" \
             gortex_windows_amd64.zip \
             gortex_windows_amd64.zip.sig \
             gortex_windows_amd64.zip.pem \
             --clobber
+
+          # Append the windows zip's sha256 to the release checksums.txt so
+          # the one-line installer (scripts/install.ps1, which verifies
+          # against checksums.txt) covers windows too — the unix goreleaser
+          # run only hashed its own artifacts. needs:release guarantees
+          # checksums.txt already exists.
+          sha="$(sha256sum gortex_windows_amd64.zip | awk '{print $1}')"
+          gh release download "$TAG" --pattern checksums.txt --clobber 2>/dev/null || : > checksums.txt
+          if ! grep -q "gortex_windows_amd64.zip" checksums.txt; then
+            printf '%s  gortex_windows_amd64.zip\n' "$sha" >> checksums.txt
+            gh release upload "$TAG" checksums.txt --clobber
+          fi
 
   # SLSA-3 provenance via the OpenSSF reusable workflow. This runs in a
   # separate, isolated job that the `release` job can't tamper with —
