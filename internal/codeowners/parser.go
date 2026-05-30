@@ -28,14 +28,18 @@ type Rule struct {
 	matcher *gitignore.GitIgnore
 }
 
-// matchPattern compiles the rule's pattern as a single-line gitignore
-// matcher. We compile lazily so the rule list is cheap to construct
-// for repos that never call MatchFile.
+// matchPattern returns the rule's gitignore matcher. Parse precompiles
+// it, so for any Parse-built Rule the field is non-nil and MatchFile's
+// concurrent hot path only reads it — no data race on a shared rule list
+// (applyCoverageDomains matches files across goroutines against one
+// list). For a Rule hand-constructed outside Parse the field is nil;
+// compile a throwaway matcher rather than caching into r.matcher, so
+// concurrent callers still can't race on the field.
 func (r *Rule) matchPattern() *gitignore.GitIgnore {
-	if r.matcher == nil {
-		r.matcher = gitignore.CompileIgnoreLines(r.Pattern)
+	if r.matcher != nil {
+		return r.matcher
 	}
-	return r.matcher
+	return gitignore.CompileIgnoreLines(r.Pattern)
 }
 
 // Parse reads a CODEOWNERS file's bytes and returns the rule list in
@@ -67,6 +71,9 @@ func Parse(source []byte) []Rule {
 			continue
 		}
 		rule := Rule{Pattern: fields[0]}
+		// Precompile the matcher in this single-goroutine parse so the
+		// concurrent MatchFile hot path only reads rule.matcher.
+		rule.matcher = gitignore.CompileIgnoreLines(rule.Pattern)
 		if len(fields) > 1 {
 			rule.Owners = append(rule.Owners, fields[1:]...)
 		}
