@@ -1,0 +1,500 @@
+package store_sqlite
+
+// This file implements the moderate-SQL analysis capability interfaces
+// for the SQLite graph.Store backend. Each method mirrors the in-memory
+// reference implementation in internal/graph/graph.go and is verified
+// against the same conformance suite (internal/graph/storetest).
+//
+// Shape: push the structural filter into one indexed SELECT via the raw-
+// SQL helpers (queryNodesSQL / s.db.Query), then do any Meta-dependent
+// (gob-decoded) or distinct-counting filtering in Go. No new prepared
+// statements are added — every query rides the secondary indexes already
+// created in schema.go (edges_by_from / edges_by_to / nodes_by_kind).
+
+import (
+	"github.com/zzet/gortex/internal/graph"
+)
+
+// Compile-time assertions: *Store satisfies each analysis capability.
+var _ graph.DeadCodeCandidator = (*Store)(nil)
+var _ graph.IfaceImplementsScanner = (*Store)(nil)
+var _ graph.MemberMethodsByType = (*Store)(nil)
+var _ graph.StructuralParentEdges = (*Store)(nil)
+var _ graph.ExtractCandidatesScanner = (*Store)(nil)
+var _ graph.CrossRepoCandidates = (*Store)(nil)
+var _ graph.ThrowerErrorSurfacer = (*Store)(nil)
+
+// anaDedupeEdgeKinds drops empty / duplicate edge kinds, preserving
+// first-seen order — the EdgeKind twin of dedupeNonEmpty.
+func anaDedupeEdgeKinds(in []graph.EdgeKind) []graph.EdgeKind {
+	seen := make(map[graph.EdgeKind]struct{}, len(in))
+	out := make([]graph.EdgeKind, 0, len(in))
+	for _, k := range in {
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	return out
+}
+
+// --- DeadCodeCandidator -------------------------------------------------
+
+// DeadCodeCandidates returns nodes of the allowed kinds that have no
+// incoming edge of the corresponding allowed in-edge kinds. An empty
+// per-kind allowlist (or one that dedupes to nothing) means "any incoming
+// edge counts as usage". Mirrors graph.(*Graph).DeadCodeCandidates: the
+// candidate set is purely structural (the analysis layer applies the
+// exported / test / entry-point / synthetic post-filters in Go), so no
+// node-id exclusion happens here. The NOT-EXISTS filter runs server-side
+// per node kind.
+func (s *Store) DeadCodeCandidates(allowedNodeKinds []graph.NodeKind, allowedInEdgeKinds map[graph.NodeKind][]graph.EdgeKind) []*graph.Node {
+	if len(allowedNodeKinds) == 0 {
+		return nil
+	}
+	var out []*graph.Node
+	for _, nk := range allowedNodeKinds {
+		allowed := anaDedupeEdgeKinds(allowedInEdgeKinds[nk])
+		anyKindCounts := len(allowed) == 0
+
+		var q string
+		var args []any
+		if anyKindCounts {
+			// Any incoming edge disqualifies the node.
+			q = `SELECT ` + lookupNodeCols + ` FROM nodes n
+WHERE n.kind = ?
+  AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.to_id = n.id)
+ORDER BY n.id`
+			args = []any{string(nk)}
+		} else {
+			// Only an incoming edge of one of the allowed kinds counts.
+			q = `SELECT ` + lookupNodeCols + ` FROM nodes n
+WHERE n.kind = ?
+  AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.to_id = n.id AND e.kind IN (` + inPlaceholders(len(allowed)) + `))
+ORDER BY n.id`
+			args = make([]any, 0, 1+len(allowed))
+			args = append(args, string(nk))
+			for _, ek := range allowed {
+				args = append(args, string(ek))
+			}
+		}
+
+		for _, n := range s.queryNodesSQL(q, args...) {
+			if n != nil {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// --- IfaceImplementsScanner ---------------------------------------------
+
+// IfaceImplementsRows returns one row per EdgeImplements edge whose
+// target is a KindInterface carrying Meta["methods"]. The interface's
+// decoded Meta rides on the row (callers pull the "methods" field, which
+// gob round-trips as []string or []any). Interfaces with no Meta or no
+// "methods" key are elided server-side.
+func (s *Store) IfaceImplementsRows() []graph.IfaceImplementsRow {
+	q := `SELECT e.from_id, n.id, n.meta
+FROM edges e
+JOIN nodes n ON n.id = e.to_id
+WHERE e.kind = ? AND n.kind = ? AND n.meta IS NOT NULL`
+	rows, err := s.db.Query(q, string(graph.EdgeImplements), string(graph.KindInterface))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []graph.IfaceImplementsRow
+	for rows.Next() {
+		var fromID, ifaceID string
+		var metaBlob []byte
+		if err := rows.Scan(&fromID, &ifaceID, &metaBlob); err != nil {
+			continue
+		}
+		meta, derr := decodeMeta(metaBlob)
+		if derr != nil || meta == nil {
+			continue
+		}
+		if _, ok := meta["methods"]; !ok {
+			continue
+		}
+		out = append(out, graph.IfaceImplementsRow{
+			TypeID:    fromID,
+			IfaceID:   ifaceID,
+			IfaceMeta: meta,
+		})
+	}
+	return out
+}
+
+// --- MemberMethodsByType ------------------------------------------------
+
+// MemberMethodsByType returns typeID → []MemberMethodInfo for every
+// EdgeMemberOf edge whose source is a KindMethod. The columns come from
+// the METHOD NODE (FilePath / StartLine / RepoPrefix), matching the
+// in-memory reference. Per-type lists are deduplicated by MethodID; the
+// scan is ordered by the edge PK so the first-seen winner is stable. An
+// empty graph (no qualifying rows) returns nil.
+func (s *Store) MemberMethodsByType() map[string][]graph.MemberMethodInfo {
+	q := `SELECT e.to_id, n.id, n.name, n.file_path, n.start_line, n.repo_prefix
+FROM edges e
+JOIN nodes n ON n.id = e.from_id
+WHERE e.kind = ? AND n.kind = ?
+ORDER BY e.id`
+	rows, err := s.db.Query(q, string(graph.EdgeMemberOf), string(graph.KindMethod))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string][]graph.MemberMethodInfo)
+	seen := make(map[string]map[string]struct{})
+	for rows.Next() {
+		var typeID, methodID, name, filePath, repoPrefix string
+		var startLine int
+		if err := rows.Scan(&typeID, &methodID, &name, &filePath, &startLine, &repoPrefix); err != nil {
+			continue
+		}
+		if seen[typeID] == nil {
+			seen[typeID] = make(map[string]struct{})
+		}
+		if _, ok := seen[typeID][methodID]; ok {
+			continue
+		}
+		seen[typeID][methodID] = struct{}{}
+		out[typeID] = append(out[typeID], graph.MemberMethodInfo{
+			MethodID:   methodID,
+			Name:       name,
+			FilePath:   filePath,
+			StartLine:  startLine,
+			RepoPrefix: repoPrefix,
+		})
+	}
+	if len(out) == 0 {
+		// Match the in-memory reference: empty graph returns nil.
+		return nil
+	}
+	return out
+}
+
+// --- StructuralParentEdges ----------------------------------------------
+
+// StructuralParentEdges returns every Extends / Implements / Composes
+// edge whose endpoints are both Type / Interface, projected as (FromID,
+// ToID, FromKind, ToKind, Origin). Endpoints that aren't both type /
+// interface are filtered server-side. Empty graph or no matching edges
+// returns nil.
+func (s *Store) StructuralParentEdges() []graph.StructuralParentEdgeRow {
+	q := `SELECT e.from_id, e.to_id, nf.kind, nt.kind, e.origin
+FROM edges e
+JOIN nodes nf ON nf.id = e.from_id
+JOIN nodes nt ON nt.id = e.to_id
+WHERE e.kind IN (?,?,?)
+  AND nf.kind IN (?,?) AND nt.kind IN (?,?)
+ORDER BY e.id`
+	rows, err := s.db.Query(q,
+		string(graph.EdgeExtends), string(graph.EdgeImplements), string(graph.EdgeComposes),
+		string(graph.KindType), string(graph.KindInterface),
+		string(graph.KindType), string(graph.KindInterface),
+	)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []graph.StructuralParentEdgeRow
+	for rows.Next() {
+		var fromID, toID, fromKind, toKind, origin string
+		if err := rows.Scan(&fromID, &toID, &fromKind, &toKind, &origin); err != nil {
+			continue
+		}
+		out = append(out, graph.StructuralParentEdgeRow{
+			FromID:   fromID,
+			ToID:     toID,
+			FromKind: graph.NodeKind(fromKind),
+			ToKind:   graph.NodeKind(toKind),
+			Origin:   origin,
+		})
+	}
+	return out
+}
+
+// --- ExtractCandidatesScanner -------------------------------------------
+
+// ExtractCandidates ranks function / method nodes by extractability: line
+// span (EndLine - StartLine + 1), distinct caller fan-in, and distinct
+// callee fan-out, counting only edges whose kind is in the supplied set.
+// Rows must clear all three thresholds. Nodes with a zero StartLine /
+// EndLine are dropped; pathPrefix narrows by file-path prefix. Mirrors
+// graph.(*Graph).ExtractCandidates exactly: only KindFunction +
+// KindMethod nodes are considered, and the distinct-by-endpoint counting
+// runs Go-side over GetInEdges / GetOutEdges.
+func (s *Store) ExtractCandidates(kinds []graph.EdgeKind, minLines, minCallers, minFanOut int, pathPrefix string) []graph.ExtractCandidateRow {
+	if len(kinds) == 0 {
+		return nil
+	}
+	kindSet := make(map[graph.EdgeKind]struct{}, len(kinds))
+	for _, k := range kinds {
+		if k == "" {
+			continue
+		}
+		kindSet[k] = struct{}{}
+	}
+	if len(kindSet) == 0 {
+		return nil
+	}
+
+	// Candidate nodes: function / method only, non-zero line span,
+	// optional path-prefix gate.
+	q := `SELECT ` + lookupNodeCols + ` FROM nodes
+WHERE kind IN (?,?) AND start_line > 0 AND end_line > 0`
+	args := []any{string(graph.KindFunction), string(graph.KindMethod)}
+	if pathPrefix != "" {
+		q += ` AND file_path LIKE ? ESCAPE '\'`
+		args = append(args, escapeLikePattern(pathPrefix)+"%")
+	}
+	q += ` ORDER BY id`
+	nodes := s.queryNodesSQL(q, args...)
+
+	var out []graph.ExtractCandidateRow
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		lineCount := n.EndLine - n.StartLine + 1
+		if lineCount < minLines {
+			continue
+		}
+
+		callerSet := make(map[string]struct{})
+		for _, e := range s.GetInEdges(n.ID) {
+			if e == nil {
+				continue
+			}
+			if _, ok := kindSet[e.Kind]; !ok {
+				continue
+			}
+			callerSet[e.From] = struct{}{}
+		}
+		if len(callerSet) < minCallers {
+			continue
+		}
+
+		calleeSet := make(map[string]struct{})
+		for _, e := range s.GetOutEdges(n.ID) {
+			if e == nil {
+				continue
+			}
+			if _, ok := kindSet[e.Kind]; !ok {
+				continue
+			}
+			calleeSet[e.To] = struct{}{}
+		}
+		if len(calleeSet) < minFanOut {
+			continue
+		}
+
+		out = append(out, graph.ExtractCandidateRow{
+			NodeID:      n.ID,
+			Name:        n.Name,
+			FilePath:    n.FilePath,
+			StartLine:   n.StartLine,
+			EndLine:     n.EndLine,
+			LineCount:   lineCount,
+			CallerCount: len(callerSet),
+			FanOut:      len(calleeSet),
+		})
+	}
+	return out
+}
+
+// --- CrossRepoCandidates ------------------------------------------------
+
+// CrossRepoCandidates returns every edge whose kind is in baseKinds and
+// whose endpoints carry two different non-empty RepoPrefix values. The
+// edge is returned verbatim (callers rewrite Edge.CrossRepo); FromRepo /
+// ToRepo are the endpoint prefixes. Empty baseKinds returns nil; single-
+// repo graphs (or graphs whose nodes carry no RepoPrefix) yield nothing.
+func (s *Store) CrossRepoCandidates(baseKinds []graph.EdgeKind) []graph.CrossRepoCandidateRow {
+	uniq := anaDedupeEdgeKinds(baseKinds)
+	if len(uniq) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(uniq))
+	for _, k := range uniq {
+		args = append(args, string(k))
+	}
+	q := `SELECT e.from_id, e.to_id, e.kind, e.file_path, e.line,
+       e.confidence, e.confidence_label, e.origin, e.tier, e.cross_repo, e.meta,
+       nf.repo_prefix, nt.repo_prefix
+FROM edges e
+JOIN nodes nf ON nf.id = e.from_id
+JOIN nodes nt ON nt.id = e.to_id
+WHERE e.kind IN (` + inPlaceholders(len(uniq)) + `)
+  AND nf.repo_prefix <> '' AND nt.repo_prefix <> ''
+  AND nf.repo_prefix <> nt.repo_prefix
+ORDER BY e.id`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []graph.CrossRepoCandidateRow
+	for rows.Next() {
+		var (
+			fromRepo, toRepo string
+			e                graph.Edge
+			metaBlob         []byte
+			crossRepo        int64
+		)
+		if err := rows.Scan(
+			&e.From, &e.To, &e.Kind, &e.FilePath, &e.Line,
+			&e.Confidence, &e.ConfidenceLabel, &e.Origin, &e.Tier,
+			&crossRepo, &metaBlob,
+			&fromRepo, &toRepo,
+		); err != nil {
+			continue
+		}
+		e.CrossRepo = crossRepo != 0
+		if len(metaBlob) > 0 {
+			if m, derr := decodeMeta(metaBlob); derr == nil {
+				e.Meta = m
+			}
+		}
+		edge := e
+		out = append(out, graph.CrossRepoCandidateRow{
+			Edge:     &edge,
+			FromRepo: fromRepo,
+			ToRepo:   toRepo,
+		})
+	}
+	return out
+}
+
+// --- ThrowerErrorSurfacer -----------------------------------------------
+
+// ThrowerErrorSurface returns one row per thrower (a node with outgoing
+// EdgeThrows edges), aggregating the distinct error targets and the
+// distinct literal error-message strings it emits (KindString nodes with
+// Meta["context"] == "error_msg", linked by EdgeEmits). pathPrefix gates
+// the EdgeThrows rows by their stored FilePath prefix. Throws counts the
+// underlying EdgeThrows edges; FilePath / Line seed from the first throws
+// edge, falling back to the thrower node's own coordinates when the edge
+// carries none — matching the in-memory reference.
+func (s *Store) ThrowerErrorSurface(pathPrefix string) []graph.ThrowerErrorRow {
+	type rowAccum struct {
+		row        graph.ThrowerErrorRow
+		targetSeen map[string]struct{}
+		msgSeen    map[string]struct{}
+	}
+	accums := make(map[string]*rowAccum)
+	var order []string
+
+	// Pass 1: EdgeThrows aggregation (count + distinct targets), keyed by
+	// thrower. The first edge (by PK insertion order) seeds FilePath /
+	// Line; an empty edge file/line falls back to the thrower node.
+	tq := `SELECT from_id, to_id, file_path, line FROM edges WHERE kind = ?`
+	targs := []any{string(graph.EdgeThrows)}
+	if pathPrefix != "" {
+		tq += ` AND file_path LIKE ? ESCAPE '\'`
+		targs = append(targs, escapeLikePattern(pathPrefix)+"%")
+	}
+	tq += ` ORDER BY id`
+	trows, err := s.db.Query(tq, targs...)
+	if err != nil {
+		return nil
+	}
+	for trows.Next() {
+		var from, to, filePath string
+		var line int
+		if err := trows.Scan(&from, &to, &filePath, &line); err != nil {
+			continue
+		}
+		acc := accums[from]
+		if acc == nil {
+			file := filePath
+			ln := line
+			if file == "" || ln == 0 {
+				if n := s.GetNode(from); n != nil {
+					if file == "" {
+						file = n.FilePath
+					}
+					if ln == 0 {
+						ln = n.StartLine
+					}
+				}
+			}
+			acc = &rowAccum{
+				row: graph.ThrowerErrorRow{
+					ThrowerID: from,
+					FilePath:  file,
+					Line:      ln,
+				},
+				targetSeen: make(map[string]struct{}),
+				msgSeen:    make(map[string]struct{}),
+			}
+			accums[from] = acc
+			order = append(order, from)
+		}
+		acc.row.Throws++
+		if _, ok := acc.targetSeen[to]; !ok {
+			acc.targetSeen[to] = struct{}{}
+			acc.row.ErrorTargets = append(acc.row.ErrorTargets, to)
+		}
+	}
+	_ = trows.Close()
+	if len(accums) == 0 {
+		return nil
+	}
+
+	// Pass 2: attach the literal error messages each thrower emits. Join
+	// each thrower's EdgeEmits out-edges to KindString targets and filter
+	// Meta["context"] == "error_msg" Go-side (the context lives in the
+	// gob-encoded Meta blob).
+	for _, id := range order {
+		acc := accums[id]
+		mq := `SELECT n.name, n.meta
+FROM edges e
+JOIN nodes n ON n.id = e.to_id
+WHERE e.from_id = ? AND e.kind = ? AND n.kind = ? AND n.meta IS NOT NULL
+ORDER BY e.id`
+		mrows, err := s.db.Query(mq, id, string(graph.EdgeEmits), string(graph.KindString))
+		if err != nil {
+			continue
+		}
+		for mrows.Next() {
+			var name string
+			var metaBlob []byte
+			if err := mrows.Scan(&name, &metaBlob); err != nil {
+				continue
+			}
+			meta, derr := decodeMeta(metaBlob)
+			if derr != nil || meta == nil {
+				continue
+			}
+			ctxLabel, _ := meta["context"].(string)
+			if ctxLabel != "error_msg" {
+				continue
+			}
+			if _, ok := acc.msgSeen[name]; ok {
+				continue
+			}
+			acc.msgSeen[name] = struct{}{}
+			acc.row.ErrorMsgs = append(acc.row.ErrorMsgs, name)
+		}
+		_ = mrows.Close()
+	}
+
+	out := make([]graph.ThrowerErrorRow, 0, len(order))
+	for _, id := range order {
+		out = append(out, accums[id].row)
+	}
+	return out
+}

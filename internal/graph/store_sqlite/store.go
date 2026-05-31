@@ -57,40 +57,40 @@ type Store struct {
 	edgeIdentityRevs atomic.Int64
 
 	// Prepared statements (compiled once in Open, closed in Close).
-	stmtInsertNode             *sql.Stmt
-	stmtGetNode                *sql.Stmt
-	stmtGetNodeByQual          *sql.Stmt
-	stmtFindByName             *sql.Stmt
-	stmtFindByNameInRepo       *sql.Stmt
-	stmtFileNodes              *sql.Stmt
-	stmtRepoNodes              *sql.Stmt
-	stmtAllNodes               *sql.Stmt
-	stmtNodeCount              *sql.Stmt
-	stmtRepoPrefixes           *sql.Stmt
-	stmtRepoStatsNodes         *sql.Stmt
-	stmtRepoStatsEdges         *sql.Stmt
-	stmtRepoNodeCount          *sql.Stmt
-	stmtRepoEdgeCount          *sql.Stmt
-	stmtAllRepoCountsNodes     *sql.Stmt
-	stmtAllRepoCountsEdges     *sql.Stmt
-	stmtStatsByKind            *sql.Stmt
-	stmtStatsByLanguage        *sql.Stmt
+	stmtInsertNode         *sql.Stmt
+	stmtGetNode            *sql.Stmt
+	stmtGetNodeByQual      *sql.Stmt
+	stmtFindByName         *sql.Stmt
+	stmtFindByNameInRepo   *sql.Stmt
+	stmtFileNodes          *sql.Stmt
+	stmtRepoNodes          *sql.Stmt
+	stmtAllNodes           *sql.Stmt
+	stmtNodeCount          *sql.Stmt
+	stmtRepoPrefixes       *sql.Stmt
+	stmtRepoStatsNodes     *sql.Stmt
+	stmtRepoStatsEdges     *sql.Stmt
+	stmtRepoNodeCount      *sql.Stmt
+	stmtRepoEdgeCount      *sql.Stmt
+	stmtAllRepoCountsNodes *sql.Stmt
+	stmtAllRepoCountsEdges *sql.Stmt
+	stmtStatsByKind        *sql.Stmt
+	stmtStatsByLanguage    *sql.Stmt
 
-	stmtInsertEdge        *sql.Stmt
-	stmtOutEdges          *sql.Stmt
-	stmtInEdges           *sql.Stmt
-	stmtRepoEdges         *sql.Stmt
-	stmtAllEdges          *sql.Stmt
-	stmtEdgeCount         *sql.Stmt
-	stmtRemoveEdge        *sql.Stmt
-	stmtUpdateEdgeOrigin  *sql.Stmt
-	stmtSelectEdgeOrigin  *sql.Stmt
-	stmtDeleteEdgeByKey   *sql.Stmt
+	stmtInsertEdge       *sql.Stmt
+	stmtOutEdges         *sql.Stmt
+	stmtInEdges          *sql.Stmt
+	stmtRepoEdges        *sql.Stmt
+	stmtAllEdges         *sql.Stmt
+	stmtEdgeCount        *sql.Stmt
+	stmtRemoveEdge       *sql.Stmt
+	stmtUpdateEdgeOrigin *sql.Stmt
+	stmtSelectEdgeOrigin *sql.Stmt
+	stmtDeleteEdgeByKey  *sql.Stmt
 
-	stmtSelectFileNodeIDs  *sql.Stmt
-	stmtSelectRepoNodeIDs  *sql.Stmt
-	stmtDeleteNodeByFile   *sql.Stmt
-	stmtDeleteNodeByRepo   *sql.Stmt
+	stmtSelectFileNodeIDs *sql.Stmt
+	stmtSelectRepoNodeIDs *sql.Stmt
+	stmtDeleteNodeByFile  *sql.Stmt
+	stmtDeleteNodeByRepo  *sql.Stmt
 }
 
 // Compile-time assertion: *Store satisfies graph.Store.

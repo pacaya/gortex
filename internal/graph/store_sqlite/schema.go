@@ -19,19 +19,19 @@ package store_sqlite
 //   - meta is a gob-encoded blob. nil / empty Meta is stored as NULL.
 //
 //   - Secondary indexes mirror the in-memory store's hot lookup paths:
-//       nodes_by_name      -- FindNodesByName / FindNodesByNameInRepo
-//       nodes_by_kind      -- Stats (group-by-kind)
-//       nodes_by_file      -- GetFileNodes, EvictFile
-//       nodes_by_repo      -- GetRepoNodes, RepoStats, EvictRepo
-//                             (partial index -- empty repo_prefix is
-//                              the common case and indexing it would
-//                              be pure overhead)
-//       nodes_by_qual      -- GetNodeByQualName, unique so duplicate
-//                             qual_names surface as constraint errors
-//       edges_by_from      -- GetOutEdges (kind included so RemoveEdge
-//                             can probe by (from, kind) without a
-//                             second hop)
-//       edges_by_to        -- GetInEdges
+//     nodes_by_name      -- FindNodesByName / FindNodesByNameInRepo
+//     nodes_by_kind      -- Stats (group-by-kind)
+//     nodes_by_file      -- GetFileNodes, EvictFile
+//     nodes_by_repo      -- GetRepoNodes, RepoStats, EvictRepo
+//     (partial index -- empty repo_prefix is
+//     the common case and indexing it would
+//     be pure overhead)
+//     nodes_by_qual      -- GetNodeByQualName, unique so duplicate
+//     qual_names surface as constraint errors
+//     edges_by_from      -- GetOutEdges (kind included so RemoveEdge
+//     can probe by (from, kind) without a
+//     second hop)
+//     edges_by_to        -- GetInEdges
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS nodes (
     id            TEXT PRIMARY KEY,
@@ -72,4 +72,17 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE INDEX IF NOT EXISTS edges_by_from ON edges(from_id, kind);
 CREATE INDEX IF NOT EXISTS edges_by_to   ON edges(to_id, kind);
+
+CREATE TABLE IF NOT EXISTS file_mtimes (
+    repo_prefix TEXT NOT NULL,
+    file_path   TEXT NOT NULL,
+    mtime_ns    INTEGER NOT NULL,
+    PRIMARY KEY (repo_prefix, file_path)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS vectors (
+    node_id TEXT PRIMARY KEY,
+    dims    INTEGER NOT NULL,
+    vec     BLOB NOT NULL
+) WITHOUT ROWID;
 `
