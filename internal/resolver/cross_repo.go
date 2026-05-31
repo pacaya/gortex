@@ -78,6 +78,7 @@ type CrossRepoResolver struct {
 	logger          *zap.Logger
 	nodeByID        map[string]*graph.Node
 	nodesByName     map[string][]*graph.Node
+	nodesByNameRepo map[string]map[string][]*graph.Node
 	nodesByQualName map[string]*graph.Node
 	dirIndex        map[string][]*graph.Node
 	lastDirIndex    map[string][]*graph.Node
@@ -617,6 +618,25 @@ func (cr *CrossRepoResolver) warmLookupCache(pending []*graph.Edge) {
 			}
 		}
 	}
+	// Index the name hits by repo so resolveFunctionCall / resolveMethodCall
+	// collect ONLY the caller's reachable-repo, same-language candidates
+	// instead of fetching every same-named node across all repos + languages
+	// and discarding the unreachable majority per edge (the cross-repo
+	// candidate-iteration cost). Every pre-warmed name gets an entry (empty
+	// for an authoritative negative) so scopedCandidates can distinguish
+	// "pre-warmed, no node" (return empty) from "not pre-warmed" (fall
+	// through to the flat cache).
+	cr.nodesByNameRepo = make(map[string]map[string][]*graph.Node, len(cr.nodesByName))
+	for name, hits := range cr.nodesByName {
+		byRepo := make(map[string][]*graph.Node)
+		for _, n := range hits {
+			if n == nil {
+				continue
+			}
+			byRepo[n.RepoPrefix] = append(byRepo[n.RepoPrefix], n)
+		}
+		cr.nodesByNameRepo[name] = byRepo
+	}
 	// Pre-warm the import qual-name cache + authoritative negatives, so
 	// resolveImport's GetNodeByQualName hits instead of scanning the
 	// unindexed qual_name column per cross-repo import edge.
@@ -640,7 +660,58 @@ func (cr *CrossRepoResolver) warmLookupCache(pending []*graph.Edge) {
 func (cr *CrossRepoResolver) clearLookupCache() {
 	cr.nodeByID = nil
 	cr.nodesByName = nil
+	cr.nodesByNameRepo = nil
 	cr.nodesByQualName = nil
+}
+
+// scopedCandidates returns the candidates named `name` the caller of e could
+// plausibly resolve to: nodes in the caller's own repo, a repo its file
+// imports (reachableReposByFile), or no repo (synthetic) — AND of the
+// caller's language (a Go call can't bind a same-named TypeScript symbol).
+// This applies the import + language prune at the SOURCE: cachedFindNodesByName
+// returns every same-named node across all repos and languages (thousands for
+// a common name), which the per-edge loops then iterate and discard; the
+// per-pass name→repo index collects only the relevant few. Names absent from
+// the index (not pre-warmed) fall through to the flat cache, preserving the
+// negative-cache + correctness contract.
+func (cr *CrossRepoResolver) scopedCandidates(e *graph.Edge, name string) []*graph.Node {
+	byRepo, ok := cr.nodesByNameRepo[name]
+	if !ok {
+		return cr.cachedFindNodesByName(name)
+	}
+	if len(byRepo) == 0 {
+		return nil // pre-warmed, no node (authoritative negative)
+	}
+	caller := cr.cachedGetNode(e.From)
+	callerRepo, callerLang, callerFile := "", "", e.FilePath
+	if caller != nil {
+		callerRepo = caller.RepoPrefix
+		callerLang = caller.Language
+		if caller.Kind == graph.KindFile {
+			callerFile = caller.ID
+		} else if caller.FilePath != "" {
+			callerFile = caller.FilePath
+		}
+	}
+	reachableRepos := cr.reachableReposByFile[callerFile]
+	var out []*graph.Node
+	keep := func(repo string) {
+		for _, n := range byRepo[repo] {
+			if callerLang == "" || n.Language == "" || n.Language == callerLang {
+				out = append(out, n)
+			}
+		}
+	}
+	keep(callerRepo)
+	if callerRepo != "" {
+		keep("") // synthetic / no-repo nodes are always reachable
+	}
+	for r := range reachableRepos {
+		if r != callerRepo && r != "" {
+			keep(r)
+		}
+	}
+	return out
 }
 
 // cachedGetNode consults the per-pass id cache first, falling through to
@@ -734,7 +805,7 @@ func (cr *CrossRepoResolver) callerRepoPrefix(e *graph.Edge) string {
 }
 
 func (cr *CrossRepoResolver) resolveFunctionCall(e *graph.Edge, funcName string, stats *CrossRepoStats) {
-	candidates := cr.cachedFindNodesByName(funcName)
+	candidates := cr.scopedCandidates(e, funcName)
 	if len(candidates) == 0 {
 		stats.Unresolved++
 		return
@@ -944,7 +1015,7 @@ func (cr *CrossRepoResolver) resolveImport(e *graph.Edge, importPath string, sta
 }
 
 func (cr *CrossRepoResolver) resolveMethodCall(e *graph.Edge, methodName string, stats *CrossRepoStats) {
-	candidates := cr.cachedFindNodesByName(methodName)
+	candidates := cr.scopedCandidates(e, methodName)
 	if len(candidates) == 0 {
 		stats.Unresolved++
 		return
