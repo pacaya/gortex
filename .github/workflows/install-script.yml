@@ -1,8 +1,10 @@
 # Smoke-test scripts/install.sh on Linux + macOS against the latest published
 # release. The script is the public install path served at get.gortex.dev, so
-# any change must prove it still produces a working `gortex` binary on both
-# OSes and both architectures GitHub-hosted runners cover (x64 always; arm64
-# darwin via the macos-14 runner — Linux arm64 is exercised in C5 release).
+# any change must prove it still produces a working `gortex` binary. Coverage:
+# Linux x64 (ubuntu-latest) and macOS arm64 (macos-14). Intel macOS is not
+# tested here — GitHub retired its Intel (macos-13) runners, and install.sh is
+# arch-agnostic (only the downloaded artifact differs). Linux arm64 is
+# exercised in the release flow.
 name: install-script
 
 on:
@@ -35,7 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-13, macos-14]
+        os: [ubuntu-latest, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
