@@ -97,6 +97,7 @@ func RunConformance(t *testing.T, factory Factory) {
 	t.Run("ClassHierarchyTraverser", func(t *testing.T) { testClassHierarchyTraverser(t, factory) })
 	t.Run("FileEditingContext", func(t *testing.T) { testFileEditingContext(t, factory) })
 	t.Run("NodeDegreeByKinds", func(t *testing.T) { testNodeDegreeByKinds(t, factory) })
+	t.Run("CloneShingleSidecar", func(t *testing.T) { testCloneShingleSidecar(t, factory) })
 }
 
 // -- fixture helpers ---------------------------------------------------
@@ -3250,5 +3251,153 @@ func testNodeDegreeByKinds(t *testing.T, factory Factory) {
 	)
 	if len(rows) != 1 || rows[0].NodeID != "Leaf" {
 		t.Fatalf("pathPrefix scope mismatch: got %v", rows)
+	}
+}
+
+// eqShingles reports whether two []uint64 are element-for-element
+// equal with order preserved — the exact contract LoadCloneShingles
+// must round-trip.
+func eqShingles(a, b []uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// testCloneShingleSidecar mirrors the FileMtime sidecar conformance:
+// set shingle sets for a few node ids under a repo prefix, Load them
+// back (asserting exact []uint64 equality with order preserved),
+// Delete a subset and re-Load (asserting the gone rows are gone and
+// the survivors untouched), verify repo-prefix scoping isolates rows,
+// and that an empty/absent load returns an empty (non-nil) map, not an
+// error. Backends that don't implement the capability skip — both the
+// in-memory Graph and the SQLite Store do implement it.
+func testCloneShingleSidecar(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	w, ok := s.(graph.CloneShingleWriter)
+	if !ok {
+		t.Skip("backend does not implement graph.CloneShingleWriter")
+	}
+	r, ok := s.(graph.CloneShingleReader)
+	if !ok {
+		t.Skip("backend implements CloneShingleWriter but not CloneShingleReader")
+	}
+
+	// Empty / absent load returns an empty (non-nil) map, not an error.
+	if got, err := r.LoadCloneShingles("repoA"); err != nil {
+		t.Fatalf("LoadCloneShingles(empty store): %v", err)
+	} else if got == nil {
+		t.Fatalf("LoadCloneShingles(empty store) = nil, want empty non-nil map")
+	} else if len(got) != 0 {
+		t.Fatalf("LoadCloneShingles(empty store) = %v, want empty", got)
+	}
+
+	// Empty input is a no-op.
+	if err := w.BulkSetCloneShingles("repoA", nil); err != nil {
+		t.Fatalf("BulkSetCloneShingles(nil): %v", err)
+	}
+
+	// Write three shingle sets under repoA. Order within each set must
+	// survive the round-trip, so use non-sorted, repeated-value slices.
+	want := map[string][]uint64{
+		"a.go::Foo": {9, 1, 9, 4, 2},
+		"a.go::Bar": {7},
+		"b.go::Baz": {0xFFFFFFFFFFFFFFFF, 0, 42},
+	}
+	if err := w.BulkSetCloneShingles("repoA", want); err != nil {
+		t.Fatalf("BulkSetCloneShingles(repoA): %v", err)
+	}
+
+	got, err := r.LoadCloneShingles("repoA")
+	if err != nil {
+		t.Fatalf("LoadCloneShingles(repoA): %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("LoadCloneShingles(repoA) len = %d, want %d", len(got), len(want))
+	}
+	for id, ws := range want {
+		if !eqShingles(got[id], ws) {
+			t.Fatalf("LoadCloneShingles(repoA)[%q] = %v, want %v (order preserved)", id, got[id], ws)
+		}
+	}
+
+	// Overwrite is idempotent in place: re-setting one id replaces it.
+	if err := w.BulkSetCloneShingles("repoA", map[string][]uint64{"a.go::Bar": {7, 8, 9}}); err != nil {
+		t.Fatalf("BulkSetCloneShingles(overwrite): %v", err)
+	}
+	if got, err := r.LoadCloneShingles("repoA"); err != nil {
+		t.Fatalf("LoadCloneShingles after overwrite: %v", err)
+	} else if !eqShingles(got["a.go::Bar"], []uint64{7, 8, 9}) {
+		t.Fatalf("overwrite not in place: a.go::Bar = %v, want [7 8 9]", got["a.go::Bar"])
+	}
+
+	// Deep-copy isolation: mutating the input slice after the write must
+	// not corrupt stored state, and mutating the returned slice must not
+	// corrupt the next read.
+	src := []uint64{1, 2, 3}
+	if err := w.BulkSetCloneShingles("repoA", map[string][]uint64{"a.go::Foo": src}); err != nil {
+		t.Fatalf("BulkSetCloneShingles(isolation): %v", err)
+	}
+	src[0] = 999
+	got2, err := r.LoadCloneShingles("repoA")
+	if err != nil {
+		t.Fatalf("LoadCloneShingles(isolation): %v", err)
+	}
+	if !eqShingles(got2["a.go::Foo"], []uint64{1, 2, 3}) {
+		t.Fatalf("input mutation leaked into store: a.go::Foo = %v, want [1 2 3]", got2["a.go::Foo"])
+	}
+	got2["a.go::Foo"][0] = 777
+	if got3, _ := r.LoadCloneShingles("repoA"); !eqShingles(got3["a.go::Foo"], []uint64{1, 2, 3}) {
+		t.Fatalf("returned-slice mutation leaked into store: a.go::Foo = %v, want [1 2 3]", got3["a.go::Foo"])
+	}
+
+	// Delete a subset and re-Load — the deleted rows must be gone; the
+	// survivors untouched.
+	if err := w.DeleteCloneShingles([]string{"a.go::Bar", "b.go::Baz", "missing::id", ""}); err != nil {
+		t.Fatalf("DeleteCloneShingles: %v", err)
+	}
+	after, err := r.LoadCloneShingles("repoA")
+	if err != nil {
+		t.Fatalf("LoadCloneShingles after delete: %v", err)
+	}
+	if _, present := after["a.go::Bar"]; present {
+		t.Fatalf("a.go::Bar still present after delete")
+	}
+	if _, present := after["b.go::Baz"]; present {
+		t.Fatalf("b.go::Baz still present after delete")
+	}
+	if !eqShingles(after["a.go::Foo"], []uint64{1, 2, 3}) {
+		t.Fatalf("survivor a.go::Foo corrupted after delete: %v", after["a.go::Foo"])
+	}
+
+	// Empty delete is a no-op.
+	if err := w.DeleteCloneShingles(nil); err != nil {
+		t.Fatalf("DeleteCloneShingles(nil): %v", err)
+	}
+
+	// Repo-prefix scoping: a write under repoB must not surface under
+	// repoA, and vice versa.
+	if err := w.BulkSetCloneShingles("repoB", map[string][]uint64{"c.go::Qux": {5, 6}}); err != nil {
+		t.Fatalf("BulkSetCloneShingles(repoB): %v", err)
+	}
+	aRows, err := r.LoadCloneShingles("repoA")
+	if err != nil {
+		t.Fatalf("LoadCloneShingles(repoA) after repoB write: %v", err)
+	}
+	if _, leaked := aRows["c.go::Qux"]; leaked {
+		t.Fatalf("repoB row c.go::Qux leaked into repoA scope")
+	}
+	bRows, err := r.LoadCloneShingles("repoB")
+	if err != nil {
+		t.Fatalf("LoadCloneShingles(repoB): %v", err)
+	}
+	if len(bRows) != 1 || !eqShingles(bRows["c.go::Qux"], []uint64{5, 6}) {
+		t.Fatalf("LoadCloneShingles(repoB) = %v, want {c.go::Qux:[5 6]}", bRows)
 	}
 }

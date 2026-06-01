@@ -80,6 +80,21 @@ CREATE TABLE IF NOT EXISTS file_mtimes (
     PRIMARY KEY (repo_prefix, file_path)
 ) WITHOUT ROWID;
 
+-- clone_shingles is the per-symbol MinHash shingle-set sidecar. Each
+-- function/method node's []uint64 shingle set is stored as a little-
+-- endian BLOB (8 bytes/elem) keyed by node_id so the maintained clone-
+-- detection count-min sketch can be rebuilt after a warm restart from
+-- the snapshot instead of re-parsing every body. repo_prefix carries
+-- the owning repo so per-repo reseeds (SELECT … WHERE repo_prefix = ?)
+-- and per-repo wipes don't clobber other repos' shingle sets. node_id
+-- is the PK (the join key back to nodes.id); like file_mtimes this is a
+-- WITHOUT ROWID sidecar so the PK index IS the table.
+CREATE TABLE IF NOT EXISTS clone_shingles (
+    node_id     TEXT PRIMARY KEY,
+    repo_prefix TEXT NOT NULL DEFAULT '',
+    shingles    BLOB
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS vectors (
     node_id TEXT PRIMARY KEY,
     dims    INTEGER NOT NULL,

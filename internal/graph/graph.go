@@ -468,7 +468,32 @@ type Graph struct {
 	allEdgesCacheMu  sync.Mutex
 	allEdgesCache    []*Edge
 	allEdgesCacheGen uint64
+
+	// cloneShingles is the in-memory implementation of the
+	// CloneShingle* capability: per-symbol MinHash shingle sets keyed by
+	// node id, alongside the repo prefix that owns each row so per-repo
+	// reseeds isolate correctly. Guarded by cloneShinglesMu. Slices are
+	// deep-copied on set and on read so callers can't mutate the stored
+	// state. The on-disk backend persists the same shape; the in-memory
+	// store keeps it live so the conformance suite exercises both.
+	cloneShinglesMu sync.Mutex
+	cloneShingles   map[string]cloneShingleEntry
 }
+
+// cloneShingleEntry is one in-memory clone_shingles row: the owning
+// repo prefix plus the (already deep-copied) shingle set.
+type cloneShingleEntry struct {
+	repoPrefix string
+	shingles   []uint64
+}
+
+// Compile-time assertions that the in-memory *Graph satisfies the
+// optional per-symbol clone-shingle persistence capabilities, so the
+// conformance suite exercises the same code path against both backends.
+var (
+	_ CloneShingleWriter = (*Graph)(nil)
+	_ CloneShingleReader = (*Graph)(nil)
+)
 
 // New creates an empty graph.
 func New() *Graph {
@@ -498,6 +523,66 @@ func (g *Graph) ReindexEdges(batch []EdgeReindex) {
 		}
 		g.ReindexEdge(r.Edge, r.OldTo)
 	}
+}
+
+// BulkSetCloneShingles is the in-memory implementation of
+// CloneShingleWriter. It records every (nodeID -> shingles) entry for
+// one repo prefix, replacing any prior value in place. Slices are
+// deep-copied on the way in so a later mutation of the caller's slice
+// can't corrupt the stored state. Empty input is a no-op.
+func (g *Graph) BulkSetCloneShingles(repoPrefix string, rows map[string][]uint64) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	g.cloneShinglesMu.Lock()
+	defer g.cloneShinglesMu.Unlock()
+	if g.cloneShingles == nil {
+		g.cloneShingles = make(map[string]cloneShingleEntry, len(rows))
+	}
+	for id, sh := range rows {
+		cp := make([]uint64, len(sh))
+		copy(cp, sh)
+		g.cloneShingles[id] = cloneShingleEntry{repoPrefix: repoPrefix, shingles: cp}
+	}
+	return nil
+}
+
+// DeleteCloneShingles is the in-memory implementation of the
+// CloneShingleWriter delete side. It drops the rows for the supplied
+// node ids. Empty input is a no-op; missing ids are ignored.
+func (g *Graph) DeleteCloneShingles(nodeIDs []string) error {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	g.cloneShinglesMu.Lock()
+	defer g.cloneShinglesMu.Unlock()
+	for _, id := range nodeIDs {
+		if id == "" {
+			continue
+		}
+		delete(g.cloneShingles, id)
+	}
+	return nil
+}
+
+// LoadCloneShingles is the in-memory implementation of
+// CloneShingleReader. It returns a fresh map of the shingle sets owned
+// by one repo prefix, deep-copying each slice so callers can't mutate
+// the stored state. Always returns a non-nil (possibly empty) map and
+// never an error.
+func (g *Graph) LoadCloneShingles(repoPrefix string) (map[string][]uint64, error) {
+	g.cloneShinglesMu.Lock()
+	defer g.cloneShinglesMu.Unlock()
+	out := make(map[string][]uint64)
+	for id, entry := range g.cloneShingles {
+		if entry.repoPrefix != repoPrefix {
+			continue
+		}
+		cp := make([]uint64, len(entry.shingles))
+		copy(cp, entry.shingles)
+		out[id] = cp
+	}
+	return out, nil
 }
 
 // EdgesByKind yields every edge whose Kind matches. In-memory

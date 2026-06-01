@@ -911,6 +911,33 @@ type FileMtimeReader interface {
 	LoadFileMtimes(repoPrefix string) map[string]int64
 }
 
+// CloneShingleWriter is an optional capability backends MAY implement
+// to persist each function/method node's MinHash shingle set (a
+// []uint64) keyed by node id. Lifting this state into the same backend
+// the graph already lives in lets the maintained clone-detection
+// count-min sketch (CMS) be rebuilt after a warm restart from the
+// persisted snapshot — no re-parse, no second persistence surface to
+// keep coherent. It is the shingle-set sibling of FileMtimeWriter.
+//
+// repoPrefix is the indexer's own prefix tag; rows is keyed on the
+// node id whose shingle set the value carries. Empty input is a
+// no-op; empty repoPrefix is allowed for single-repo daemons.
+// DeleteCloneShingles drops the rows for a set of node ids (evicted
+// or rebuilt symbols) so the persisted snapshot stays in step with
+// the live graph; empty input is a no-op.
+type CloneShingleWriter interface {
+	BulkSetCloneShingles(repoPrefix string, rows map[string][]uint64) error
+	DeleteCloneShingles(nodeIDs []string) error
+}
+
+// CloneShingleReader is the read side of CloneShingleWriter. Returns
+// the recorded shingle sets for one repo prefix as a fresh map (nil
+// for "no data"). Used by warmup to reseed the clone-detection CMS
+// from the persisted snapshot instead of re-shingling every body.
+type CloneShingleReader interface {
+	LoadCloneShingles(repoPrefix string) (map[string][]uint64, error)
+}
+
 // EdgesByKindsScanner is an optional capability backends MAY
 // implement to stream every edge whose Kind is in the supplied set,
 // in a single backend round-trip. The fallback iterates AllEdges()
