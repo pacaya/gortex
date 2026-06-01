@@ -298,7 +298,7 @@ type contractCacheEntry struct {
 }
 
 // New creates an Indexer that writes through the supplied graph.Store.
-// Any backend (in-memory, ladybug-on-disk, remote) is acceptable — the
+// Any backend (in-memory, SQLite-on-disk, remote) is acceptable — the
 // indexer's mutation paths go through the Store interface methods only,
 // so swapping backends is a zero-code-change configuration choice for
 // callers.
@@ -313,7 +313,7 @@ func New(g graph.Store, reg *parser.Registry, cfg config.IndexConfig, logger *za
 		// idx.search (Hybrid wrap, etc.) should use swap helpers below.
 		//
 		// When the backing store implements graph.SymbolSearcher
-		// (today only store_ladybug), the initial backend is a thin
+		// (today only store_sqlite), the initial backend is a thin
 		// adapter that forwards Search to the store's native FTS.
 		// The in-process Bleve / BM25 build path is then bypassed
 		// entirely — saving ~100MB heap on a Vscode-scale repo and
@@ -393,7 +393,7 @@ func (d *vectorSearcherDelegate) SimilarTo(vec []float32, limit int) ([]graph.Ve
 
 // initialSearchBackend picks the search.Backend the indexer wraps
 // in its Swappable on construction. When the underlying store
-// implements graph.SymbolSearcher (today only store_ladybug), a
+// implements graph.SymbolSearcher (today only store_sqlite), a
 // thin adapter routes Search calls through the store's native FTS
 // — the in-process BM25 / Bleve build path is bypassed entirely.
 // Otherwise falls through to search.NewAuto which picks BM25 for
@@ -1737,7 +1737,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 	// the persisted state.
 	//
 	// Guards:
-	//   - Backend must implement graph.BulkLoader (ladybug opts in).
+	//   - Backend must implement graph.BulkLoader (the on-disk backend opts in).
 	//   - Store must be empty (NodeCount == 0 && EdgeCount == 0). The
 	//     final dump is BulkLoad's INSERT-only fast path — running it
 	//     against a non-empty store would corrupt or duplicate.
@@ -1788,13 +1788,12 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 		// persistent disk store already holds this repo's nodes from a
 		// prior run. The shadow drain below ends in BulkLoad's INSERT-only
 		// COPY, which (per this function's own contract) "running against a
-		// non-empty store would corrupt or duplicate". On the ladybug
-		// backend a duplicate-primary-key COPY does not error cleanly — it
-		// SIGSEGVs inside lbug_connection_query and takes the whole daemon
-		// down, then re-fires on the next restart (the repo's mtimes never
-		// got persisted because warmup died first): a crash loop. Evicting
-		// the repo's existing rows first makes the COPY land on a clean
-		// slate. EvictRepo self-guards with a count query, so this is a
+		// non-empty store would corrupt or duplicate". A duplicate-primary-
+		// key bulk load against the persisted rows would fail warmup, and
+		// because the repo's mtimes never get persisted when warmup dies
+		// first, the failure re-fires on the next restart: a crash loop.
+		// Evicting the repo's existing rows first makes the bulk load land
+		// on a clean slate. EvictRepo self-guards with a count query, so this is a
 		// cheap no-op for the genuine first-index cases (true cold start,
 		// a newly-tracked repo) where the disk store has no rows for this
 		// prefix. preNodes>0 short-circuits the call entirely on the
@@ -2203,7 +2202,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 	idx.mtimeMu.Unlock()
 
 	// Persist the per-file mtimes through the store's optional
-	// FileMtime sidecar table. On the ladybug backend this lets warm
+	// FileMtime sidecar table. On the on-disk backend this lets warm
 	// restarts seed ReconcileRepoCtx without having to read them back
 	// out of the gob+gzip metadata snapshot; on the in-memory
 	// backend the capability isn't implemented and the assertion
@@ -2212,7 +2211,7 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 	// Multi-repo bug: when the shadow-swap path is active, idx.graph
 	// is the in-memory shadow graph at this point — graph.Graph does
 	// NOT implement FileMtimeWriter, so the type assertion fails and
-	// persistence is silently skipped. The actual ladybug store is
+	// persistence is silently skipped. The actual disk store is
 	// the local diskTarget variable; checking it first ensures warm-
 	// restart-skip-reindex actually works. The defer that swaps
 	// idx.graph back to diskTarget runs LATER, when IndexCtx returns,
@@ -2614,8 +2613,8 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 		// Also persist through the store's FileMtime sidecar so the
 		// next warm restart sees this incremental update without
 		// having to wait for the periodic gob snapshot to roll it.
-		// Per-file MERGE is ~1ms on ladybug; trivial under steady-
-		// state file-watcher load.
+		// Per-file write is ~1ms on the on-disk backend; trivial under
+		// steady-state file-watcher load.
 		if w, ok := idx.graph.(graph.FileMtimeWriter); ok {
 			_ = w.BulkSetFileMtimes(idx.repoPrefix, map[string]int64{relPath: mtime})
 		}
@@ -3621,18 +3620,15 @@ func (idx *Indexer) IncrementalReindexPaths(root string, paths []string) (*Index
 	}
 
 	// Skip the search-index rebuild on a zero-change reconcile when the
-	// backend already persists its search structures (ladybug: native
-	// FTS + native HNSW vectors). buildSearchIndex re-reads every node
-	// (GetRepoNodes) and re-embeds them, then BulkUpsertEmbeddings does
-	// a `DELETE all SymbolVec` + COPY into a table that still carries the
-	// prior run's HNSW index. On a warm restart that work is pure
-	// recompute of already-persisted data, AND running it concurrently
-	// across the parallel-warmup workers is a CGo crash site (COPY into
-	// an indexed table; cross-repo DELETE-all stomp). When nothing
-	// changed there is nothing to re-embed, so skip it entirely — the
-	// persisted index is authoritative. The in-memory backends (BM25 /
-	// Bleve) must still rebuild from the replayed snapshot, so they keep
-	// the unconditional path.
+	// backend already persists its search structures (the on-disk
+	// backend keeps its FTS index and vector embeddings on disk).
+	// buildSearchIndex re-reads every node (GetRepoNodes) and re-embeds
+	// them, then BulkUpsertEmbeddings re-writes the embedding rows. On a
+	// warm restart that work is pure recompute of already-persisted data.
+	// When nothing changed there is nothing to re-embed, so skip it
+	// entirely — the persisted index is authoritative. The in-memory
+	// backends (BM25 / Bleve) must still rebuild from the replayed
+	// snapshot, so they keep the unconditional path.
 	if len(staleFiles) > 0 || len(deletedFiles) > 0 || !isSymbolSearcherBackend(idx.search) {
 		idx.buildSearchIndex()
 	}
@@ -3840,11 +3836,9 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 
 	// Rebuild search index to ensure consistency — but skip it on a
 	// zero-change reconcile against a backend that persists its search
-	// structures natively (ladybug). See the matching guard in the
-	// other incremental path: re-embedding + the DELETE-all-then-COPY
-	// into the still-indexed SymbolVec table is both wasted work and a
-	// parallel-warmup CGo crash site, and there is nothing to rebuild
-	// when no file changed.
+	// structures natively (the on-disk backend). See the matching guard
+	// in the other incremental path: re-embedding is wasted work and
+	// there is nothing to rebuild when no file changed.
 	if len(staleFiles) > 0 || len(deletedFiles) > 0 || !isSymbolSearcherBackend(idx.search) {
 		idx.buildSearchIndex()
 	}
@@ -4033,7 +4027,7 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 		// dep::<module> nodes were materialised by extractGoModContracts
 		// before ResolveAll (so the import bridge could find them);
 		// re-emitting them here would PK-collide on backends whose bulk
-		// COPY is INSERT-only (Ladybug). The pre-pass is the single
+		// load is INSERT-only (the on-disk backend). The pre-pass is the single
 		// writer for that contract type.
 		if c.Type == contracts.ContractDependency {
 			continue
@@ -4109,14 +4103,14 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 }
 
 // bulkCommit writes nodes + edges in one AddBatch call. The bulk
-// COPY path is intentionally NOT used here: contract IDs often
+// load path is intentionally NOT used here: contract IDs often
 // coincide with existing source-symbol IDs (a route handler shows
-// up as both a Go function and an HTTP-contract anchor), and
-// Ladybug's COPY FROM is INSERT-only on the node table so any
-// collision fails the whole batch. AddBatch's non-bulk path runs
-// MERGE for every row so duplicates are absorbed in place; the
-// per-call cost is amortised by the chunked UNWIND-MERGE path the
-// backend uses internally.
+// up as both a Go function and an HTTP-contract anchor), and the
+// on-disk backend's bulk load is INSERT-only on the node table so
+// any collision fails the whole batch. AddBatch's non-bulk path
+// upserts every row so duplicates are absorbed in place; the
+// per-call cost is amortised by the chunked write path the backend
+// uses internally.
 func (idx *Indexer) bulkCommit(nodes []*graph.Node, edges []*graph.Edge) {
 	if len(nodes) == 0 && len(edges) == 0 {
 		return
@@ -5674,13 +5668,12 @@ func (idx *Indexer) extractContracts() {
 // The daemon warmup uses it to choose a reconcile strategy for a
 // reopened repo: a repo with zero changes takes the fast no-op
 // IncrementalReindex path, while a repo that changed while the daemon
-// was down is routed through the shadow/bulk-COPY re-track path instead.
+// was down is routed through the shadow/bulk re-track path instead.
 // That routing matters because IncrementalReindex re-resolves changed
-// files through per-edge graph.ReindexEdges, and the per-edge ladybug
-// write path HANGS inside lbug_connection_prepare on the first write to
-// a freshly reopened store — the warm restart wedges at 0% CPU forever.
+// files through per-edge graph.ReindexEdges, and the per-edge write
+// path against a freshly reopened disk store is slow and unreliable.
 // The shadow path resolves entirely in an in-memory graph and commits
-// the result in one bulk COPY, so it never issues a per-edge write to
+// the result in one bulk load, so it never issues a per-edge write to
 // the reopened store. It re-indexes the whole repo (more work than a
 // true incremental pass), but it is reliable, and only repos that
 // actually changed during downtime pay the cost.

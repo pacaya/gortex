@@ -219,7 +219,7 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 
 	// Backend-delegated resolution: when the store implements
 	// graph.BackendResolver, drain the bulk-tractable subset of the
-	// resolver's work via a sequence of Cypher statements that run
+	// resolver's work via a sequence of queries that run
 	// inside the backend engine. ON BY DEFAULT — opt out with
 	// GORTEX_BACKEND_RESOLVER=0 (see backendResolverEnabled). ResolveAllBulk
 	// chains the per-rule methods (SameFile → SamePackage → ImportAware → …)
@@ -537,7 +537,7 @@ func (r *Resolver) warmLookupCache(pending []*graph.Edge) {
 		// "S"). Seeding the embedded identifier — NOT the raw stub id,
 		// which matches no node — is what lets the worker's
 		// cachedFindNodesByName(InRepo) HIT instead of firing one
-		// FindNodesByName(InRepo) Cypher per edge (the warmup storm).
+		// FindNodesByName(InRepo) query per edge (the warmup storm).
 		if name := identifierFromTarget(graph.UnresolvedName(e.To)); name != "" {
 			nameSet[name] = struct{}{}
 		}
@@ -551,7 +551,7 @@ func (r *Resolver) warmLookupCache(pending []*graph.Edge) {
 		}
 		// Import targets resolve by qualified name: resolveImport's first
 		// lookup is GetNodeByQualName(importPath), an unindexed scan per
-		// import edge on ladybug. Seed the import path so it hits the
+		// import edge on a disk backend. Seed the import path so it hits the
 		// qual-name cache (or its authoritative negative) instead.
 		if t := graph.UnresolvedName(e.To); strings.HasPrefix(t, "import::") {
 			if qn := strings.TrimPrefix(t, "import::"); qn != "" {
@@ -686,7 +686,7 @@ func (r *Resolver) cachedGetNodeByQualName(qualName string) *graph.Node {
 // cachedFindNodesByName: name-matched candidates whose RepoPrefix == repo,
 // served from the per-pass name cache (filtered in Go) so the
 // method/function/type/field cascade doesn't fire one
-// FindNodesByNameInRepo Cypher per pending edge — the warmup storm that
+// FindNodesByNameInRepo query per pending edge — the warmup storm that
 // the multi-repo prefixed-stub population (100k+ edges) turned into a
 // hang. Falls through to the store on a cache miss, preserving
 // correctness; the cache is positive-only (absence means "not
@@ -1971,7 +1971,7 @@ func memberMethodInfosByType(g graph.Store) map[string][]graph.MemberMethodInfo 
 
 // edgesByKinds yields every edge whose Kind is in the given set,
 // using the EdgesByKindsScanner capability when the backend
-// implements it (one Cypher IN-list scan) and falling back to a
+// implements it (one query — an IN-list scan) and falling back to a
 // chain of per-kind EdgesByKind iterators otherwise.
 func edgesByKinds(g graph.Store, kinds []graph.EdgeKind) iter.Seq[*graph.Edge] {
 	if scan, ok := g.(graph.EdgesByKindsScanner); ok {
@@ -1990,8 +1990,8 @@ func edgesByKinds(g graph.Store, kinds []graph.EdgeKind) iter.Seq[*graph.Edge] {
 
 // nodesByKindsOrAll returns every node whose Kind is in the given
 // set, using the NodesByKindsScanner capability when the backend
-// implements it (a single Cypher kind-IN scan, one C-string column
-// per row) and falling back to AllNodes + Go-side filter otherwise.
+// implements it (a single kind-IN scan) and falling back to
+// AllNodes + Go-side filter otherwise.
 func nodesByKindsOrAll(g graph.Store, kinds ...graph.NodeKind) []*graph.Node {
 	if scan, ok := g.(graph.NodesByKindsScanner); ok {
 		return scan.NodesByKinds(kinds)
@@ -2015,7 +2015,7 @@ func nodesByKindsOrAll(g graph.Store, kinds ...graph.NodeKind) []*graph.Node {
 // memberMethodsByType returns typeID → method-name-set for every
 // EdgeMemberOf edge whose source is a KindMethod node. Routed through
 // the storage layer's MemberMethodsByType capability when the backend
-// implements it (one Cypher join, server-side), falling back to the
+// implements it (one query — a join, server-side), falling back to the
 // EdgesByKind + per-edge GetNode loop the resolver used before the
 // capability landed. Used by InferImplements (and shaped to match its
 // existing map[string]map[string]bool API).
@@ -2101,7 +2101,7 @@ func memberMethodNodesByType(g graph.Store) map[string]map[string]*graph.Node {
 // EdgeComposes edge whose endpoints are both KindType / KindInterface,
 // projected as the (FromID, ToID, Origin) tuples InferOverrides
 // consumes. Routed through the storage layer's StructuralParentEdges
-// capability when the backend implements it (one Cypher join with
+// capability when the backend implements it (one query — a join with
 // kind filters on both sides — no per-edge GetNode); falls back to
 // the AllEdges + per-edge GetNode walk otherwise.
 func structuralParentEdges(g graph.Store) []graph.StructuralParentEdgeRow {
@@ -2431,7 +2431,7 @@ func dirMatchesImport(dir, importPath string) bool {
 func (r *Resolver) callerRepoPrefix(e *graph.Edge) string {
 	// cachedGetNode: the pre-warm batch-loads every pending edge's From
 	// id, so this is a map hit during ResolveAll instead of one GetNode
-	// Cypher per edge.
+	// query per edge.
 	fromNode := r.cachedGetNode(e.From)
 	if fromNode != nil {
 		return fromNode.RepoPrefix
