@@ -265,7 +265,11 @@ jobs:
             [ -n "$hit" ] && { echo "$hit"; return 0; }
             return 1
           }
-          # mingw C/C++ runtime the .exe links dynamically.
+          # mingw C/C++ runtime the .exe links dynamically. libstdc++ is
+          # required (NOT a ladybug leftover): several bundled tree-sitter
+          # grammars ship C++ external scanners — e.g. go-sitter-forest's
+          # norg/scanner.cc — so the cgo build pulls in g++ and the .exe
+          # depends on libstdc++-6.dll. Dropping it breaks startup.
           for lib in libstdc++-6.dll libgcc_s_seh-1.dll libwinpthread-1.dll; do
             p="$(find_dll "$lib")" || { echo "FATAL: mingw runtime $lib not found"; exit 1; }
             cp "$p" stage/; echo "bundled $lib  <- $p"
