@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/graph"
@@ -505,4 +507,61 @@ func TestWatcher_DirEventScanGating(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a directory create must trigger a scoped scan")
 	}
+}
+
+// panicOnReadStore wraps a real Store but panics on GetFileNodes once
+// armed — the shape store_sqlite's panicOnFatal produces when the DB is
+// closed/locked (e.g. mid daemon-restart) or its schema is missing.
+type panicOnReadStore struct {
+	graph.Store
+	armed atomic.Bool
+}
+
+func (s *panicOnReadStore) GetFileNodes(p string) []*graph.Node {
+	if s.armed.Load() {
+		panic("simulated fatal store error")
+	}
+	return s.Store.GetFileNodes(p)
+}
+
+// TestWatcher_PatchPanicRecoveredNotCrash proves the watcher panic
+// firewall: a fatal store error during a debounced patch is recovered
+// and logged, not propagated out of the timer goroutine to crash the
+// whole daemon. The fsnotify-driven goroutines don't route through the
+// MCP wrapToolHandler firewall, so a closed/locked DB during a restart
+// (panicOnFatal) used to take the process down — the exact shape of the
+// observed crash. Against the pre-firewall code the panic escapes the
+// AfterFunc goroutine and aborts the test binary.
+func TestWatcher_PatchPanicRecoveredNotCrash(t *testing.T) {
+	ext := &toggleExtractor{}
+	reg := parser.NewRegistry()
+	reg.Register(ext)
+	store := &panicOnReadStore{Store: graph.New()}
+	idx := New(store, reg, config.IndexConfig{Workers: 1}, zap.NewNop())
+	idx.search = search.NewBM25()
+	dir := t.TempDir()
+	idx.SetRootPath(dir)
+	path := filepath.Join(dir, "main.fk")
+
+	ext.setFail(false)
+	ext.setFuncs("Alpha")
+	writeFile(t, path, "alpha body")
+	require.NoError(t, idx.IndexFile(path))
+
+	core, logs := observer.New(zapcore.ErrorLevel)
+	w, err := NewWatcher(idx, config.WatchConfig{Enabled: true, DebounceMs: 5}, zap.New(core))
+	require.NoError(t, err)
+
+	// Arm the store so the next read panics, then drive the debounced
+	// patch path. The panic fires in the AfterFunc goroutine.
+	store.armed.Store(true)
+	w.handleEvent(fswatcher.WatchEvent{
+		Path:  path,
+		Types: []fswatcher.EventType{fswatcher.EventMod},
+	})
+
+	require.Eventually(t, func() bool {
+		return logs.FilterMessageSnippet("recovered from panic").Len() > 0
+	}, 2*time.Second, 10*time.Millisecond,
+		"a panic in the debounced patch must be recovered and logged, not crash the daemon")
 }

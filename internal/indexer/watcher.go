@@ -423,6 +423,26 @@ func (w *Watcher) loop() {
 	}
 }
 
+// guardWatcherPanic recovers a panic in a watcher background goroutine —
+// a debounced patch, a storm drain, an overflow reconcile, or a
+// new-directory scan. Those goroutines call into the graph store, and
+// store_sqlite turns a fatal storage error (a closed DB during a daemon
+// restart, a busy/locked DB, disk-full) into a panic via panicOnFatal.
+// The MCP tool path has its own firewall (wrapToolHandler); these
+// fsnotify-driven goroutines don't route through it, so without this a
+// single transient store error during a restart or rebuild takes the
+// whole daemon down. Recovering aborts just that unit of work — the file
+// stays stale until the next event or the reconcile janitor — instead of
+// crashing the process.
+func (w *Watcher) guardWatcherPanic(op string) {
+	if r := recover(); r != nil && w.logger != nil {
+		w.logger.Error("watcher: recovered from panic in background re-index",
+			zap.String("op", op),
+			zap.Any("panic", r),
+			zap.Stack("stack"))
+	}
+}
+
 // triggerOverflowReconcile schedules a single coalesced full-tree
 // reconcile in response to a lost-event signal (a kernel inotify queue
 // overflow or a backpressure-dropped event). A burst of signals
@@ -452,6 +472,7 @@ func (w *Watcher) triggerOverflowReconcile(reason string) {
 			w.reconcilePending = false
 			w.reconcileMu.Unlock()
 		}()
+		defer w.guardWatcherPanic("overflow-reconcile")
 		if fn != nil {
 			fn()
 			return
@@ -506,7 +527,10 @@ func (w *Watcher) enqueueDirScan(dir string) {
 			}
 			fn := w.scanFn
 			w.reconcileMu.Unlock()
-			w.runDirScan(dirs, fn)
+			func() {
+				defer w.guardWatcherPanic("dir-scan")
+				w.runDirScan(dirs, fn)
+			}()
 		}
 	}()
 }
@@ -642,10 +666,15 @@ func (w *Watcher) handleEvent(event fswatcher.WatchEvent) {
 	}
 	debounce := time.Duration(w.config.DebounceMs) * time.Millisecond
 	w.pending[path] = time.AfterFunc(debounce, func() {
+		// Clean up the pending entry even if the patch panics, then
+		// recover so a fatal store error can't crash the daemon.
+		defer func() {
+			w.mu.Lock()
+			delete(w.pending, path)
+			w.mu.Unlock()
+		}()
+		defer w.guardWatcherPanic("patch " + path)
 		w.patchGraph(path, kind)
-		w.mu.Lock()
-		delete(w.pending, path)
-		w.mu.Unlock()
 	})
 	w.mu.Unlock()
 }
@@ -717,6 +746,7 @@ func (w *Watcher) recordInStorm(path string, kind ChangeKind) {
 // then one global ResolveAll at the end. Cuts a 500-file checkout
 // from "resolver runs 500 times" to "resolver runs once."
 func (w *Watcher) drainStorm() {
+	defer w.guardWatcherPanic("storm-drain")
 	w.stormMu.Lock()
 	batch := w.stormBatch
 	w.stormBatch = make(map[string]ChangeKind)
