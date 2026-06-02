@@ -9,43 +9,36 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/zzet/gortex/internal/blame"
-	"github.com/zzet/gortex/internal/cochange"
-	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/coverage"
 	"github.com/zzet/gortex/internal/daemon"
-	"github.com/zzet/gortex/internal/graph"
-	"github.com/zzet/gortex/internal/indexer"
-	"github.com/zzet/gortex/internal/parser"
-	"github.com/zzet/gortex/internal/parser/languages"
 	"github.com/zzet/gortex/internal/progress"
-	"github.com/zzet/gortex/internal/releases"
 )
 
 var enrichCmd = &cobra.Command{
 	Use:   "enrich",
-	Short: "Run one-shot enrichments (blame, coverage) against an indexed repo",
-	Long: `Enrich indexes a repository in-process and stamps additional metadata
-onto graph nodes from external data sources — git blame for authorship,
-Go cover profiles for test coverage. Useful for CI pipelines or one-off
-snapshots where the daemon isn't running. Equivalent to invoking the
-` + "`analyze kind=blame`" + ` / ` + "`analyze kind=coverage`" + ` MCP tools against a fresh
-index.`,
+	Short: "Run one-shot enrichments (churn, blame, coverage, releases, cochange) via the running daemon",
+	Long: `Enrich stamps additional metadata onto the daemon's graph from
+external data sources — git blame for authorship, git history for churn
+and co-change, git tags for release timelines, and Go cover profiles for
+test coverage.
+
+Every enrichment is forwarded to the running daemon, which owns the warm
+graph and its on-disk store write lock. The daemon runs the enricher
+in-process against that graph so the persisted metadata is immediately
+queryable by the analyze / get_churn_rate / coverage tools.
+
+A daemon must be running. If none is, the command exits with an error
+rather than building a throwaway in-memory graph that nothing would
+read — start one with ` + "`gortex daemon start`" + ` and re-run.`,
 }
 
-var (
-	enrichBlameSnapshot    string
-	enrichCoverageSnapshot string
-	enrichReleasesSnapshot string
-	enrichReleasesBranch   string
-	enrichCochangeSnapshot string
+var enrichReleasesBranch string
 
-	enrichAllSnapshot string
-	enrichAllBlame    bool
-	enrichAllReleases bool
-	enrichAllCochange bool
-	enrichAllProfile  string
-)
+// errNoDaemon is the single clean error every enrich subcommand returns
+// when no daemon is reachable. The enrichers only make sense against the
+// daemon's warm, prefix-stamped graph; a standalone in-memory pass would
+// be discarded and a direct on-disk write would race the daemon's writer.
+var errNoDaemon = errors.New("enrich requires a running daemon; start it with `gortex daemon start`")
 
 var enrichBlameCmd = &cobra.Command{
 	Use:   "blame [path]",
@@ -75,35 +68,35 @@ var enrichCochangeCmd = &cobra.Command{
 	RunE:  runEnrichCochange,
 }
 
+var (
+	enrichAllBlame    bool
+	enrichAllReleases bool
+	enrichAllCochange bool
+	enrichAllChurn    bool
+	enrichAllProfile  string
+)
+
 var enrichAllCmd = &cobra.Command{
 	Use:   "all [path]",
-	Short: "Index once and run multiple enrichments in a single pass",
-	Long: `Combined enrichment that indexes the target path once, then runs
-the requested enrichments against the same in-memory graph. Avoids
-the ~3x indexing cost of running blame, coverage, and releases as
-three separate subcommand invocations.
+	Short: "Run every enrichment against the daemon's graph in one invocation",
+	Long: `Combined enrichment that runs the requested enrichers against the
+daemon's graph via successive control calls.
 
-By default runs blame and releases (both git-only, no extra data
-needed). Pass --coverage <profile> to also run coverage enrichment.
-Each enrichment is independently optional via --no-blame /
---no-releases flags should you want a subset.`,
+By default runs churn, blame, releases, and co-change (all git-only, no
+extra data needed). Pass --coverage <profile> to also project a Go cover
+profile. Each enrichment is independently toggleable via the
+--no-churn / --no-blame / --no-releases / --no-cochange flags.
+
+Like every enrich subcommand, this requires a running daemon.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runEnrichAll,
 }
 
 func init() {
-	enrichBlameCmd.Flags().StringVar(&enrichBlameSnapshot, "snapshot", "",
-		"write the enriched graph as a gob.gz snapshot to this path")
-	enrichCoverageCmd.Flags().StringVar(&enrichCoverageSnapshot, "snapshot", "",
-		"write the enriched graph as a gob.gz snapshot to this path")
-	enrichReleasesCmd.Flags().StringVar(&enrichReleasesSnapshot, "snapshot", "",
-		"write the enriched graph as a gob.gz snapshot to this path")
 	enrichReleasesCmd.Flags().StringVar(&enrichReleasesBranch, "branch", "",
 		"restrict to tags reachable from this branch (default: resolve origin/main/master). Empty means every tag in the repo")
-	enrichCochangeCmd.Flags().StringVar(&enrichCochangeSnapshot, "snapshot", "",
-		"write the enriched graph as a gob.gz snapshot to this path")
-	enrichAllCmd.Flags().StringVar(&enrichAllSnapshot, "snapshot", "",
-		"write the enriched graph as a gob.gz snapshot to this path")
+	enrichAllCmd.Flags().BoolVar(&enrichAllChurn, "churn", true,
+		"run churn enrichment (default: on)")
 	enrichAllCmd.Flags().BoolVar(&enrichAllBlame, "blame", true,
 		"run blame enrichment (default: on)")
 	enrichAllCmd.Flags().BoolVar(&enrichAllReleases, "releases", true,
@@ -120,338 +113,291 @@ func init() {
 	rootCmd.AddCommand(enrichCmd)
 }
 
-func runEnrichAll(cmd *cobra.Command, args []string) error {
-	logger := newLogger()
-	defer func() { _ = logger.Sync() }()
-
-	path := "."
-	if len(args) >= 1 {
-		path = args[0]
-	}
-
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		return err
-	}
-
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
-	idx := indexer.New(g, reg, cfg.Index, loggerForSpinner(cmd, logger))
-
-	if err := indexWithSpinner(cmd, idx, path); err != nil {
-		return err
-	}
-
-	result := map[string]any{
-		"root": idx.RootPath(),
-	}
-
-	if enrichAllBlame {
-		sp := newCLISpinner(cmd, "Stamping blame")
-		count, err := blame.EnrichGraph(g, idx.RootPath())
-		if err != nil {
-			sp.Fail(err)
-			return fmt.Errorf("blame: %w", err)
-		}
-		sp.Set("", fmt.Sprintf("%d nodes stamped", count))
-		sp.Done()
-		result["blame_enriched"] = count
-	}
-	if enrichAllReleases {
-		sp := newCLISpinner(cmd, "Stamping releases")
-		count, err := releases.EnrichGraph(g, idx.RootPath())
-		if err != nil {
-			sp.Fail(err)
-			return fmt.Errorf("releases: %w", err)
-		}
-		sp.Set("", fmt.Sprintf("%d files stamped", count))
-		sp.Done()
-		result["releases_enriched"] = count
-	}
-	if enrichAllCochange {
-		sp := newCLISpinner(cmd, "Mining co-change")
-		count, err := cochange.EnrichGraph(g, idx.RootPath(), "")
-		if err != nil {
-			sp.Fail(err)
-			return fmt.Errorf("cochange: %w", err)
-		}
-		sp.Set("", fmt.Sprintf("%d edges added", count))
-		sp.Done()
-		result["cochange_edges"] = count
-	}
-	if enrichAllProfile != "" {
-		sp := newCLISpinner(cmd, "Stamping coverage")
-		sp.Set("", enrichAllProfile)
-		segments, err := coverage.ParseFile(enrichAllProfile)
-		if err != nil {
-			sp.Fail(err)
-			return fmt.Errorf("read profile: %w", err)
-		}
-		modulePath := coverage.ReadModulePath(idx.RootPath())
-		count := coverage.EnrichGraph(g, segments, modulePath)
-		sp.Set("", fmt.Sprintf("%d symbols · %d segments", count, len(segments)))
-		sp.Done()
-		result["coverage_enriched"] = count
-		result["coverage_segments"] = len(segments)
-	}
-
-	if enrichAllSnapshot != "" {
-		if err := saveSnapshotTo(g, nil, nil, snapshotVector{}, "gortex-enrich-all", enrichAllSnapshot, logger); err != nil {
-			return fmt.Errorf("write snapshot %s: %w", enrichAllSnapshot, err)
-		}
-		result["snapshot"] = enrichAllSnapshot
-	}
-	return printEnrichResult(result)
-}
-
-func runEnrichReleases(cmd *cobra.Command, args []string) error {
-	logger := newLogger()
-	defer func() { _ = logger.Sync() }()
-
+// enrichAbsPath resolves the optional [path] argument to an absolute
+// path. Empty args default to the current directory; the abs path is the
+// repo scope handed to the daemon (matched against tracked prefixes /
+// roots, or "" for "every tracked repo").
+func enrichAbsPath(args []string) (string, error) {
 	path := "."
 	if len(args) >= 1 {
 		path = args[0]
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return fmt.Errorf("abs path %q: %w", path, err)
+		return "", fmt.Errorf("abs path %q: %w", path, err)
 	}
-
-	// Daemon path: forward to the running daemon so the enrichment
-	// runs against its in-process (and possibly disk-backed)
-	// graph. Mirrors the churn CLI's behaviour.
-	if daemon.IsRunning() {
-		return forwardEnrichReleasesToDaemon(cmd, abs)
-	}
-
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		return err
-	}
-
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
-	idx := indexer.New(g, reg, cfg.Index, loggerForSpinner(cmd, logger))
-
-	if err := indexWithSpinner(cmd, idx, path); err != nil {
-		return err
-	}
-
-	branch := enrichReleasesBranch
-	if branch == "" {
-		branch = gitDefaultBranch(idx.RootPath())
-	}
-
-	sp := newCLISpinner(cmd, "Stamping releases")
-	if branch != "" {
-		sp.Set("", branch)
-	}
-	count, err := releases.EnrichGraphForBranch(g, idx.RootPath(), "", branch)
-	if err != nil {
-		sp.Fail(err)
-		return fmt.Errorf("releases: %w", err)
-	}
-	sp.Set("", fmt.Sprintf("%d files stamped", count))
-	sp.Done()
-
-	result := map[string]any{
-		"enriched": count,
-		"branch":   branch,
-		"root":     idx.RootPath(),
-		"mode":     "standalone",
-	}
-	if enrichReleasesSnapshot != "" {
-		if err := saveSnapshotTo(g, nil, nil, snapshotVector{}, "gortex-enrich-releases", enrichReleasesSnapshot, logger); err != nil {
-			return fmt.Errorf("write snapshot %s: %w", enrichReleasesSnapshot, err)
-		}
-		result["snapshot"] = enrichReleasesSnapshot
-	}
-	return printEnrichResult(result)
+	return abs, nil
 }
 
-// forwardEnrichReleasesToDaemon sends a ControlEnrichReleases RPC
-// and renders the response. Same shape as forwardEnrichChurnToDaemon.
-func forwardEnrichReleasesToDaemon(cmd *cobra.Command, absPath string) error {
-	c, err := daemon.Dial(daemon.Handshake{Mode: daemon.ModeControl, ClientName: "cli-enrich-releases"})
+// dialEnrichDaemon opens a control connection to the running daemon for
+// the given client name. Callers must have already checked
+// daemon.IsRunning(); a dial failure here means the socket was present
+// but unusable (a dying daemon) — surfaced as a clear error.
+func dialEnrichDaemon(clientName string) (*daemon.Client, error) {
+	c, err := daemon.Dial(daemon.Handshake{Mode: daemon.ModeControl, ClientName: clientName})
 	if err != nil {
 		if errors.Is(err, daemon.ErrDaemonUnavailable) {
-			return fmt.Errorf("daemon socket detected but dial failed; restart the daemon or run with no daemon (it falls back to in-memory)")
+			return nil, fmt.Errorf("daemon socket detected but dial failed; restart it with `gortex daemon restart`")
 		}
-		return fmt.Errorf("dial daemon: %w", err)
+		return nil, fmt.Errorf("dial daemon: %w", err)
+	}
+	return c, nil
+}
+
+// controlEnrich sends one control request on c, validates the daemon
+// accepted it, and decodes the typed result into out (which must be a
+// pointer). Centralises the OK / error-code handling every forwarder
+// repeats.
+func controlEnrich(c *daemon.Client, kind string, params, out any) error {
+	resp, err := c.Control(kind, params)
+	if err != nil {
+		return fmt.Errorf("control %s: %w", kind, err)
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon rejected %s [%s]: %s", kind, resp.ErrorCode, resp.ErrorMsg)
+	}
+	if out != nil && len(resp.Result) > 0 {
+		if err := json.Unmarshal(resp.Result, out); err != nil {
+			return fmt.Errorf("parse daemon %s response: %w", kind, err)
+		}
+	}
+	return nil
+}
+
+func runEnrichBlame(cmd *cobra.Command, args []string) error {
+	abs, err := enrichAbsPath(args)
+	if err != nil {
+		return err
+	}
+	if !daemon.IsRunning() {
+		return errNoDaemon
+	}
+	c, err := dialEnrichDaemon("cli-enrich-blame")
+	if err != nil {
+		return err
 	}
 	defer func() { _ = c.Close() }()
 
-	resp, err := c.Control(daemon.ControlEnrichReleases, daemon.EnrichReleasesParams{
-		Path:   absPath,
-		Branch: enrichReleasesBranch,
+	var out daemon.EnrichBlameResult
+	if err := controlEnrich(c, daemon.ControlEnrichBlame, daemon.EnrichBlameParams{Path: abs}, &out); err != nil {
+		return err
+	}
+	sp := newCLISpinner(cmd, "Enriched via daemon")
+	sp.Set("", fmt.Sprintf("%d nodes stamped", out.Nodes))
+	sp.Done()
+	return printEnrichResult(map[string]any{
+		"enriched":    out.Nodes,
+		"duration_ms": out.DurationMS,
+		"path":        abs,
+		"mode":        "daemon",
 	})
+}
+
+func runEnrichCoverage(cmd *cobra.Command, args []string) error {
+	profilePath := args[0]
+	abs, err := enrichAbsPath(args[1:])
 	if err != nil {
-		return fmt.Errorf("control enrich_releases: %w", err)
+		return err
 	}
-	if !resp.OK {
-		return fmt.Errorf("daemon rejected enrich_releases [%s]: %s", resp.ErrorCode, resp.ErrorMsg)
+	// Parse the profile CLI-side: the path is relative to the caller's
+	// cwd, not the daemon's, so the daemon can't read it. We hand the
+	// daemon the parsed segments instead.
+	segments, err := coverage.ParseFile(profilePath)
+	if err != nil {
+		return fmt.Errorf("read profile: %w", err)
 	}
-	var out daemon.EnrichReleasesResult
-	if len(resp.Result) > 0 {
-		if err := json.Unmarshal(resp.Result, &out); err != nil {
-			return fmt.Errorf("parse daemon response: %w", err)
+	if !daemon.IsRunning() {
+		return errNoDaemon
+	}
+	c, err := dialEnrichDaemon("cli-enrich-coverage")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+
+	wire := make([]daemon.EnrichCoverageSegment, len(segments))
+	for i, s := range segments {
+		wire[i] = daemon.EnrichCoverageSegment{
+			File:      s.File,
+			StartLine: s.StartLine,
+			EndLine:   s.EndLine,
+			NumStmt:   s.NumStmt,
+			Count:     s.Count,
 		}
+	}
+
+	var out daemon.EnrichCoverageResult
+	if err := controlEnrich(c, daemon.ControlEnrichCoverage, daemon.EnrichCoverageParams{Path: abs, Segments: wire}, &out); err != nil {
+		return err
+	}
+	sp := newCLISpinner(cmd, "Enriched via daemon")
+	sp.Set("", fmt.Sprintf("%d symbols · %d segments", out.Symbols, out.Segments))
+	sp.Done()
+	return printEnrichResult(map[string]any{
+		"enriched":    out.Symbols,
+		"segments":    out.Segments,
+		"profile":     profilePath,
+		"duration_ms": out.DurationMS,
+		"path":        abs,
+		"mode":        "daemon",
+	})
+}
+
+func runEnrichReleases(cmd *cobra.Command, args []string) error {
+	abs, err := enrichAbsPath(args)
+	if err != nil {
+		return err
+	}
+	if !daemon.IsRunning() {
+		return errNoDaemon
+	}
+	c, err := dialEnrichDaemon("cli-enrich-releases")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+
+	var out daemon.EnrichReleasesResult
+	if err := controlEnrich(c, daemon.ControlEnrichReleases, daemon.EnrichReleasesParams{Path: abs, Branch: enrichReleasesBranch}, &out); err != nil {
+		return err
 	}
 	sp := newCLISpinner(cmd, "Enriched via daemon")
 	sp.Set("", fmt.Sprintf("%d files · %s", out.Files, out.Branch))
 	sp.Done()
-	payload := map[string]any{
+	return printEnrichResult(map[string]any{
 		"enriched":    out.Files,
 		"branch":      out.Branch,
 		"duration_ms": out.DurationMS,
+		"path":        abs,
 		"mode":        "daemon",
-	}
-	if absPath != "" {
-		payload["path"] = absPath
-	}
-	return printEnrichResult(payload)
+	})
 }
 
 func runEnrichCochange(cmd *cobra.Command, args []string) error {
-	logger := newLogger()
-	defer func() { _ = logger.Sync() }()
-
-	path := "."
-	if len(args) >= 1 {
-		path = args[0]
-	}
-
-	cfg, err := config.Load(cfgFile)
+	abs, err := enrichAbsPath(args)
 	if err != nil {
 		return err
 	}
-
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
-	idx := indexer.New(g, reg, cfg.Index, loggerForSpinner(cmd, logger))
-
-	if err := indexWithSpinner(cmd, idx, path); err != nil {
+	if !daemon.IsRunning() {
+		return errNoDaemon
+	}
+	c, err := dialEnrichDaemon("cli-enrich-cochange")
+	if err != nil {
 		return err
 	}
+	defer func() { _ = c.Close() }()
 
-	sp := newCLISpinner(cmd, "Mining co-change")
-	count, err := cochange.EnrichGraph(g, idx.RootPath(), "")
-	if err != nil {
-		sp.Fail(err)
-		return fmt.Errorf("cochange: %w", err)
+	var out daemon.EnrichCochangeResult
+	if err := controlEnrich(c, daemon.ControlEnrichCochange, daemon.EnrichCochangeParams{Path: abs}, &out); err != nil {
+		return err
 	}
-	sp.Set("", fmt.Sprintf("%d edges added", count))
+	sp := newCLISpinner(cmd, "Enriched via daemon")
+	sp.Set("", fmt.Sprintf("%d edges added", out.Edges))
 	sp.Done()
-
-	result := map[string]any{
-		"enriched": count,
-		"root":     idx.RootPath(),
-	}
-	if enrichCochangeSnapshot != "" {
-		if err := saveSnapshotTo(g, nil, nil, snapshotVector{}, "gortex-enrich-cochange", enrichCochangeSnapshot, logger); err != nil {
-			return fmt.Errorf("write snapshot %s: %w", enrichCochangeSnapshot, err)
-		}
-		result["snapshot"] = enrichCochangeSnapshot
-	}
-	return printEnrichResult(result)
+	return printEnrichResult(map[string]any{
+		"enriched":    out.Edges,
+		"duration_ms": out.DurationMS,
+		"path":        abs,
+		"mode":        "daemon",
+	})
 }
 
-func runEnrichBlame(cmd *cobra.Command, args []string) error {
-	logger := newLogger()
-	defer func() { _ = logger.Sync() }()
-
-	path := "."
-	if len(args) >= 1 {
-		path = args[0]
-	}
-
-	cfg, err := config.Load(cfgFile)
+func runEnrichAll(cmd *cobra.Command, args []string) error {
+	abs, err := enrichAbsPath(args)
 	if err != nil {
 		return err
 	}
-
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
-	idx := indexer.New(g, reg, cfg.Index, loggerForSpinner(cmd, logger))
-
-	if err := indexWithSpinner(cmd, idx, path); err != nil {
+	// Parse the coverage profile (if any) up front so a bad path fails
+	// before we touch the daemon.
+	var covSegments []daemon.EnrichCoverageSegment
+	if enrichAllProfile != "" {
+		segments, err := coverage.ParseFile(enrichAllProfile)
+		if err != nil {
+			return fmt.Errorf("read profile: %w", err)
+		}
+		covSegments = make([]daemon.EnrichCoverageSegment, len(segments))
+		for i, s := range segments {
+			covSegments[i] = daemon.EnrichCoverageSegment{
+				File:      s.File,
+				StartLine: s.StartLine,
+				EndLine:   s.EndLine,
+				NumStmt:   s.NumStmt,
+				Count:     s.Count,
+			}
+		}
+	}
+	if !daemon.IsRunning() {
+		return errNoDaemon
+	}
+	c, err := dialEnrichDaemon("cli-enrich-all")
+	if err != nil {
 		return err
 	}
-
-	sp := newCLISpinner(cmd, "Stamping blame")
-	count, err := blame.EnrichGraph(g, idx.RootPath())
-	if err != nil {
-		sp.Fail(err)
-		return fmt.Errorf("blame: %w", err)
-	}
-	sp.Set("", fmt.Sprintf("%d nodes stamped", count))
-	sp.Done()
+	defer func() { _ = c.Close() }()
 
 	result := map[string]any{
-		"enriched": count,
-		"root":     idx.RootPath(),
+		"path": abs,
+		"mode": "daemon",
 	}
-	if enrichBlameSnapshot != "" {
-		if err := saveSnapshotTo(g, nil, nil, snapshotVector{}, "gortex-enrich-blame", enrichBlameSnapshot, logger); err != nil {
-			return fmt.Errorf("write snapshot %s: %w", enrichBlameSnapshot, err)
+
+	if enrichAllChurn {
+		sp := newCLISpinner(cmd, "Stamping churn")
+		var out daemon.EnrichChurnResult
+		if err := controlEnrich(c, daemon.ControlEnrichChurn, daemon.EnrichChurnParams{Path: abs}, &out); err != nil {
+			sp.Fail(err)
+			return err
 		}
-		result["snapshot"] = enrichBlameSnapshot
+		sp.Set("", fmt.Sprintf("%d files · %d symbols", out.Files, out.Symbols))
+		sp.Done()
+		result["churn_files"] = out.Files
+		result["churn_symbols"] = out.Symbols
+		result["churn_branch"] = out.Branch
 	}
-	return printEnrichResult(result)
-}
-
-func runEnrichCoverage(cmd *cobra.Command, args []string) error {
-	logger := newLogger()
-	defer func() { _ = logger.Sync() }()
-
-	profilePath := args[0]
-	path := "."
-	if len(args) >= 2 {
-		path = args[1]
-	}
-
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		return err
-	}
-
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
-	idx := indexer.New(g, reg, cfg.Index, loggerForSpinner(cmd, logger))
-
-	if err := indexWithSpinner(cmd, idx, path); err != nil {
-		return err
-	}
-
-	sp := newCLISpinner(cmd, "Stamping coverage")
-	sp.Set("", profilePath)
-	segments, err := coverage.ParseFile(profilePath)
-	if err != nil {
-		sp.Fail(err)
-		return fmt.Errorf("read profile: %w", err)
-	}
-	modulePath := coverage.ReadModulePath(idx.RootPath())
-	count := coverage.EnrichGraph(g, segments, modulePath)
-	sp.Set("", fmt.Sprintf("%d symbols · %d segments", count, len(segments)))
-	sp.Done()
-
-	result := map[string]any{
-		"enriched":    count,
-		"segments":    len(segments),
-		"profile":     profilePath,
-		"module_path": modulePath,
-		"root":        idx.RootPath(),
-	}
-	if enrichCoverageSnapshot != "" {
-		if err := saveSnapshotTo(g, nil, nil, snapshotVector{}, "gortex-enrich-coverage", enrichCoverageSnapshot, logger); err != nil {
-			return fmt.Errorf("write snapshot %s: %w", enrichCoverageSnapshot, err)
+	if enrichAllBlame {
+		sp := newCLISpinner(cmd, "Stamping blame")
+		var out daemon.EnrichBlameResult
+		if err := controlEnrich(c, daemon.ControlEnrichBlame, daemon.EnrichBlameParams{Path: abs}, &out); err != nil {
+			sp.Fail(err)
+			return err
 		}
-		result["snapshot"] = enrichCoverageSnapshot
+		sp.Set("", fmt.Sprintf("%d nodes stamped", out.Nodes))
+		sp.Done()
+		result["blame_enriched"] = out.Nodes
+	}
+	if enrichAllReleases {
+		sp := newCLISpinner(cmd, "Stamping releases")
+		var out daemon.EnrichReleasesResult
+		if err := controlEnrich(c, daemon.ControlEnrichReleases, daemon.EnrichReleasesParams{Path: abs}, &out); err != nil {
+			sp.Fail(err)
+			return err
+		}
+		sp.Set("", fmt.Sprintf("%d files stamped", out.Files))
+		sp.Done()
+		result["releases_enriched"] = out.Files
+	}
+	if enrichAllCochange {
+		sp := newCLISpinner(cmd, "Mining co-change")
+		var out daemon.EnrichCochangeResult
+		if err := controlEnrich(c, daemon.ControlEnrichCochange, daemon.EnrichCochangeParams{Path: abs}, &out); err != nil {
+			sp.Fail(err)
+			return err
+		}
+		sp.Set("", fmt.Sprintf("%d edges added", out.Edges))
+		sp.Done()
+		result["cochange_edges"] = out.Edges
+	}
+	if len(covSegments) > 0 {
+		sp := newCLISpinner(cmd, "Stamping coverage")
+		sp.Set("", enrichAllProfile)
+		var out daemon.EnrichCoverageResult
+		if err := controlEnrich(c, daemon.ControlEnrichCoverage, daemon.EnrichCoverageParams{Path: abs, Segments: covSegments}, &out); err != nil {
+			sp.Fail(err)
+			return err
+		}
+		sp.Set("", fmt.Sprintf("%d symbols · %d segments", out.Symbols, out.Segments))
+		sp.Done()
+		result["coverage_enriched"] = out.Symbols
+		result["coverage_segments"] = out.Segments
 	}
 	return printEnrichResult(result)
 }
@@ -459,15 +405,12 @@ func runEnrichCoverage(cmd *cobra.Command, args []string) error {
 // printEnrichResult emits the enrichment summary as JSON when stdout
 // is captured by a script and as a one-line human-readable text
 // when invoked interactively. On a terminal we keep stdout quiet — the
-// spinner already showed the per-pass count — and just caption the root /
-// snapshot path. On a pipe / redirect we still emit JSON for scripts.
+// spinner already showed the per-pass count — and just caption the path /
+// profile. On a pipe / redirect we still emit JSON for scripts.
 func printEnrichResult(payload map[string]any) error {
 	if progress.IsTTY(os.Stdout) {
-		if v, ok := payload["root"]; ok {
-			_, _ = fmt.Fprintln(os.Stdout, "  "+progress.Caption("root: "+fmt.Sprint(v)))
-		}
-		if v, ok := payload["snapshot"]; ok {
-			_, _ = fmt.Fprintln(os.Stdout, "  "+progress.Caption("snapshot: "+fmt.Sprint(v)))
+		if v, ok := payload["path"]; ok {
+			_, _ = fmt.Fprintln(os.Stdout, "  "+progress.Caption("path: "+fmt.Sprint(v)))
 		}
 		if v, ok := payload["profile"]; ok {
 			_, _ = fmt.Fprintln(os.Stdout, "  "+progress.Caption("profile: "+fmt.Sprint(v)))
