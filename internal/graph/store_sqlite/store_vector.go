@@ -130,6 +130,66 @@ func (s *Store) BuildVectorIndex(dims int) error {
 	return nil
 }
 
+// GetEmbeddings reads back the stored vectors for an explicit set of
+// node IDs in one batched scan. It does not rank — it is the read side
+// of the post-rerank cosine-refinement stage, which needs the raw
+// vectors (not a distance) to score against a freshly embedded query.
+//
+// IDs with no stored vector (or a corrupt BLOB) are simply absent from
+// the returned map; empty input yields an empty map. A query error
+// yields whatever was decoded so far rather than failing the caller —
+// the refinement stage treats a thin result as "score what we have",
+// never as a hard error, so a transient read can never regress search.
+// The IN-list is chunked under SQLite's host-parameter limit.
+func (s *Store) GetEmbeddings(ids []string) map[string][]float32 {
+	out := make(map[string][]float32, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+
+	for start := 0; start < len(ids); start += vectorChunk {
+		end := start + vectorChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+
+		stmt := make([]byte, 0, 48+len(batch)*2)
+		stmt = append(stmt, "SELECT node_id, vec FROM vectors WHERE node_id IN ("...)
+		args := make([]any, 0, len(batch))
+		for i, id := range batch {
+			if i > 0 {
+				stmt = append(stmt, ',')
+			}
+			stmt = append(stmt, '?')
+			args = append(args, id)
+		}
+		stmt = append(stmt, ')')
+
+		rows, err := s.db.Query(string(stmt), args...)
+		if err != nil {
+			// Return what we have; the refinement stage is best-effort.
+			return out
+		}
+		for rows.Next() {
+			var (
+				id   string
+				blob []byte
+			)
+			if err := rows.Scan(&id, &blob); err != nil {
+				_ = rows.Close()
+				return out
+			}
+			if vec := decodeVec(blob); vec != nil {
+				out[id] = vec
+			}
+		}
+		_ = rows.Close()
+	}
+
+	return out
+}
+
 // SimilarTo returns up to `limit` stored vectors closest to the query
 // under cosine distance, ordered by ascending distance (most similar
 // first). Vectors whose length differs from the query are skipped — a

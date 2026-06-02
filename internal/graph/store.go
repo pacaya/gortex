@@ -507,6 +507,14 @@ type VectorHit struct {
 //   - SimilarTo runs an ANN query: given a vector, return the k
 //     closest stored vectors ordered by ascending distance.
 //
+//   - GetEmbeddings reads back the stored vectors for an explicit
+//     set of node IDs in one batch. Unlike SimilarTo it does not
+//     score or rank — it hands the raw vectors to the caller so a
+//     post-rerank refinement stage can recompute exact cosine
+//     against the query embedding. IDs with no stored vector are
+//     simply absent from the returned map (never an error); an
+//     empty input yields an empty map.
+//
 //   - Close is implied by graph.Store.Close — no separate
 //     teardown method here.
 type VectorSearcher interface {
@@ -514,6 +522,7 @@ type VectorSearcher interface {
 	BulkUpsertEmbeddings(items []VectorItem) error
 	BuildVectorIndex(dims int) error
 	SimilarTo(vec []float32, limit int) ([]VectorHit, error)
+	GetEmbeddings(ids []string) map[string][]float32
 }
 
 // PageRankOpts tunes the PageRank computation. Zero values request

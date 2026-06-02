@@ -288,6 +288,44 @@ func TestSQLiteVectorPersistence(t *testing.T) {
 	}
 }
 
+func TestSQLiteGetEmbeddings(t *testing.T) {
+	s := openTestStore(t)
+
+	corpus := map[string][]float32{
+		"n::1": {1, 0, 0, 0},
+		"n::2": {0, 1, 0, 0},
+		"n::3": {0, 0, 1, 0},
+	}
+	items := make([]graph.VectorItem, 0, len(corpus))
+	for id, v := range corpus {
+		items = append(items, graph.VectorItem{NodeID: id, Vec: v})
+	}
+	if err := s.BulkUpsertEmbeddings(items); err != nil {
+		t.Fatalf("BulkUpsertEmbeddings: %v", err)
+	}
+
+	// Batch read of a mix of present + absent IDs: present IDs come back
+	// with their exact stored vectors; absent IDs are simply omitted.
+	got := s.GetEmbeddings([]string{"n::1", "n::3", "missing::x"})
+	if len(got) != 2 {
+		t.Fatalf("GetEmbeddings returned %d vectors, want 2 (absent id must be omitted)", len(got))
+	}
+	if !reflect.DeepEqual(got["n::1"], corpus["n::1"]) {
+		t.Fatalf("GetEmbeddings[n::1] = %v, want %v", got["n::1"], corpus["n::1"])
+	}
+	if !reflect.DeepEqual(got["n::3"], corpus["n::3"]) {
+		t.Fatalf("GetEmbeddings[n::3] = %v, want %v", got["n::3"], corpus["n::3"])
+	}
+	if _, present := got["missing::x"]; present {
+		t.Fatalf("GetEmbeddings must omit ids with no stored vector")
+	}
+
+	// Empty input yields a non-nil empty map, never an error or panic.
+	if empty := s.GetEmbeddings(nil); empty == nil || len(empty) != 0 {
+		t.Fatalf("GetEmbeddings(nil) = %v, want empty non-nil map", empty)
+	}
+}
+
 func nodeID(i int) string {
 	const digits = "0123456789"
 	if i == 0 {

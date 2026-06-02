@@ -893,6 +893,18 @@ type SearchConfig struct {
 	// argument is omitted. Degrades to unconstrained expansion when
 	// the repo's mined vocabulary is empty.
 	VocabAnchoredExpansion *bool `mapstructure:"vocab_anchored_expansion" yaml:"vocab_anchored_expansion,omitempty"`
+
+	// CosineRerank enables the post-rerank exact-cosine refinement
+	// stage: after the 11-signal rerank produces the ranked order,
+	// the top results are re-scored by exact cosine similarity
+	// between the query's embedding and each candidate's stored
+	// embedding, recovering the precise semantic distance the
+	// rank-based SemanticSignal discards. On by default (a nil
+	// pointer means "on"); the stage is a no-op whenever the vector
+	// channel is inactive (no embedder, no stored vectors, or the
+	// query fails to embed), so enabling it can never regress a
+	// text-only search. Set false to keep the pure rank-fusion order.
+	CosineRerank *bool `mapstructure:"cosine_rerank" yaml:"cosine_rerank,omitempty"`
 }
 
 // Keyword-soup rewrite modes for SearchConfig.KeywordSoupRewrite.
@@ -914,6 +926,15 @@ func (c SearchConfig) EquivalenceClassesEnabled() bool {
 // (the unset state) means enabled.
 func (c SearchConfig) IndexProseEnabled() bool {
 	return c.IndexProse == nil || *c.IndexProse
+}
+
+// CosineRerankEnabled reports whether the post-rerank exact-cosine
+// refinement stage is on. Defaults to true -- a nil CosineRerank
+// pointer (the unset state) means enabled. The stage still no-ops
+// when the vector channel is unavailable, so "enabled" is a
+// permission, not a guarantee that it runs.
+func (c SearchConfig) CosineRerankEnabled() bool {
+	return c.CosineRerank == nil || *c.CosineRerank
 }
 
 // VocabAnchoredExpansionDefault reports the server-wide default for

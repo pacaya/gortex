@@ -532,12 +532,42 @@ func (e *Engine) SearchSymbolsRanked(query string, limit int, opts QueryOptions,
 		if opts.SearchTimings != nil {
 			opts.SearchTimings.EngineRerankMS += time.Since(rerankStart).Milliseconds()
 		}
+
+		// Post-rerank exact-cosine refinement. The rank-based
+		// SemanticSignal scores the vector channel by RRF rank and
+		// discards the raw cosine the store computed; this stage
+		// recovers it by embedding the query once and re-ordering the
+		// ranked head against the candidates' stored vectors. Strictly
+		// best-effort: refineByCosine is a no-op whenever the vector
+		// channel is inactive, so a text-only search is unaffected.
+		if opts.CosineRerank {
+			cands = e.RefineByCosine(query, cands, opts.CosineTopN)
+		}
 	}
 
 	if len(cands) > limit {
 		cands = cands[:limit]
 	}
 	return cands
+}
+
+// RefineByCosine runs the post-rerank cosine refinement against the
+// engine's current embedder and vector store. It resolves the embedder
+// from the active search backend and the stored vectors from the graph
+// reader; when either is unavailable it returns cands unchanged.
+// Exposed so callers that run their own merged rerank (the MCP
+// search_symbols handler) can reuse the exact same refinement after
+// their final rerank pass.
+func (e *Engine) RefineByCosine(query string, cands []*rerank.Candidate, topN int) []*rerank.Candidate {
+	embedder := backendEmbedder(e.getSearch())
+	if embedder == nil {
+		return cands
+	}
+	vectors, ok := e.g.(graph.VectorSearcher)
+	if !ok {
+		return cands
+	}
+	return refineByCosine(query, cands, embedder, vectors, topN)
 }
 
 // SearchSymbolsScoped is SearchSymbols with the optional

@@ -1506,6 +1506,30 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	var rerankPrepare, rerankSignals time.Duration
 	nodes, rerankPrepare, rerankSignals = applyRerankBoostsTimed(s, nodes, q, rctx, &rerankBreakdown)
 
+	// Post-rerank exact-cosine refinement. The merged rerank above
+	// scores the semantic channel by RRF rank and discards the raw
+	// cosine the vector store computed; this stage recovers it by
+	// embedding the query once and re-ordering the ranked head against
+	// the candidates' stored vectors. Skipped for identifier-shape
+	// queries (the vector channel never ran) and strictly a no-op when
+	// the vector channel is otherwise inactive, so it can never regress
+	// a text-only search. rerankBreakdown is the candidate slice in the
+	// final rerank order; refining it and rebuilding nodes keeps the
+	// two aligned for the diversification pass below.
+	if !scope.SkipVectorChannel && s.searchConfig().CosineRerankEnabled() && len(rerankBreakdown) > 1 {
+		refined := s.engineFor(ctx).RefineByCosine(q, rerankBreakdown, 0)
+		rerankBreakdown = refined
+		refinedNodes := make([]*graph.Node, 0, len(refined))
+		for _, c := range refined {
+			if c != nil && c.Node != nil {
+				refinedNodes = append(refinedNodes, c.Node)
+			}
+		}
+		if len(refinedNodes) == len(nodes) {
+			nodes = refinedNodes
+		}
+	}
+
 	// Per-file diversification: keep one file's many symbols from
 	// monopolising the head of the result set. Runs after the rerank
 	// so demotion acts on final scores; nothing is dropped.
