@@ -7,6 +7,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
+	"github.com/zzet/gortex/internal/cochange"
 	"github.com/zzet/gortex/internal/graph"
 )
 
@@ -114,4 +115,34 @@ func TestFindCoChanging_UnknownSymbol(t *testing.T) {
 	s := newCoChangeTestServer(t)
 	_, isErr := callFindCoChanging(t, s, map[string]any{"symbol_id": "does/not::Exist"})
 	require.True(t, isErr)
+}
+
+// TestCoChange_PersistedEdgesTakeFastPath proves change B's mechanism:
+// mineCoChange persists mined pairs as EdgeCoChange edges (via
+// cochange.AddEdges), so a subsequent daemon start reads them back via
+// coChangeFromEdges (the fast path) instead of re-mining git log.
+func TestCoChange_PersistedEdgesTakeFastPath(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "a.go", Kind: graph.KindFile, Name: "a.go", FilePath: "a.go", Language: "go"})
+	g.AddNode(&graph.Node{ID: "b.go", Kind: graph.KindFile, Name: "b.go", FilePath: "b.go", Language: "go"})
+
+	// What mineCoChange now does after a git mine: persist the pairs.
+	n := cochange.AddEdges(g, []cochange.Pair{{FileA: "a.go", FileB: "b.go", Score: 0.9, Count: 5}}, "")
+	require.Positive(t, n, "AddEdges must persist EdgeCoChange edges")
+
+	// A fresh server over the same graph takes the coChangeFromEdges
+	// fast path (no git mine) and surfaces the persisted co-change.
+	s := &Server{
+		graph:      g,
+		session:    newSessionState(),
+		tokenStats: &tokenStats{},
+		symHistory: &symbolHistory{entries: make(map[string][]SymbolModification)},
+		sessions:   newSessionMap(),
+		toolScopes: newScopeRegistry(),
+	}
+	scores := map[string]map[string]float64{}
+	counts := map[string]map[string]int{}
+	require.True(t, s.coChangeFromEdges(scores, counts), "persisted edges must take the fast path")
+	require.InDelta(t, 0.9, scores["a.go"]["b.go"], 1e-9)
+	require.Equal(t, 5, counts["a.go"]["b.go"])
 }

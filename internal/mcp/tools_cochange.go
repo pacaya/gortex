@@ -179,27 +179,28 @@ func (s *Server) coChangeReady() bool {
 // edges already present in the graph (an enriched snapshot); only when
 // none exist does it mine `git log`.
 //
-// The mine writes ONLY the in-memory caches — it deliberately does
-// not materialise EdgeCoChange edges back into the graph store.
-// Persisting tens of thousands of EdgeCoChange edges via AddEdge on a
-// disk backend is several minutes of INSERTs, and every
-// such insert grows the live edge count. The analyze[clusters]
-// partition cache is keyed on (NodeCount, EdgeCount,
-// EdgeIdentityRevisions); a background edge-count drift invalidates
-// it on every check, forcing a 40s Leiden recompute on each call.
+// The mine populates the in-memory caches AND persists the mined
+// pairs as EdgeCoChange edges (cochange.AddEdges) so a subsequent daemon
+// start takes the coChangeFromEdges fast path instead of re-mining
+// `git log` (the 5-15s restart cost).
 //
-// What we LOSE by skipping the persist:
-//   - A subsequent daemon start can no longer take the
-//     coChangeFromEdges fast path; it re-mines `git log` (typically
-//     5-15s) on every restart.
+// The earlier version deliberately skipped the persist to avoid the
+// analyze[clusters] partition cache (keyed on NodeCount/EdgeCount/
+// EdgeIdentityRevisions) being invalidated by edge-count drift. That
+// concern was about CONTINUOUS drift; here the persist is bounded —
+// mineCoChange runs once per process (sync.Once) and the fast path skips
+// the mine once edges exist — so the edge count (and the clusters token)
+// moves at most ONCE per graph, triggering a single recompute rather
+// than per-restart thrash. Co-change edges are partition-irrelevant
+// (edgeWeight 0; both endpoints are KindFile nodes, filtered out of
+// community detection), so that one recompute yields the same partition.
 //
-// What we KEEP:
-//   - find_co_changing_symbols reads the in-memory cache directly.
-//   - The search rerank's CoChangeOf hook reads the in-memory cache
-//     (not EdgeCoChange edges).
-//   - cochange.EnrichGraph (the CLI / external enrichment path) is
-//     untouched — that's a separate code path that explicitly opts
-//     into the AddEdges persist when the operator wants it.
+// Reads are unaffected: find_co_changing_symbols and the search rerank's
+// CoChangeOf hook both read the in-memory cache. The CLI cochange.EnrichGraph
+// path already persisted via AddEdges; this aligns the lazy daemon path
+// with it. Refreshing stale co-change after a HEAD move is still a manual
+// `gortex enrich cochange` (or a cold reindex) — the lazy path does not
+// auto-re-mine once edges exist.
 func (s *Server) mineCoChange() {
 	scores := map[string]map[string]float64{}
 	counts := map[string]map[string]int{}
@@ -223,6 +224,13 @@ func (s *Server) mineCoChange() {
 			addCoChangeLink(scores, counts, fa, fb, p.Score, p.Count)
 			addCoChangeLink(scores, counts, fb, fa, p.Score, p.Count)
 		}
+		// Persist the mined pairs as EdgeCoChange edges so a later daemon
+		// start takes the coChangeFromEdges fast path instead of re-mining
+		// git log (the 5-15s restart cost). Bounded: mineCoChange runs once
+		// per process (sync.Once) and the fast path above skips the mine
+		// once edges exist, so this persist (and its one clusters-cache
+		// token bump) happens at most once per graph, not per restart.
+		cochange.AddEdges(s.graph, res.Pairs, prefix)
 	}
 	s.storeCoChange(scores, counts)
 }
