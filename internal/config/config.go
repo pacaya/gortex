@@ -881,6 +881,18 @@ type SearchConfig struct {
 	// by default (a nil pointer means "on"). Set false to keep prose
 	// out of the index entirely.
 	IndexProse *bool `mapstructure:"index_prose" yaml:"index_prose,omitempty"`
+
+	// VocabAnchoredExpansion sets the server-wide default for the
+	// search_symbols `vocab_anchored` argument: when on, the LLM
+	// query-expander's freely-invented synonyms are post-filtered to
+	// the words that actually appear in this repo's symbol names
+	// before they feed the BM25 OR-merge, so a model that hallucinates
+	// a plausible-but-absent term can't dilute the candidate pool. Off
+	// by default (a nil pointer means "off") -- the per-call argument
+	// is the primary control; this only changes the default when the
+	// argument is omitted. Degrades to unconstrained expansion when
+	// the repo's mined vocabulary is empty.
+	VocabAnchoredExpansion *bool `mapstructure:"vocab_anchored_expansion" yaml:"vocab_anchored_expansion,omitempty"`
 }
 
 // Keyword-soup rewrite modes for SearchConfig.KeywordSoupRewrite.
@@ -902,6 +914,15 @@ func (c SearchConfig) EquivalenceClassesEnabled() bool {
 // (the unset state) means enabled.
 func (c SearchConfig) IndexProseEnabled() bool {
 	return c.IndexProse == nil || *c.IndexProse
+}
+
+// VocabAnchoredExpansionDefault reports the server-wide default for
+// the search_symbols `vocab_anchored` argument when the caller omits
+// it. Defaults to false -- a nil VocabAnchoredExpansion pointer (the
+// unset state) means off, so expansion stays unconstrained unless a
+// caller (or this config) opts in.
+func (c SearchConfig) VocabAnchoredExpansionDefault() bool {
+	return c.VocabAnchoredExpansion != nil && *c.VocabAnchoredExpansion
 }
 
 // EffectiveKeywordSoupRewrite folds the empty default into the

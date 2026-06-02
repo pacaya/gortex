@@ -24,6 +24,13 @@ type AutoConcepts struct {
 	// related maps a token to the set of tokens it concept-co-occurs
 	// with strongly enough to be treated as siblings.
 	related map[string][]string
+
+	// vocab is the set of node-label tokens kept after the
+	// document-frequency / vocabulary-cap pass -- the words that
+	// actually appear in this repo's symbol names. Exposed via
+	// InVocabulary so the query-expansion path can anchor an LLM's
+	// freely-invented synonyms to terms the corpus can actually match.
+	vocab map[string]struct{}
 }
 
 // Auto-concept mining bounds. The graph is ~31k nodes; these caps keep
@@ -64,7 +71,7 @@ var autoConceptStopTokens = map[string]struct{}{
 // pseudo nodes (files, imports, params) are skipped. A nil or empty
 // graph yields an empty, safe-to-query AutoConcepts.
 func BuildAutoConcepts(g graph.Reader) *AutoConcepts {
-	ac := &AutoConcepts{related: map[string][]string{}}
+	ac := &AutoConcepts{related: map[string][]string{}, vocab: map[string]struct{}{}}
 	if g == nil {
 		return ac
 	}
@@ -97,6 +104,11 @@ func BuildAutoConcepts(g graph.Reader) *AutoConcepts {
 	// the cap, keep the most frequent ones (rarest tokens cannot reach
 	// the pair-count threshold anyway).
 	keep := vocabularyCap(docFreq, autoConceptMaxTokens)
+	// The kept token set is the repo's symbol-name vocabulary —
+	// surface it so the expansion path can anchor LLM synonyms to
+	// words the corpus can match. Share the map directly: keep is not
+	// mutated after this point.
+	ac.vocab = keep
 
 	// Pass 2: count, per unordered token pair, how many symbol names
 	// they co-occur in. Both tokens must be in the kept vocabulary.
@@ -174,6 +186,35 @@ func (ac *AutoConcepts) TokenCount() int {
 		return 0
 	}
 	return len(ac.related)
+}
+
+// InVocabulary reports whether token appears in this repo's mined
+// symbol-name vocabulary. Lookup is case-insensitive. A nil
+// AutoConcepts, or one mined from an empty graph, has an empty
+// vocabulary and returns false for everything -- callers MUST treat an
+// empty vocabulary as "no anchor available" and degrade to
+// unconstrained behaviour rather than filtering every term away.
+func (ac *AutoConcepts) InVocabulary(token string) bool {
+	if ac == nil || len(ac.vocab) == 0 {
+		return false
+	}
+	tok := strings.ToLower(strings.TrimSpace(token))
+	if tok == "" {
+		return false
+	}
+	_, ok := ac.vocab[tok]
+	return ok
+}
+
+// VocabularySize reports the number of distinct tokens in the mined
+// symbol-name vocabulary. Used by the expansion path to decide whether
+// a vocabulary anchor is available at all (size 0 => degrade to
+// unconstrained) and by tests / diagnostics.
+func (ac *AutoConcepts) VocabularySize() int {
+	if ac == nil {
+		return 0
+	}
+	return len(ac.vocab)
 }
 
 // autoConceptEligible reports whether a node kind contributes its

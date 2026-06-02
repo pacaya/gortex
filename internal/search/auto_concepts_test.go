@@ -91,3 +91,45 @@ func TestBuildAutoConcepts_StopTokensExcluded(t *testing.T) {
 		t.Error("stop-token 'handle' must not surface as a concept sibling")
 	}
 }
+
+// TestAutoConcepts_Vocabulary confirms the mined symbol-name
+// vocabulary is exposed via InVocabulary / VocabularySize -- the
+// anchor the vocabulary-anchored expansion path filters against.
+func TestAutoConcepts_Vocabulary(t *testing.T) {
+	g := fixtureGraph([]string{
+		"parsePayload", "decodeToken", "encodeSession",
+	})
+	ac := BuildAutoConcepts(g)
+
+	// Words that appear in the symbol names are in the vocabulary
+	// (case-insensitive).
+	for _, tok := range []string{"parse", "payload", "decode", "token", "PARSE", "Token"} {
+		if !ac.InVocabulary(tok) {
+			t.Errorf("InVocabulary(%q) = false, want true (vocab=%d)", tok, ac.VocabularySize())
+		}
+	}
+	// A word that appears in NO symbol name is absent -- this is the
+	// case the expansion anchor uses to drop a hallucinated synonym.
+	if ac.InVocabulary("authenticator") {
+		t.Error("InVocabulary('authenticator') = true, want false (no symbol uses it)")
+	}
+	if ac.VocabularySize() == 0 {
+		t.Error("a non-empty graph should mine a non-empty vocabulary")
+	}
+}
+
+// TestAutoConcepts_VocabularyEmptyDegrades confirms an empty or nil
+// vocabulary reports false / size 0 so callers degrade to
+// unconstrained expansion instead of filtering every term away.
+func TestAutoConcepts_VocabularyEmptyDegrades(t *testing.T) {
+	if BuildAutoConcepts(graph.New()).VocabularySize() != 0 {
+		t.Error("an empty graph must mine a zero-size vocabulary")
+	}
+	if BuildAutoConcepts(graph.New()).InVocabulary("anything") {
+		t.Error("an empty-vocabulary InVocabulary must return false")
+	}
+	var ac *AutoConcepts
+	if ac.InVocabulary("x") || ac.VocabularySize() != 0 {
+		t.Error("nil AutoConcepts must report empty vocabulary")
+	}
+}

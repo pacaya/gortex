@@ -10,6 +10,7 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/llm"
 	"github.com/zzet/gortex/internal/query"
+	"github.com/zzet/gortex/internal/search"
 	"github.com/zzet/gortex/internal/search/rerank"
 )
 
@@ -213,7 +214,20 @@ func decomposeQueryToLeaves(q string) []string {
 // extra terms. Returns nil (no expansion) on any failure so the
 // search path stays at parity with today's behaviour when the model
 // hiccups or isn't loaded yet.
-func expandSearchTerms(ctx context.Context, s *Server, query string) []string {
+//
+// When vocabAnchored is set, the model's returned terms are
+// post-filtered to the words that actually appear in this repo's
+// symbol-name vocabulary (mined into AutoConcepts) BEFORE the caller
+// dedupes / merges them. This is robust and model-agnostic: the
+// expand prompt is a static const small models ignore, so anchoring
+// the OUTPUT to the corpus is the only reliable way to keep a
+// hallucinated-but-plausible synonym ("authenticator") from diluting
+// the BM25 pool when no symbol uses that word. The filter degrades to
+// a no-op (unconstrained expansion) when the vocabulary is empty --
+// AutoConcepts is nil until the first RunAnalysis, and an empty graph
+// mines an empty vocabulary -- so anchoring never strips every term
+// away on a cold or tiny index.
+func expandSearchTerms(ctx context.Context, s *Server, query string, vocabAnchored bool) []string {
 	if s.llmService == nil || !s.llmService.Enabled() {
 		return nil
 	}
@@ -221,7 +235,29 @@ func expandSearchTerms(ctx context.Context, s *Server, query string) []string {
 	if err != nil || res == nil {
 		return nil
 	}
-	return res.Terms
+	terms := res.Terms
+	if vocabAnchored {
+		terms = anchorTermsToVocabulary(terms, s.getAutoConcepts())
+	}
+	return terms
+}
+
+// anchorTermsToVocabulary keeps only the terms present in the mined
+// symbol-name vocabulary. A nil or empty vocabulary (AutoConcepts not
+// yet built, or an empty graph) is treated as "no anchor available"
+// and the input is returned unchanged -- anchoring must never silence
+// expansion on a repo that simply hasn't mined a vocabulary yet.
+func anchorTermsToVocabulary(terms []string, ac *search.AutoConcepts) []string {
+	if ac == nil || ac.VocabularySize() == 0 || len(terms) == 0 {
+		return terms
+	}
+	kept := make([]string, 0, len(terms))
+	for _, t := range terms {
+		if ac.InVocabulary(t) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 // fetchAndMergeBM25 fires (at most) two BM25 calls — one for the

@@ -803,6 +803,7 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("query_class", mcp.Description("Advisory hint that tunes the bm25-vs-semantic balance of the rerank: \"auto\" (default — detect from query shape), \"symbol\" (identifier / API lookup — BM25-heavy), \"concept\" (natural-language description — balanced), \"path\" (file-path query — most BM25-heavy), \"signature\" (type/function-signature fragment — BM25-leaning), \"keyword_soup\" (a degenerate boolean OR-list \u2014 suppresses LLM expansion and splits the soup into per-disjunct BM25 fetches; a `query_advice` nudge rides on the response). The class actually used is echoed back as `query_class` in the response.")),
 			mcp.WithString("expand", mcp.Description("Query-expansion channels: \"both\" (default \u2014 LLM expansion when the assist gate engages, plus the deterministic equivalence-class table), \"equivalence\" (only the LLM-free curated synonym table + per-repo auto-mined concepts), \"llm\" (only LLM expansion), \"off\" (pure BM25, no expansion). Equivalence expansion bridges query vocabulary to the words a symbol uses (auth->login, delete->remove) and runs even with no LLM provider configured. For identifier queries (query_class symbol / path / signature) the server auto-disables expansion + vector even when expand is set \u2014 these classes match best on BM25 + exact-name alone.")),
 			mcp.WithString("corpus", mcp.Description("Which corpus to search: \"code\" (default \u2014 code symbols only), \"docs\" (only Markdown prose-section nodes \u2014 the heading-delimited documentation sections), \"all\" (both). With docs/all a prose query matches the right README / guide section by its body text.")),
+			mcp.WithBoolean("vocab_anchored", mcp.Description("When true, the LLM query-expander's returned synonyms are post-filtered to the words that actually appear in this repo's symbol names before they feed the BM25 OR-merge -- so a hallucinated-but-plausible term can't dilute the candidate pool. Robust and model-agnostic. Degrades to unconstrained expansion when the repo's mined vocabulary is empty (e.g. a cold index). Default false; the server may set a different default via search.vocab_anchored_expansion. No effect when the LLM expansion channel is off.")),
 			mcp.WithNumber("max_per_file", mcp.Description("Cap how many results a single source file may contribute to the diverse head of the result set (default 3). Hits beyond the cap are demoted below not-yet-capped results — never dropped — so the top of the list spans more files. Set 0 to disable diversification.")),
 		),
 		s.handleSearchSymbols,
@@ -1253,6 +1254,17 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	if identifierFastPath {
 		expand = expandOff
 	}
+	// Vocabulary-anchored expansion: post-filter the LLM expander's
+	// returned synonyms to the words this repo's symbol names actually
+	// use, so a hallucinated-but-plausible term can't dilute the BM25
+	// pool. The explicit `vocab_anchored` argument wins; when omitted,
+	// the server-wide config default applies. GetArguments is consulted
+	// directly so an absent argument falls through to the config
+	// default instead of GetBool's hard-coded false.
+	vocabAnchored := s.searchConfig().VocabAnchoredExpansionDefault()
+	if v, ok := req.GetArguments()["vocab_anchored"].(bool); ok {
+		vocabAnchored = v
+	}
 	engage := shouldEngageAssist(assist, q) && s.llmService != nil && s.llmService.Enabled()
 	if isSoup || !expand.allowsLLMExpansion() {
 		engage = false
@@ -1284,7 +1296,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	// overlapping channels never double-count a candidate.
 	var llmTerms, soupFragments, equivTerms []string
 	if engage {
-		llmTerms = expandSearchTerms(ctx, s, q)
+		llmTerms = expandSearchTerms(ctx, s, q, vocabAnchored)
 	}
 	if isSoup && soupMode == config.KeywordSoupSplit {
 		soupFragments = rerank.SplitSoupFragments(q)
