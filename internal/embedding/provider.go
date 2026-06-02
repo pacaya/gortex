@@ -64,6 +64,13 @@ type ProviderConfig struct {
 	// APIURL / APIModel parameterise the "api" provider.
 	APIURL   string
 	APIModel string
+	// Variant names a specific local transformer model to load (a key
+	// from KnownHugotVariants, e.g. "fp32", "bge_small", "jina_code").
+	// Honoured only when Provider is "local": a non-empty Variant pins
+	// that exact model via NewHugotProviderWithVariant instead of the
+	// auto-selected NewLocalProvider backend. Empty preserves the
+	// existing default-selection behaviour. Ignored for other providers.
+	Variant string
 }
 
 // NewProviderFromConfig constructs an embedding provider from a
@@ -74,6 +81,8 @@ type ProviderConfig struct {
 //     it makes semantic search work with no setup.
 //   - "local"              → NewLocalProvider — the best available
 //     transformer backend (Hugot MiniLM auto-downloads on first use).
+//     When cfg.Variant names a specific model, that exact variant is
+//     loaded via NewHugotProviderWithVariant instead.
 //   - "api"                → NewAPIProvider against cfg.APIURL.
 //
 // An unknown provider name is an error so a typo in `.gortex.yaml`
@@ -83,6 +92,12 @@ func NewProviderFromConfig(cfg ProviderConfig) (Provider, error) {
 	case "", "static":
 		return NewStaticProvider()
 	case "local":
+		// A pinned variant loads that exact model; an empty variant
+		// keeps the existing auto-selection (ONNX → GoMLX → Hugot →
+		// static) so every prior config behaves identically.
+		if cfg.Variant != "" {
+			return NewHugotProviderWithVariant(cfg.Variant)
+		}
 		return NewLocalProvider()
 	case "api":
 		if cfg.APIURL == "" {

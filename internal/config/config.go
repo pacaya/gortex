@@ -1020,6 +1020,17 @@ type EmbeddingConfig struct {
 	// in-process transformer backends serialize on an inference mutex,
 	// so the pool would give them no speedup.
 	APIConcurrency int `mapstructure:"api_concurrency" yaml:"api_concurrency,omitempty"`
+
+	// Variant names a specific local transformer model to load when
+	// Provider is `local` -- a key from embedding.KnownHugotVariants
+	// (e.g. `fp32`, `bge_small`, `jina_code`). A non-empty Variant
+	// pins that exact model instead of the auto-selected default
+	// backend. Empty preserves the current default-selection
+	// behaviour. Ignored for the `static` and `api` providers.
+	// A variant change alters the embedding dimension, which the
+	// indexer's dims-mismatch guard detects -- stale vectors of the
+	// old width are discarded and the corpus is re-embedded.
+	Variant string `mapstructure:"variant" yaml:"variant,omitempty"`
 }
 
 // EmbeddingEnabledOrDefault resolves the tri-state Enabled flag against

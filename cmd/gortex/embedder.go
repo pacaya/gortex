@@ -103,15 +103,25 @@ func explicitEmbeddingToggle(req embedderRequest) (enabled, haveExplicit bool) {
 // chosen.
 func buildConfiguredEmbedder(embCfg config.EmbeddingConfig, why string) (embedding.Provider, string, error) {
 	provider := embCfg.EmbeddingProviderOrDefault()
+	// GORTEX_EMBEDDINGS_VARIANT overrides the configured variant,
+	// mirroring the GORTEX_EMBEDDINGS_URL / _MODEL env overrides. Empty
+	// keeps the config value (itself empty by default), so a stock
+	// install still gets the auto-selected local backend.
+	variant := firstNonEmpty(os.Getenv("GORTEX_EMBEDDINGS_VARIANT"), embCfg.Variant)
 	p, err := embedding.NewProviderFromConfig(embedding.ProviderConfig{
 		Provider: provider,
 		APIURL:   embCfg.APIURL,
 		APIModel: embCfg.APIModel,
+		Variant:  variant,
 	})
 	if err != nil {
 		return nil, "", err
 	}
-	return p, fmt.Sprintf("%s — %s", provider, why), nil
+	desc := provider
+	if variant != "" && provider == "local" {
+		desc = fmt.Sprintf("%s/%s", provider, variant)
+	}
+	return p, fmt.Sprintf("%s — %s", desc, why), nil
 }
 
 // embeddingChunkOptions translates the chunking knobs of an
