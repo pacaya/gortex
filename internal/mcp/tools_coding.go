@@ -14,6 +14,7 @@ import (
 	"github.com/zzet/gortex/internal/elide"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/query"
+	"github.com/zzet/gortex/internal/search/rerank"
 	"github.com/zzet/gortex/internal/tokens"
 )
 
@@ -1655,26 +1656,11 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 		relevantSymbols = applyPathFilter(relevantSymbols, pathFilter)
 	}
 
-	// 3c. Feedback-aware reranking (when feedback data exists).
-	if s.feedback != nil && s.feedback.HasData() && len(relevantSymbols) > 0 {
-		type scored struct {
-			node  *graph.Node
-			score float64
-		}
-		scoredSyms := make([]scored, len(relevantSymbols))
-		for i, sym := range relevantSymbols {
-			baseScore := 1.0 / float64(i+1) // BM25 rank-based score
-			fbScore := s.feedback.GetSymbolScore(sym.ID)
-			scoredSyms[i] = scored{node: sym, score: baseScore + fbScore*0.3}
-		}
-		sort.Slice(scoredSyms, func(i, j int) bool {
-			return scoredSyms[i].score > scoredSyms[j].score
-		})
-		for i, ss := range scoredSyms {
-			relevantSymbols[i] = ss.node
-		}
-
-		// Inject frequently-missed symbols that match task keywords.
+	// 3c. Fold frequently-missed symbols (that match task keywords)
+	// into the working set before ranking, so feedback can pull a
+	// previously-dropped result back into the embedded slots — not
+	// just append it at the tail.
+	if s.feedback != nil && s.feedback.HasData() {
 		missed := s.feedback.MissedSymbols(3)
 		injected := 0
 		for _, missedID := range missed {
@@ -1688,7 +1674,6 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 			if missedNode == nil {
 				continue
 			}
-			// Check if the missed symbol name matches any keyword.
 			nameLower := strings.ToLower(missedNode.Name)
 			for _, kw := range keywords {
 				if strings.Contains(nameLower, strings.ToLower(kw)) {
@@ -1699,6 +1684,63 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 				}
 			}
 		}
+	}
+
+	// 3d. Rank the deduped working set through the full rerank
+	// pipeline — the same churn / HITS / community / co-change /
+	// frecency / feedback / path-penalty / source-bias / provenance
+	// scoring that powers search_symbols and winnow. The keyword-merge
+	// order seeds TextRank so BM25 provenance survives into the rerank.
+	// The pipeline is nil in the test harness (Rerank disabled); fall
+	// back to the legacy feedback-aware local sort there so ordering
+	// stays sensible without a pipeline.
+	if len(relevantSymbols) > 0 {
+		pipeline := s.engineFor(ctx).Rerank()
+		if pipeline != nil {
+			cands := make([]*rerank.Candidate, len(relevantSymbols))
+			idxByID := make(map[string]int, len(relevantSymbols))
+			for i, sym := range relevantSymbols {
+				cands[i] = &rerank.Candidate{Node: sym, TextRank: i, VectorRank: -1}
+				idxByID[sym.ID] = i
+			}
+			rctx := s.buildRerankContext(ctx, task)
+			pipeline.Rerank(task, cands, rctx)
+			ordered := make([]*graph.Node, 0, len(cands))
+			for _, cand := range cands {
+				ordered = append(ordered, relevantSymbols[idxByID[cand.Node.ID]])
+			}
+			relevantSymbols = ordered
+		} else if s.feedback != nil && s.feedback.HasData() {
+			type scored struct {
+				node  *graph.Node
+				score float64
+			}
+			scoredSyms := make([]scored, len(relevantSymbols))
+			for i, sym := range relevantSymbols {
+				baseScore := 1.0 / float64(i+1) // BM25 rank-based score
+				fbScore := s.feedback.GetSymbolScore(sym.ID)
+				scoredSyms[i] = scored{node: sym, score: baseScore + fbScore*0.3}
+			}
+			sort.SliceStable(scoredSyms, func(i, j int) bool {
+				return scoredSyms[i].score > scoredSyms[j].score
+			})
+			for i, ss := range scoredSyms {
+				relevantSymbols[i] = ss.node
+			}
+		}
+	}
+
+	// 3e. Re-pin the resolved entry point at the head: a caller that
+	// named an entry_point wants it first regardless of rerank order.
+	if entryNode != nil && len(relevantSymbols) > 0 && relevantSymbols[0].ID != entryNode.ID {
+		reordered := make([]*graph.Node, 0, len(relevantSymbols))
+		reordered = append(reordered, entryNode)
+		for _, sym := range relevantSymbols {
+			if sym.ID != entryNode.ID {
+				reordered = append(reordered, sym)
+			}
+		}
+		relevantSymbols = reordered
 	}
 
 	// 4. Limit to top N most relevant symbols. In graded-fidelity mode
