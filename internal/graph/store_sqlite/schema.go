@@ -133,6 +133,14 @@ CREATE TABLE IF NOT EXISTS coverage_enrichment (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS coverage_by_repo ON coverage_enrichment(repo_prefix) WHERE repo_prefix <> '';
 
+-- release_enrichment: per-file "added_in <tag>" sidecar (change A).
+CREATE TABLE IF NOT EXISTS release_enrichment (
+    node_id     TEXT PRIMARY KEY,
+    repo_prefix TEXT NOT NULL DEFAULT '',
+    added_in    TEXT NOT NULL DEFAULT ''
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS release_by_repo ON release_enrichment(repo_prefix) WHERE repo_prefix <> '';
+
 -- symbol_fts is the FTS5 full-text index over pre-tokenised symbol
 -- names. It replaces the multi-GB in-heap Bleve/BM25 index with an
 -- on-disk inverted index the SymbolSearcher / SymbolBundleSearcher

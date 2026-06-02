@@ -1015,6 +1015,25 @@ type CoverageEnrichmentReader interface {
 	CoverageRows(repoPrefix string) []CoverageEnrichment
 }
 
+// ReleaseEnrichment is one file node's "first appeared in <tag>"
+// enrichment (change A), moved out of nodes.meta.
+type ReleaseEnrichment struct {
+	NodeID     string
+	RepoPrefix string
+	AddedIn    string
+}
+
+// ReleaseEnrichmentWriter persists release enrichment in a typed sidecar.
+type ReleaseEnrichmentWriter interface {
+	BulkSetReleases(repoPrefix string, rows []ReleaseEnrichment) error
+	DeleteReleases(nodeIDs []string) error
+}
+
+// ReleaseEnrichmentReader reads release rows; empty repoPrefix → all.
+type ReleaseEnrichmentReader interface {
+	ReleaseRows(repoPrefix string) []ReleaseEnrichment
+}
+
 // EdgesByKindsScanner is an optional capability backends MAY
 // implement to stream every edge whose Kind is in the supplied set,
 // in a single backend round-trip. The fallback iterates AllEdges()

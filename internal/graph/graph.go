@@ -486,6 +486,10 @@ type Graph struct {
 	// coverageEnrich is the in-memory coverage-enrichment sidecar.
 	coverageEnrichMu sync.Mutex
 	coverageEnrich   map[string]CoverageEnrichment
+
+	// releaseEnrich is the in-memory release-enrichment sidecar.
+	releaseEnrichMu sync.Mutex
+	releaseEnrich   map[string]ReleaseEnrichment
 }
 
 // cloneShingleEntry is one in-memory clone_shingles row: the owning
@@ -505,6 +509,8 @@ var (
 	_ ChurnEnrichmentReader    = (*Graph)(nil)
 	_ CoverageEnrichmentWriter = (*Graph)(nil)
 	_ CoverageEnrichmentReader = (*Graph)(nil)
+	_ ReleaseEnrichmentWriter  = (*Graph)(nil)
+	_ ReleaseEnrichmentReader  = (*Graph)(nil)
 )
 
 // New creates an empty graph.
@@ -683,6 +689,52 @@ func (g *Graph) CoverageRows(repoPrefix string) []CoverageEnrichment {
 	defer g.coverageEnrichMu.Unlock()
 	out := make([]CoverageEnrichment, 0, len(g.coverageEnrich))
 	for _, r := range g.coverageEnrich {
+		if repoPrefix != "" && r.RepoPrefix != repoPrefix {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// BulkSetReleases is the in-memory ReleaseEnrichmentWriter.
+func (g *Graph) BulkSetReleases(repoPrefix string, rows []ReleaseEnrichment) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	g.releaseEnrichMu.Lock()
+	defer g.releaseEnrichMu.Unlock()
+	if g.releaseEnrich == nil {
+		g.releaseEnrich = make(map[string]ReleaseEnrichment, len(rows))
+	}
+	for _, r := range rows {
+		r.RepoPrefix = repoPrefix
+		g.releaseEnrich[r.NodeID] = r
+	}
+	return nil
+}
+
+// DeleteReleases is the in-memory ReleaseEnrichmentWriter delete side.
+func (g *Graph) DeleteReleases(nodeIDs []string) error {
+	if len(nodeIDs) == 0 {
+		return nil
+	}
+	g.releaseEnrichMu.Lock()
+	defer g.releaseEnrichMu.Unlock()
+	for _, id := range nodeIDs {
+		if id != "" {
+			delete(g.releaseEnrich, id)
+		}
+	}
+	return nil
+}
+
+// ReleaseRows reads release rows; empty repoPrefix returns all.
+func (g *Graph) ReleaseRows(repoPrefix string) []ReleaseEnrichment {
+	g.releaseEnrichMu.Lock()
+	defer g.releaseEnrichMu.Unlock()
+	out := make([]ReleaseEnrichment, 0, len(g.releaseEnrich))
+	for _, r := range g.releaseEnrich {
 		if repoPrefix != "" && r.RepoPrefix != repoPrefix {
 			continue
 		}

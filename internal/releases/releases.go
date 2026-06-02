@@ -193,6 +193,8 @@ func EnrichGraphForBranch(g graph.Store, repoRoot, repoPrefix, branch string) (i
 	}
 
 	enriched := 0
+	relWriter, useRelSidecar := g.(graph.ReleaseEnrichmentWriter)
+	var relRows []graph.ReleaseEnrichment
 	for _, n := range g.AllNodes() {
 		if n.Kind != graph.KindFile {
 			continue
@@ -216,17 +218,24 @@ func EnrichGraphForBranch(g graph.Store, repoRoot, repoPrefix, branch string) (i
 		if !ok {
 			continue
 		}
-		if n.Meta == nil {
-			n.Meta = map[string]any{}
+		if useRelSidecar {
+			relRows = append(relRows, graph.ReleaseEnrichment{NodeID: n.ID, AddedIn: tag})
+		} else {
+			if n.Meta == nil {
+				n.Meta = map[string]any{}
+			}
+			n.Meta["added_in"] = tag
+			// Re-upsert so disk-backed stores persist the Meta change.
+			g.AddNode(n)
 		}
-		n.Meta["added_in"] = tag
-		// Re-upsert so disk-backed stores persist the Meta change.
-		// In-memory stores treat this as a no-op (the pointer is
-		// already in the graph); the disk-backed implementations need
-		// the AddNode call to round-trip Meta through their write
-		// path. Mirrors the churn enricher.
-		g.AddNode(n)
 		enriched++
+	}
+	// Sidecar persist (change A): release "added_in" rides in the typed
+	// release_enrichment table when the backend supports it.
+	if useRelSidecar && len(relRows) > 0 {
+		if err := relWriter.BulkSetReleases(repoPrefix, relRows); err != nil {
+			return enriched, fmt.Errorf("releases: persist sidecar: %w", err)
+		}
 	}
 	return enriched, nil
 }

@@ -110,10 +110,15 @@ func TestEnrichGraph_AssignsEarliestTag(t *testing.T) {
 	if count != 2 {
 		t.Errorf("expected 2 enriched, got %d", count)
 	}
-	if got := g.GetNode("a.go").Meta["added_in"]; got != "v0.1" {
+	// added_in now persists in the typed sidecar (change A), not Node.Meta.
+	rel := map[string]string{}
+	for _, e := range g.ReleaseRows("") {
+		rel[e.NodeID] = e.AddedIn
+	}
+	if got := rel["a.go"]; got != "v0.1" {
 		t.Errorf("a.go added_in = %v, want v0.1", got)
 	}
-	if got := g.GetNode("b.go").Meta["added_in"]; got != "v0.2" {
+	if got := rel["b.go"]; got != "v0.2" {
 		t.Errorf("b.go added_in = %v, want v0.2", got)
 	}
 }
@@ -135,7 +140,11 @@ func TestEnrichGraph_MultiRepoPrefixHandled(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1 enriched (with prefix-strip), got %d", count)
 	}
-	if got := g.GetNode("myrepo/a.go").Meta["added_in"]; got != "v0.1" {
+	rel := map[string]string{}
+	for _, e := range g.ReleaseRows("") {
+		rel[e.NodeID] = e.AddedIn
+	}
+	if got := rel["myrepo/a.go"]; got != "v0.1" {
 		t.Errorf("added_in = %v", got)
 	}
 }

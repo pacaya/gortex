@@ -100,6 +100,7 @@ func RunConformance(t *testing.T, factory Factory) {
 	t.Run("CloneShingleSidecar", func(t *testing.T) { testCloneShingleSidecar(t, factory) })
 	t.Run("ChurnEnrichmentSidecar", func(t *testing.T) { testChurnEnrichmentSidecar(t, factory) })
 	t.Run("CoverageEnrichmentSidecar", func(t *testing.T) { testCoverageEnrichmentSidecar(t, factory) })
+	t.Run("ReleaseEnrichmentSidecar", func(t *testing.T) { testReleaseEnrichmentSidecar(t, factory) })
 }
 
 // -- fixture helpers ---------------------------------------------------
@@ -3549,6 +3550,51 @@ func testCoverageEnrichmentSidecar(t *testing.T, factory Factory) {
 		t.Fatalf("after delete repoA = %d, want 0", len(got))
 	}
 	if got := r.CoverageRows("repoB"); len(got) != 1 {
+		t.Fatalf("delete must not touch repoB: %d", len(got))
+	}
+}
+
+// testReleaseEnrichmentSidecar mirrors the churn/coverage sidecar conformance.
+func testReleaseEnrichmentSidecar(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	w, ok := s.(graph.ReleaseEnrichmentWriter)
+	if !ok {
+		t.Skip("backend does not implement graph.ReleaseEnrichmentWriter")
+	}
+	r := s.(graph.ReleaseEnrichmentReader)
+	if err := w.BulkSetReleases("repoA", nil); err != nil {
+		t.Fatalf("BulkSetReleases(nil): %v", err)
+	}
+	if err := w.BulkSetReleases("repoA", []graph.ReleaseEnrichment{
+		{NodeID: "a.go", AddedIn: "v1.0.0"},
+		{NodeID: "b.go", AddedIn: "v1.2.0"},
+	}); err != nil {
+		t.Fatalf("BulkSetReleases(repoA): %v", err)
+	}
+	if err := w.BulkSetReleases("repoB", []graph.ReleaseEnrichment{{NodeID: "c.go", AddedIn: "v2.0.0"}}); err != nil {
+		t.Fatalf("BulkSetReleases(repoB): %v", err)
+	}
+	if got := r.ReleaseRows("repoA"); len(got) != 2 {
+		t.Fatalf("ReleaseRows(repoA) = %d, want 2", len(got))
+	}
+	if got := r.ReleaseRows(""); len(got) != 3 {
+		t.Fatalf("ReleaseRows(all) = %d, want 3", len(got))
+	}
+	byID := map[string]graph.ReleaseEnrichment{}
+	for _, e := range r.ReleaseRows("") {
+		byID[e.NodeID] = e
+	}
+	if byID["a.go"].AddedIn != "v1.0.0" || byID["a.go"].RepoPrefix != "repoA" {
+		t.Fatalf("round-trip mismatch: %+v", byID["a.go"])
+	}
+	if err := w.DeleteReleases([]string{"a.go", "b.go"}); err != nil {
+		t.Fatalf("DeleteReleases: %v", err)
+	}
+	if got := r.ReleaseRows("repoA"); len(got) != 0 {
+		t.Fatalf("after delete repoA = %d, want 0", len(got))
+	}
+	if got := r.ReleaseRows("repoB"); len(got) != 1 {
 		t.Fatalf("delete must not touch repoB: %d", len(got))
 	}
 }

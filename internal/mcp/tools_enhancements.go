@@ -1930,6 +1930,7 @@ func (s *Server) handleAnalyzeReleases(ctx context.Context, req mcp.CallToolRequ
 				"total":      0,
 			})
 		}
+		relByID := s.releaseByID()
 		for _, n := range s.graph.AllNodes() {
 			if n.Kind != graph.KindFile || n.FilePath == "" {
 				continue
@@ -1937,11 +1938,8 @@ func (s *Server) handleAnalyzeReleases(ctx context.Context, req mcp.CallToolRequ
 			if repoFilter != "" && n.RepoPrefix != repoFilter {
 				continue
 			}
-			if n.Meta == nil {
-				continue
-			}
-			added, _ := n.Meta["added_in"].(string)
-			if added != row.Tag {
+			added, ok := addedInFrom(relByID, n)
+			if !ok || added != row.Tag {
 				continue
 			}
 			row.Files = append(row.Files, n.FilePath)
@@ -1964,11 +1962,15 @@ func (s *Server) handleAnalyzeReleases(ctx context.Context, req mcp.CallToolRequ
 		// (an unlikely combination; surface as an empty timeline);
 		// otherwise return the structured error.
 		hasAnyAddedIn := false
-		for _, n := range s.graph.AllNodes() {
-			if n.Kind == graph.KindFile && n.Meta != nil {
-				if _, ok := n.Meta["added_in"].(string); ok {
-					hasAnyAddedIn = true
-					break
+		if relByID := s.releaseByID(); len(relByID) > 0 {
+			hasAnyAddedIn = true
+		} else {
+			for _, n := range s.graph.AllNodes() {
+				if n.Kind == graph.KindFile && n.Meta != nil {
+					if _, ok := n.Meta["added_in"].(string); ok {
+						hasAnyAddedIn = true
+						break
+					}
 				}
 			}
 		}
@@ -3870,4 +3872,33 @@ func coveragePctFrom(cov map[string]graph.CoverageEnrichment, n *graph.Node) (fl
 		return pct, true
 	}
 	return 0, false
+}
+
+// releaseByID batch-loads the release sidecar (change A) into an
+// id->tag map; nil when the backend lacks the capability.
+func (s *Server) releaseByID() map[string]string {
+	r, ok := s.graph.(graph.ReleaseEnrichmentReader)
+	if !ok {
+		return nil
+	}
+	rows := r.ReleaseRows("")
+	m := make(map[string]string, len(rows))
+	for _, e := range rows {
+		m[e.NodeID] = e.AddedIn
+	}
+	return m
+}
+
+// addedInFrom returns a node's "added_in" tag, preferring the sidecar
+// map and falling back to Meta["added_in"] for un-migrated DBs.
+func addedInFrom(rel map[string]string, n *graph.Node) (string, bool) {
+	if tag, ok := rel[n.ID]; ok {
+		return tag, true
+	}
+	if n.Meta != nil {
+		if tag, ok := n.Meta["added_in"].(string); ok {
+			return tag, true
+		}
+	}
+	return "", false
 }
