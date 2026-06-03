@@ -229,7 +229,13 @@ func TestNotebook_NoDirManagerStillSafe(t *testing.T) {
 func TestNotebook_PrunesByTTL(t *testing.T) {
 	dir := t.TempDir()
 	nm := newNotebookManager(dir)
-	nm.ttl = 1 * time.Millisecond
+	// TTL must comfortably exceed the Save→prune latency. pruneLocked's
+	// cutoff is computed *after* the fresh entry's Updated stamp is
+	// written, so a sub-millisecond TTL lets a loaded runner sweep the
+	// just-saved entry itself (0 remain instead of 1). A minute sits far
+	// below the stale entry's 1h age yet far above any realistic save
+	// latency, so the prune is deterministic.
+	nm.ttl = time.Minute
 	require.NotNil(t, nm.sidecar)
 	// Insert a row with Updated far in the past directly into the
 	// sidecar so the next Save's prune sweeps it.
