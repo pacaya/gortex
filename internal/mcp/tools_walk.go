@@ -22,6 +22,7 @@ func (s *Server) registerWalkGraphTool() {
 			mcp.WithString("id", mcp.Required(), mcp.Description("Start symbol node ID (e.g. pkg/server.go::HandleRequest).")),
 			mcp.WithString("edge_kinds", mcp.Description("Comma-separated edge kinds to follow (default: calls). Valid kinds: "+edgeKindList+".")),
 			mcp.WithString("direction", mcp.Description("Traversal direction: out (default — follow outgoing edges), in (incoming), or both (undirected).")),
+			mcp.WithString("community", mcp.Description("Constrain the walk to a single detected community. Accepts a community ID or label. Neighbours in a different community are dropped; structural nodes with no community membership still pass. No-op until community detection has run.")),
 			mcp.WithNumber("token_budget", mcp.Description("Approximate token ceiling for the encoded result (default 6000). The walk stops adding nodes once the estimate would exceed this.")),
 			mcp.WithNumber("max_depth", mcp.Description("Hard cap on BFS depth, applied even when the token budget would allow deeper expansion (default 8).")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon.")),
@@ -74,6 +75,13 @@ func (s *Server) handleWalkGraph(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+
+	// Optional community constraint: accept either a community ID or
+	// label and resolve it to an ID, then hand the walk the node->comm
+	// map so it can drop cross-community neighbours. A nil community
+	// result (analysis not yet run) makes the filter a no-op.
+	commID, nodeToComm := s.resolveCommunityFilter(req.GetString("community", ""))
+
 	sg := eng.WalkBudgeted(id, query.WalkOptions{
 		EdgeKinds:   edgeKinds,
 		Direction:   direction,
@@ -81,6 +89,8 @@ func (s *Server) handleWalkGraph(ctx context.Context, req mcp.CallToolRequest) (
 		MaxDepth:    maxDepth,
 		WorkspaceID: scopeWS,
 		ProjectID:   scopeProj,
+		CommunityID: commID,
+		NodeToComm:  nodeToComm,
 	})
 
 	allowed, filterErr := s.resolveRepoFilter(ctx, req)
@@ -95,4 +105,32 @@ func (s *Server) handleWalkGraph(ctx context.Context, req mcp.CallToolRequest) (
 	sg.StoppedAtDepth = stoppedAt
 	enrichSubGraphEdges(sg)
 	return s.returnSubGraph(ctx, req, sg)
+}
+
+// resolveCommunityFilter turns a community ID-or-label request argument
+// into the (communityID, nodeToComm) pair WalkBudgeted's community gate
+// needs. It mirrors winnowSymbols' label resolution: a label is mapped
+// to its community ID up front; an ID passes through. When community
+// detection has not run yet (s.getCommunities() is nil) or the argument
+// is empty, both results are zero-valued — the walk's gate then no-ops.
+//
+// An unrecognised non-empty label is returned verbatim as the community
+// ID; since no node carries that membership the gate drops every
+// community-tagged neighbour, which is the correct "no such community"
+// behaviour (an empty walk beats silently ignoring the filter).
+func (s *Server) resolveCommunityFilter(arg string) (string, map[string]string) {
+	want := strings.TrimSpace(arg)
+	if want == "" {
+		return "", nil
+	}
+	cr := s.getCommunities()
+	if cr == nil {
+		return "", nil
+	}
+	for _, com := range cr.Communities {
+		if com.Label != "" && com.Label == want {
+			return com.ID, cr.NodeToComm
+		}
+	}
+	return want, cr.NodeToComm
 }

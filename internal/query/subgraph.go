@@ -446,6 +446,20 @@ type WalkOptions struct {
 	// are dropped along with the edge that reached them.
 	WorkspaceID string
 	ProjectID   string
+	// CommunityID, when non-empty, constrains the walk to a single
+	// detected community: a neighbour is admitted only when it has no
+	// community membership (a structural node Leiden never partitioned
+	// — file / import / param) OR its membership equals CommunityID.
+	// A neighbour with a *different* membership is dropped along with
+	// the edge that reached it. NodeToComm must be supplied for the
+	// filter to engage; an empty CommunityID disables it entirely.
+	CommunityID string
+	// NodeToComm maps node ID to its community ID, as produced by the
+	// community-detection pass. Only nodes Leiden partitioned over the
+	// call / reference graph appear here; an absent entry means "no
+	// defined membership" and the CommunityID filter lets such a node
+	// pass (it never had a community to be excluded from).
+	NodeToComm map[string]string
 }
 
 // scopeAllows reports whether n passes this walk's workspace/project

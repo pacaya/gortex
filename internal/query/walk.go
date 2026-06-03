@@ -217,6 +217,19 @@ func (e *Engine) WalkBudgeted(startID string, opts WalkOptions) *SubGraph {
 				continue
 			}
 
+			// Community gate: when the caller pins a CommunityID, a
+			// neighbour with a *different* defined membership is dropped
+			// along with the edge that reached it. A neighbour with no
+			// membership (a structural node Leiden never partitioned)
+			// passes — it was never in any community to be excluded
+			// from. The filter is a no-op when CommunityID is empty or
+			// NodeToComm was not supplied.
+			if opts.CommunityID != "" && opts.NodeToComm != nil {
+				if comm, ok := opts.NodeToComm[neighborID]; ok && comm != opts.CommunityID {
+					continue
+				}
+			}
+
 			// The edge is part of the result regardless of whether its
 			// target node is new — a cross-edge between two visited
 			// nodes is still a real relationship.
