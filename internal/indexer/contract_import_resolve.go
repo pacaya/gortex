@@ -330,7 +330,7 @@ func resolveTSModulePath(modulePath, srcDir string, aliasMap *tsalias.Map, repoP
 	if strings.HasPrefix(modulePath, "./") || strings.HasPrefix(modulePath, "../") {
 		joined := path.Clean(path.Join(srcDir, modulePath))
 		switch path.Ext(joined) {
-		case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs":
+		case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".svelte", ".vue":
 			return joined
 		}
 		return joined + ".ts"
@@ -352,7 +352,7 @@ func resolveTSModulePath(modulePath, srcDir string, aliasMap *tsalias.Map, repoP
 		full = repoPrefix + "/" + repoRel
 	}
 	switch path.Ext(full) {
-	case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs":
+	case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".svelte", ".vue":
 		return full
 	}
 	return full + ".ts"
@@ -384,18 +384,27 @@ type tsReExport struct {
 // concrete files it might be on disk. resolveTSModulePath always
 // guesses `.ts`, but the real file is often `.tsx`, or the specifier
 // pointed at a directory whose entry point is `index.ts` (the barrel).
+// Single-file-component extensions (`.svelte`, `.vue`) are matched as
+// direct files only — they carry no `index.svelte` / `index.vue`
+// directory-barrel convention, so a bare directory import never
+// expands to one.
 func tsFileCandidates(resolved string) []string {
 	if resolved == "" {
 		return nil
 	}
 	stem := resolved
 	switch path.Ext(resolved) {
-	case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs":
+	case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".svelte", ".vue":
 		stem = strings.TrimSuffix(resolved, path.Ext(resolved))
 	}
 	out := []string{resolved}
 	for _, ext := range []string{".ts", ".tsx", ".js", ".jsx", ".d.ts", ".mts", ".cts"} {
 		out = append(out, stem+ext, stem+"/index"+ext)
+	}
+	// Single-file components resolve to a direct file at the stem,
+	// never to a directory index.
+	for _, ext := range []string{".svelte", ".vue"} {
+		out = append(out, stem+ext)
 	}
 	seen := make(map[string]bool, len(out))
 	uniq := out[:0]
@@ -774,14 +783,16 @@ func (mi *MultiIndexer) followReExportChain(startFile, name string, srcCache map
 
 // isImportResolvableLang reports whether the contract source file
 // uses an import system this resolver can parse. TypeScript and
-// JavaScript files use ES-module imports we understand; Rust `use`
+// JavaScript files use ES-module imports we understand; Svelte / Vue
+// single-file components carry the same ES-module `import` /
+// `export ... from` syntax in their script block; Rust `use`
 // declarations are parsed for `pub use` re-export following. Go uses
 // package qualification which the in-file pass already handles
 // (and would have produced an unambiguous resolution at extraction
 // time).
 func isImportResolvableLang(filePath string) bool {
 	switch path.Ext(filePath) {
-	case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".rs":
+	case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".svelte", ".vue", ".rs":
 		return true
 	}
 	return false
