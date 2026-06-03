@@ -938,6 +938,7 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("exclude_tests", mcp.Description("Drop references originating in test functions (set true to see only production usages)")),
 			mcp.WithString("group_by", mcp.Description("Set to \"file\" to bucket the usages by the file each reference originates in -- each group carries the per-file use count and the enclosing symbol of every reference. Omit for the default flat result.")),
+			mcp.WithString("context", mcp.Description("Filter usages by their reference context — the role the symbol plays at each site: parameter_type, return_type, field, value, type, attribute, generic_arg, or call. Every returned usage also carries its classified context. Omit for all usages.")),
 		),
 		s.handleFindUsages,
 	)
@@ -2112,6 +2113,10 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	sg = filterSubGraph(sg, allowed)
 	sg.FilterByMinTier(minTier)
 	enrichSubGraphEdges(sg)
+	// Classify each usage's reference context (parameter_type / return_type
+	// / field / value / type / attribute / call) and optionally filter to
+	// one context — `find_usages context:"parameter_type"`.
+	annotateAndFilterUsageContext(sg, strings.ToLower(strings.TrimSpace(req.GetString("context", ""))))
 	if len(sg.Edges) == 0 {
 		sg.Caveat = graph.CaveatForZeroEdge(s.graph, id)
 	}
@@ -2128,6 +2133,37 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	return s.returnSubGraph(ctx, req, sg)
 }
 
+// annotateAndFilterUsageContext stamps each usage edge with its
+// reference context (RefContextOf, using the origin node's kind) and, when
+// contextFilter is non-empty, drops every usage whose context does not
+// match — the engine behind `find_usages context:"parameter_type"`.
+func annotateAndFilterUsageContext(sg *query.SubGraph, contextFilter string) {
+	if sg == nil {
+		return
+	}
+	nodeByID := make(map[string]*graph.Node, len(sg.Nodes))
+	for _, n := range sg.Nodes {
+		nodeByID[n.ID] = n
+	}
+	for _, e := range sg.Edges {
+		var fromKind graph.NodeKind
+		if fn := nodeByID[e.From]; fn != nil {
+			fromKind = fn.Kind
+		}
+		e.Context = graph.RefContextOf(e, fromKind)
+	}
+	if contextFilter == "" {
+		return
+	}
+	kept := sg.Edges[:0]
+	for _, e := range sg.Edges {
+		if e.Context == contextFilter {
+			kept = append(kept, e)
+		}
+	}
+	sg.Edges = kept
+}
+
 // usageFileGroup is one file's worth of references from a
 // group_by:"file" find_usages response.
 type usageFileGroup struct {
@@ -2141,6 +2177,7 @@ type usageFileGroup struct {
 type usageGroupItem struct {
 	Line       int    `json:"line"`
 	EdgeKind   string `json:"edge_kind"`
+	Context    string `json:"context,omitempty"`
 	SymbolID   string `json:"symbol_id,omitempty"`
 	SymbolName string `json:"symbol_name,omitempty"`
 }
@@ -2170,7 +2207,7 @@ func groupUsagesByFile(sg *query.SubGraph) map[string]any {
 			g = &usageFileGroup{File: file}
 			groups[file] = g
 		}
-		item := usageGroupItem{Line: e.Line, EdgeKind: string(e.Kind)}
+		item := usageGroupItem{Line: e.Line, EdgeKind: string(e.Kind), Context: e.Context}
 		if from != nil {
 			item.SymbolID = from.ID
 			item.SymbolName = from.Name

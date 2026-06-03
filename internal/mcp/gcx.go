@@ -368,7 +368,7 @@ func encodeFindUsages(sg *query.SubGraph) ([]byte, error) {
 	meta := []string{"edges", fmt.Sprintf("%d", len(sg.Edges))}
 	meta = append(meta, zeroEdgeCaveatMeta(sg.Caveat)...)
 	enc := newGCX(&buf, "find_usages",
-		[]string{"from", "to", "edge_kind", "origin", "tier", "confidence", "from_name", "from_path", "from_line", "from_is_test", "from_test_role", "from_test_runner"},
+		[]string{"from", "to", "edge_kind", "context", "origin", "tier", "confidence", "from_name", "from_path", "from_line", "from_is_test", "from_test_role", "from_test_runner"},
 		meta...,
 	)
 	nodeIdx := indexNodes(sg.Nodes)
@@ -397,7 +397,7 @@ func encodeFindUsages(sg *query.SubGraph) ([]byte, error) {
 			tier = graph.ResolvedBy(e.Origin)
 		}
 		if err := enc.WriteRow(
-			e.From, e.To, string(e.Kind), e.Origin, tier, e.Confidence,
+			e.From, e.To, string(e.Kind), e.Context, e.Origin, tier, e.Confidence,
 			fname, fpath, fline, nodeIsTest(fn), nodeTestRole(fn), nodeTestRunner(fn),
 		); err != nil {
 			return nil, err
