@@ -114,6 +114,7 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		synthFunc{name: SynthSwiftObjC, fn: ResolveSwiftObjCBridge},
 		synthFunc{name: SynthReactNative, fn: ResolveReactNativeBridge},
 		synthFunc{name: SynthExpoModules, fn: ResolveExpoModuleBridge},
+		synthFunc{name: SynthFabric, fn: ResolveFabricComponents},
 	}
 }
 

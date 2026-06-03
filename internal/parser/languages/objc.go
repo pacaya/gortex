@@ -124,6 +124,30 @@ func (e *ObjCExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 		})
 	}
 
+	// React Native Fabric / Paper view managers: an @implementation that
+	// exports view properties backs a JS component. Emit a component node
+	// so the Fabric synthesizer can link it to the codegen TS spec.
+	for _, fm := range extractObjCFabricManagers(src) {
+		id := filePath + "::fabric:" + fm.component
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		node := &graph.Node{
+			ID: id, Kind: graph.KindType, Name: fm.component,
+			FilePath: filePath, StartLine: fm.line, EndLine: findBlockEnd(lines, fm.line),
+			Language: "objc",
+			Meta:     map[string]any{"fabric_component": fm.component, "fabric_native": "objc"},
+		}
+		if len(fm.props) > 0 {
+			node.Meta["fabric_props"] = fm.props
+		}
+		result.Nodes = append(result.Nodes, node)
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: fileNode.ID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: fm.line,
+		})
+	}
+
 	emitImport := func(mod string, line int) {
 		if mod == "" {
 			return
@@ -241,33 +265,8 @@ var (
 // RCT_EXPORT_MODULE(arg) sets the JS name (arg, or the class name when
 // the macro has no argument).
 func extractObjCRNExports(src []byte) []objcRNExport {
-	type block struct {
-		name        string
-		start, end  int
-		moduleName  string
-		moduleKnown bool
-	}
-	var blocks []block
-	implIdx := objcImplRe.FindAllSubmatchIndex(src, -1)
-	for i, m := range implIdx {
-		start := m[0]
-		end := len(src)
-		if i+1 < len(implIdx) {
-			end = implIdx[i+1][0]
-		}
-		if e := objcKeywordEndOffset(src, m[1], "@end"); e >= 0 && e < end {
-			end = e
-		}
-		blocks = append(blocks, block{name: string(src[m[2]:m[3]]), start: start, end: end, moduleName: string(src[m[2]:m[3]])})
-	}
-	blockFor := func(off int) *block {
-		for i := range blocks {
-			if off >= blocks[i].start && off < blocks[i].end {
-				return &blocks[i]
-			}
-		}
-		return nil
-	}
+	blocks := objcImplBlocks(src)
+	blockFor := func(off int) *objcImplBlock { return objcBlockForOffset(blocks, off) }
 
 	// RCT_EXPORT_MODULE: set the JS module name for its block.
 	for _, m := range objcRCTModuleRe.FindAllSubmatchIndex(src, -1) {
@@ -280,7 +279,6 @@ func extractObjCRNExports(src []byte) []objcRNExport {
 				b.moduleName = arg
 			}
 		}
-		b.moduleKnown = true
 	}
 
 	var out []objcRNExport
@@ -373,6 +371,104 @@ func objcKeywordEndOffset(src []byte, from int, keyword string) int {
 		return -1
 	}
 	return from + idx + len(keyword)
+}
+
+// objcImplBlock is one @implementation block: its class name, byte range
+// (start of the @implementation directive to its @end), and the JS module
+// name (defaults to the class name; RCT_EXPORT_MODULE may override it).
+type objcImplBlock struct {
+	name       string
+	start, end int
+	moduleName string
+}
+
+// objcImplBlocks returns every @implementation block in src with its byte
+// range, used to attribute macros (RCT_EXPORT_*) to their enclosing class.
+func objcImplBlocks(src []byte) []objcImplBlock {
+	var blocks []objcImplBlock
+	implIdx := objcImplRe.FindAllSubmatchIndex(src, -1)
+	for i, m := range implIdx {
+		start := m[0]
+		end := len(src)
+		if i+1 < len(implIdx) {
+			end = implIdx[i+1][0]
+		}
+		if e := objcKeywordEndOffset(src, m[1], "@end"); e >= 0 && e < end {
+			end = e
+		}
+		name := string(src[m[2]:m[3]])
+		blocks = append(blocks, objcImplBlock{name: name, start: start, end: end, moduleName: name})
+	}
+	return blocks
+}
+
+// objcBlockForOffset returns the @implementation block containing off.
+func objcBlockForOffset(blocks []objcImplBlock, off int) *objcImplBlock {
+	for i := range blocks {
+		if off >= blocks[i].start && off < blocks[i].end {
+			return &blocks[i]
+		}
+	}
+	return nil
+}
+
+// objcRCTViewPropRe matches RCT_EXPORT_VIEW_PROPERTY(propName, type) and
+// RCT_REMAP_VIEW_PROPERTY(propName, ...) — the markers of a Fabric / Paper
+// view manager.
+var objcRCTViewPropRe = regexp.MustCompile(`RCT_(?:EXPORT|REMAP)_VIEW_PROPERTY\s*\(\s*([A-Za-z_]\w*)`)
+
+// objcFabricManager is a native view manager discovered in a file: the JS
+// component name it backs, the props it exports, and the source line.
+type objcFabricManager struct {
+	component string
+	props     []string
+	line      int
+}
+
+// extractObjCFabricManagers finds @implementation blocks that export view
+// properties (RCT_EXPORT_VIEW_PROPERTY) — i.e. RN view managers — and
+// resolves the JS component name from the class name (RN strips a trailing
+// "Manager"). One entry per such block, with the exported prop names.
+func extractObjCFabricManagers(src []byte) []objcFabricManager {
+	propLocs := objcRCTViewPropRe.FindAllSubmatchIndex(src, -1)
+	if len(propLocs) == 0 {
+		return nil
+	}
+	blocks := objcImplBlocks(src)
+	propsByBlock := map[int][]string{}
+	for _, loc := range propLocs {
+		b := objcBlockForOffset(blocks, loc[0])
+		if b == nil {
+			continue
+		}
+		propsByBlock[b.start] = append(propsByBlock[b.start], string(src[loc[2]:loc[3]]))
+	}
+	var out []objcFabricManager
+	for i := range blocks {
+		props, ok := propsByBlock[blocks[i].start]
+		if !ok {
+			continue
+		}
+		out = append(out, objcFabricManager{
+			component: objcComponentName(blocks[i].name),
+			props:     props,
+			line:      lineAt(src, blocks[i].start),
+		})
+	}
+	return out
+}
+
+// objcComponentName maps a view-manager class name to its JS component
+// name by stripping the RN "Manager" suffix. RN names a view manager
+// "<ComponentName>Manager" — and the component name itself usually ends
+// in "View" (RCTColorView → RCTColorViewManager), so only the final
+// "Manager" is removed.
+func objcComponentName(class string) string {
+	const sfx = "Manager"
+	if len(class) > len(sfx) && strings.HasSuffix(class, sfx) {
+		return class[:len(class)-len(sfx)]
+	}
+	return class
 }
 
 var _ parser.Extractor = (*ObjCExtractor)(nil)

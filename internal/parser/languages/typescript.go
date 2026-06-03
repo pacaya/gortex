@@ -435,6 +435,9 @@ func (e *TypeScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 		})
 	}
 
+	// --- React Native Fabric / Codegen component spec ---
+	emitFabricComponentNodes(src, filePath, "typescript", fileID, result)
+
 	// Test-runner classification (Mocha / Bun-test / Jest / Vitest /
 	// node:test / Playwright / Cypress). Stamped on the file node so
 	// the indexer's test-edge pass can propagate it to every is_test

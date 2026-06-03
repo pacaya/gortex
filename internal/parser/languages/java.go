@@ -269,6 +269,30 @@ func (e *JavaExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 		result.Edges = append(result.Edges, edge)
 	}
 
+	// React Native Fabric / Paper view managers: a class with @ReactProp
+	// methods backs a JS component. Emit a component node so the Fabric
+	// synthesizer can link it to the codegen TS spec.
+	for _, fm := range extractJavaFabricManagers(src, rnModules) {
+		id := filePath + "::fabric:" + fm.component
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		node := &graph.Node{
+			ID: id, Kind: graph.KindType, Name: fm.component,
+			FilePath: filePath, StartLine: fm.line, EndLine: fm.line,
+			Language: "java",
+			Meta:     map[string]any{"fabric_component": fm.component, "fabric_native": "java"},
+		}
+		if len(fm.props) > 0 {
+			node.Meta["fabric_props"] = fm.props
+		}
+		result.Nodes = append(result.Nodes, node)
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: fm.line,
+		})
+	}
+
 	return result, nil
 }
 

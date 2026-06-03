@@ -83,3 +83,78 @@ func javaHasReactMethod(annos []javaAnnotation) bool {
 	}
 	return false
 }
+
+// javaReactPropRe matches @ReactProp(name = "x") — the marker of a React
+// Native view-manager property.
+var javaReactPropRe = regexp.MustCompile(`@ReactProp\s*\(\s*name\s*=\s*"([^"]+)"`)
+
+// javaFabricManager is a native view manager discovered in a Java file.
+type javaFabricManager struct {
+	component string
+	props     []string
+	line      int
+}
+
+// extractJavaFabricManagers finds classes carrying @ReactProp methods
+// (React Native view managers) and resolves the JS component name from
+// getName() / @ReactModule (rnModules) or the class name, stripping the
+// RN "Manager" suffix. rnModules is the class→module map from
+// extractJavaRNModuleNames.
+func extractJavaFabricManagers(src []byte, rnModules map[string]string) []javaFabricManager {
+	s := string(src)
+	propLocs := javaReactPropRe.FindAllStringSubmatchIndex(s, -1)
+	if len(propLocs) == 0 {
+		return nil
+	}
+	type span struct {
+		name       string
+		start, end int
+	}
+	var spans []span
+	for _, loc := range javaClassDeclRe.FindAllStringSubmatchIndex(s, -1) {
+		className := s[loc[2]:loc[3]]
+		end := len(s)
+		if bodyOpen := strings.IndexByte(s[loc[1]:], '{'); bodyOpen >= 0 {
+			bodyOpen += loc[1]
+			if e := javaMatchBrace(s, bodyOpen); e > bodyOpen {
+				end = e
+			}
+		}
+		spans = append(spans, span{name: className, start: loc[0], end: end})
+	}
+	classForOff := func(off int) (string, bool) {
+		for _, sp := range spans {
+			if off >= sp.start && off < sp.end {
+				return sp.name, true
+			}
+		}
+		return "", false
+	}
+	propsByClass := map[string][]string{}
+	lineByClass := map[string]int{}
+	var order []string
+	for _, loc := range propLocs {
+		cls, ok := classForOff(loc[0])
+		if !ok {
+			continue
+		}
+		if _, seen := propsByClass[cls]; !seen {
+			order = append(order, cls)
+			lineByClass[cls] = lineAt(src, loc[0])
+		}
+		propsByClass[cls] = append(propsByClass[cls], s[loc[2]:loc[3]])
+	}
+	var out []javaFabricManager
+	for _, cls := range order {
+		comp := cls
+		if m := rnModules[cls]; m != "" {
+			comp = m
+		}
+		out = append(out, javaFabricManager{
+			component: objcComponentName(comp), // shared "Manager"-suffix stripper
+			props:     propsByClass[cls],
+			line:      lineByClass[cls],
+		})
+	}
+	return out
+}
