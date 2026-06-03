@@ -19,6 +19,11 @@ func ambiguityRegistry() *Registry {
 	r.Register(&mockExtractor{lang: "perl", exts: []string{".pl"}})
 	r.Register(&mockExtractor{lang: "python", exts: []string{".py"}})
 	r.Register(&mockExtractor{lang: "bash", exts: []string{".sh"}})
+	// .xml defaults to the generic xml extractor; a MyBatis mapper is
+	// content-routed to "mybatis" (which claims no extension here, so it
+	// never overrides the .xml default).
+	r.Register(&mockExtractor{lang: "mybatis"})
+	r.Register(&mockExtractor{lang: "xml", exts: []string{".xml"}})
 	return r
 }
 
@@ -133,6 +138,24 @@ func TestDetectLanguageContent_AmbiguousDotM(t *testing.T) {
 	lang, ok = r.DetectLanguageContent("plain.m", []byte("int main() { return 0; }\n"))
 	assert.True(t, ok)
 	assert.Equal(t, "objc", lang)
+}
+
+func TestDetectLanguageContent_MyBatisMapper(t *testing.T) {
+	r := ambiguityRegistry()
+
+	mapper := []byte(`<?xml version="1.0"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "...">
+<mapper namespace="com.app.UserMapper">
+  <select id="findUser" resultType="User">SELECT * FROM users WHERE id = #{id}</select>
+</mapper>`)
+	lang, ok := r.DetectLanguageContent("UserMapper.xml", mapper)
+	assert.True(t, ok)
+	assert.Equal(t, "mybatis", lang, "a mapper document routes to the mybatis extractor")
+
+	// A generic XML document keeps the xml default.
+	lang, ok = r.DetectLanguageContent("config.xml", []byte(`<?xml version="1.0"?><config><name>x</name></config>`))
+	assert.True(t, ok)
+	assert.Equal(t, "xml", lang)
 }
 
 func TestDetectLanguageContent_NilContentMatchesNameOnly(t *testing.T) {

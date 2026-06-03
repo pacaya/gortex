@@ -60,6 +60,7 @@ const (
 	SynthReactNative  = "react-native-bridge"
 	SynthExpoModules  = "expo-modules-bridge"
 	SynthFabric       = "fabric-codegen"
+	SynthMyBatis      = "mybatis"
 )
 
 // StampSynthesized marks an edge as the product of a framework
@@ -115,6 +116,7 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		synthFunc{name: SynthReactNative, fn: ResolveReactNativeBridge},
 		synthFunc{name: SynthExpoModules, fn: ResolveExpoModuleBridge},
 		synthFunc{name: SynthFabric, fn: ResolveFabricComponents},
+		synthFunc{name: SynthMyBatis, fn: ResolveMyBatisCalls},
 	}
 }
 

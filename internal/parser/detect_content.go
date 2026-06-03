@@ -137,8 +137,22 @@ func sniffAmbiguous(ext string, content []byte) (string, bool) {
 		if hasMathematicaMarkers(probe) {
 			return "mathematica", true
 		}
+	case ".xml":
+		// A MyBatis mapper XML routes to the mybatis extractor; every
+		// other .xml keeps the generic "xml" default.
+		if hasMyBatisMapperMarkers(probe) {
+			return "mybatis", true
+		}
 	}
 	return "", false
+}
+
+// hasMyBatisMapperMarkers reports whether the content is a MyBatis mapper
+// XML document — a `<mapper` root element or the MyBatis mapper DTD. Kept
+// in package parser (inlined rather than calling languages.IsMyBatisMapper)
+// to avoid an import cycle.
+func hasMyBatisMapperMarkers(b []byte) bool {
+	return bytes.Contains(b, []byte("<mapper")) || bytes.Contains(b, []byte("mybatis.org//DTD Mapper"))
 }
 
 // hasObjCMarkers reports whether the content carries a syntax
