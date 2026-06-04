@@ -53,6 +53,86 @@ func TestCobolExtractor_Program(t *testing.T) {
 	assert.True(t, gotCopy)
 }
 
+func TestCobolExtractor_Paragraphs(t *testing.T) {
+	// Paragraph labels sit in area A (column 8, i.e. 7 leading spaces in
+	// fixed format); statements sit in area B (column 12+). MAIN-PARA
+	// PERFORMs SECOND-PARA, which is defined later in the file.
+	src := []byte(`       IDENTIFICATION DIVISION.
+       PROGRAM-ID. PARADEMO.
+       PROCEDURE DIVISION.
+       MAIN-PARA.
+           DISPLAY 'START'.
+           PERFORM SECOND-PARA.
+           GO TO EXIT-PARA.
+       SECOND-PARA.
+           DISPLAY 'SECOND'.
+       EXIT-PARA.
+           STOP RUN.
+`)
+	e := NewCobolExtractor()
+	res, err := e.Extract("PARA.cob", src)
+	require.NoError(t, err)
+
+	paras := map[string]bool{}
+	for _, n := range res.Nodes {
+		if n.Kind == graph.KindFunction && n.Meta != nil && n.Meta["cobol_kind"] == "paragraph" {
+			paras[n.Name] = true
+		}
+	}
+	assert.True(t, paras["MAIN-PARA"], "MAIN-PARA paragraph node")
+	assert.True(t, paras["SECOND-PARA"], "SECOND-PARA paragraph node")
+	assert.True(t, paras["EXIT-PARA"], "EXIT-PARA paragraph node")
+	// PROGRAM-ID is also KindFunction but must NOT be tagged a paragraph.
+	for _, n := range res.Nodes {
+		if n.Name == "PARADEMO" {
+			assert.True(t, n.Meta == nil || n.Meta["cobol_kind"] != "paragraph",
+				"PROGRAM-ID must not be a paragraph")
+		}
+	}
+
+	var performEdge, goToEdge bool
+	for _, ed := range res.Edges {
+		if ed.Kind != graph.EdgeCalls {
+			continue
+		}
+		if ed.From == "PARA.cob::MAIN-PARA" && ed.To == "PARA.cob::SECOND-PARA" {
+			performEdge = true
+		}
+		if ed.From == "PARA.cob::MAIN-PARA" && ed.To == "PARA.cob::EXIT-PARA" {
+			goToEdge = true
+		}
+	}
+	assert.True(t, performEdge, "EdgeCalls MAIN-PARA -> SECOND-PARA (PERFORM)")
+	assert.True(t, goToEdge, "EdgeCalls MAIN-PARA -> EXIT-PARA (GO TO)")
+}
+
+func TestCobolExtractor_PerformThru(t *testing.T) {
+	src := []byte(`       PROGRAM-ID. THRUDEMO.
+       PROCEDURE DIVISION.
+       DRIVER.
+           PERFORM STEP-1 THRU STEP-2.
+       STEP-1.
+           DISPLAY 'A'.
+       STEP-2.
+           DISPLAY 'B'.
+`)
+	res, err := NewCobolExtractor().Extract("THRU.cob", src)
+	require.NoError(t, err)
+	var thru1, thru2 bool
+	for _, ed := range res.Edges {
+		if ed.Kind == graph.EdgeCalls && ed.From == "THRU.cob::DRIVER" {
+			if ed.To == "THRU.cob::STEP-1" {
+				thru1 = true
+			}
+			if ed.To == "THRU.cob::STEP-2" {
+				thru2 = true
+			}
+		}
+	}
+	assert.True(t, thru1, "PERFORM ... THRU emits edge to first paragraph")
+	assert.True(t, thru2, "PERFORM ... THRU emits edge to range-end paragraph")
+}
+
 func TestCobolExtractor_EmptyInput(t *testing.T) {
 	res, err := NewCobolExtractor().Extract("e.cbl", []byte(""))
 	require.NoError(t, err)
