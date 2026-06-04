@@ -88,3 +88,39 @@ func TestSynthesizeCapabilityEdges(t *testing.T) {
 		t.Errorf("second pass created duplicate capability edges: before=%d after=%d", before, after)
 	}
 }
+
+// TestSynthesizeCapabilityEdges_ResolvedExecForms guards executes_process
+// recognition of call targets the resolver has bound to fully-qualified
+// external node IDs (the common case for Go os/exec) — not just the
+// unresolved::exec.Command spelling.
+func TestSynthesizeCapabilityEdges_ResolvedExecForms(t *testing.T) {
+	cases := map[string]string{
+		"unresolved::exec.Command":           "string::process::exec.Command",
+		"stdlib::os/exec::Command":           "string::process::exec.Command",
+		"gortex::stdlib::os/exec::Command":   "string::process::exec.Command",
+		"stdlib::os/exec::CommandContext":    "string::process::exec.CommandContext",
+		"stdlib::syscall::Exec":              "string::process::syscall.Exec",
+		"dep::github.com/x/sh::Command::new": "", // not an exec API
+	}
+	for to, wantTarget := range cases {
+		g := graph.New()
+		g.AddNode(&graph.Node{ID: "a.go::F", Kind: graph.KindFunction, Name: "F", FilePath: "a.go"})
+		g.AddEdge(&graph.Edge{From: "a.go::F", To: to, Kind: graph.EdgeCalls, FilePath: "a.go", Line: 1})
+		_, ep, _ := synthesizeCapabilityEdges(g)
+		var got string
+		for _, e := range g.AllEdges() {
+			if e.Kind == graph.EdgeExecutesProcess {
+				got = e.To
+			}
+		}
+		if wantTarget == "" {
+			if ep != 0 || got != "" {
+				t.Errorf("callee %q: expected no executes_process edge, got %q (ep=%d)", to, got, ep)
+			}
+			continue
+		}
+		if ep != 1 || got != wantTarget {
+			t.Errorf("callee %q: executes_process -> %q (ep=%d), want %q", to, got, ep, wantTarget)
+		}
+	}
+}

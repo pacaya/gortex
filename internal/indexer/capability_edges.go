@@ -42,17 +42,69 @@ var processExecBareNames = map[string]string{
 	"execFileSync": "child_process.execFileSync",
 }
 
+// knownExecSchemes are the resolver's external-symbol ID scheme tokens.
+// A resolved call target carries one (optionally behind a <repo>:: prefix)
+// as in stdlib::os/exec::Command — see external_call_attribution.go.
+var knownExecSchemes = map[string]bool{
+	"stdlib": true, "dep": true, "module": true, "external": true,
+}
+
+// execCalleeCandidates yields the spellings of a call target to test
+// against the exec tables. The resolver may leave a call unresolved
+// (unresolved::exec.Command), resolve it onto a fully-qualified external
+// node ID (stdlib::os/exec::Command, optionally <repo>::-prefixed), or
+// keep a Rust-style path spelling (Command::new). Returning both the
+// as-written form and the collapsed pkg.Symbol form lets one matcher
+// cover all of them — so Go os/exec calls (the common case) produce an
+// executes_process edge whether or not the import resolved.
+func execCalleeCandidates(to string) []string {
+	to = strings.TrimPrefix(to, "unresolved::")
+	cands := []string{to}
+	segs := strings.Split(to, "::")
+	for i, s := range segs {
+		if !knownExecSchemes[s] {
+			continue
+		}
+		rest := segs[i+1:]
+		switch {
+		case len(rest) >= 2:
+			// <scheme>::<import/path>::<Symbol> -> pkg.Symbol, keeping the
+			// last path segment as the import alias the source wrote
+			// (os/exec -> exec). Rust's Command::new has no scheme token,
+			// so it never reaches here and keeps its as-written spelling.
+			sym := rest[len(rest)-1]
+			pkg := rest[len(rest)-2]
+			if k := strings.LastIndex(pkg, "/"); k >= 0 {
+				pkg = pkg[k+1:]
+			}
+			if pkg != "" && sym != "" {
+				cands = append(cands, pkg+"."+sym)
+			}
+		case len(rest) == 1 && rest[0] != "":
+			cands = append(cands, rest[0])
+		}
+		break
+	}
+	return cands
+}
+
 // processExecMechanism returns the canonical process-execution mechanism
-// for a callee, or "" when the callee is not a recognised exec API.
+// for a callee, or "" when the callee is not a recognised exec API. It
+// accepts either an as-written callee or a resolved external node ID.
 func processExecMechanism(callee string) string {
-	if m := processExecAPIs[callee]; m != "" {
-		return m
+	for _, c := range execCalleeCandidates(callee) {
+		if m := processExecAPIs[c]; m != "" {
+			return m
+		}
+		last := c
+		if i := strings.LastIndexAny(c, "."); i >= 0 {
+			last = c[i+1:]
+		}
+		if m := processExecBareNames[last]; m != "" {
+			return m
+		}
 	}
-	last := callee
-	if i := strings.LastIndexAny(callee, "."); i >= 0 {
-		last = callee[i+1:]
-	}
-	return processExecBareNames[last]
+	return ""
 }
 
 // synthesizeCapabilityEdges materialises the three first-class capability
@@ -137,7 +189,7 @@ func synthesizeCapabilityEdges(g graph.Store) (readsEnv, execProc, fieldAccess i
 		if e == nil {
 			continue
 		}
-		mech := processExecMechanism(strings.TrimPrefix(e.To, "unresolved::"))
+		mech := processExecMechanism(e.To)
 		if mech == "" {
 			continue
 		}

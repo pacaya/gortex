@@ -3829,6 +3829,10 @@ func (idx *Indexer) IncrementalReindexPaths(root string, paths []string) (*Index
 	if !idx.deferGlobalPasses && (len(staleFiles) > 0 || len(deletedFiles) > 0) {
 		idx.resolver.InferImplements()
 		idx.resolver.InferOverrides()
+		// Keep capability edges (reads_env / executes_process /
+		// accesses_field) fresh on incremental reindex — same idempotent
+		// re-derive RunGlobalGraphPasses runs at full index.
+		synthesizeCapabilityEdges(idx.graph)
 		resolver.RunFrameworkSynthesizers(idx.graph)
 		// Incremental: synthesize external calls only for the reindexed
 		// files (O(edited files)), not a full-graph recompute.
@@ -4038,6 +4042,13 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 	if !idx.deferGlobalPasses {
 		idx.resolver.InferImplements()
 		idx.resolver.InferOverrides()
+		// Capability edges (reads_env / executes_process / accesses_field)
+		// re-derived from the freshly re-indexed files' base edges so the
+		// daemon's capability surface — what a supply-chain / least-privilege
+		// audit traverses — stays fresh between full indexes. Whole-graph but
+		// idempotent (AddEdge dedupes), matching the other synthesis passes
+		// re-run here.
+		synthesizeCapabilityEdges(idx.graph)
 		// Framework dynamic-dispatch synthesis — re-run because eviction
 		// may have dropped a handler, a registration edge, or an emit /
 		// listen edge, and each synthesizer's index must be rebuilt
