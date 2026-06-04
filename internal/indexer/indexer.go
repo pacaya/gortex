@@ -694,6 +694,13 @@ func (idx *Indexer) RunGlobalGraphPasses(ctx context.Context) {
 			zap.Int("edges", emitted),
 		)
 	}
+	if re, ep, fa := synthesizeCapabilityEdges(idx.graph); re > 0 || ep > 0 || fa > 0 {
+		idx.logger.Info("capability edges emitted (global)",
+			zap.Int("reads_env", re),
+			zap.Int("executes_process", ep),
+			zap.Int("accesses_field", fa),
+		)
+	}
 	reporter.Report("clone detection pass (global)", 0, 0)
 	if cs := detectClonesAndEmitEdgesCtx(ctx, idx.graph, idx.repoPrefix, idx.cloneThreshold()); cs.Items > 0 {
 		idx.logger.Info("clone edges emitted (global)",
@@ -2352,6 +2359,13 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 				idx.logger.Info("test edges emitted",
 					zap.Int("test_symbols", marked),
 					zap.Int("edges", emitted),
+				)
+			}
+			if re, ep, fa := synthesizeCapabilityEdges(idx.graph); re > 0 || ep > 0 || fa > 0 {
+				idx.logger.Info("capability edges emitted",
+					zap.Int("reads_env", re),
+					zap.Int("executes_process", ep),
+					zap.Int("accesses_field", fa),
 				)
 			}
 			reporter.Report("clone detection pass", 0, 0)

@@ -138,6 +138,33 @@ const (
 	// struct-tag binding).
 	EdgeReadsConfig  EdgeKind = "reads_config"
 	EdgeWritesConfig EdgeKind = "writes_config"
+	// Capability edges — first-class, traversable typed edges for the
+	// supply-chain / least-privilege questions "what reads the
+	// environment", "what shells out", "what touches this field". They
+	// are synthesised after resolution (see synthesizeCapabilityEdges)
+	// from edges the language extractors already emit, so they stay in
+	// sync without per-language work, while giving a single edge kind to
+	// walk instead of joining through the config / dataflow layers.
+	//
+	// EdgeReadsEnv links a function/method to the environment variable it
+	// reads. The target is the typed env-var node (KindConfigKey, id
+	// cfg::env::<NAME>) shared with infra EdgeUsesEnv declarations, so
+	// "which code reads $AWS_SECRET" is one reverse walk. Emitted parallel
+	// to every EdgeReadsConfig whose target is a cfg::env:: key.
+	EdgeReadsEnv EdgeKind = "reads_env"
+	// EdgeExecutesProcess links a function/method to a process it spawns
+	// (os/exec, subprocess, child_process, system, Open3, Command::new,
+	// Runtime.exec, …). The target is a typed process node (KindString,
+	// id string::process::<mechanism>) so an audit can enumerate every
+	// function that shells out. Synthesised from EdgeCalls whose callee is
+	// a known process-execution API.
+	EdgeExecutesProcess EdgeKind = "executes_process"
+	// EdgeAccessesField links a function/method to a struct field / class
+	// property it reads or writes — the union of EdgeReads and EdgeWrites
+	// restricted to KindField targets, as one traversable capability edge.
+	// Meta["access"] ∈ read|write. Synthesised from EdgeReads / EdgeWrites
+	// edges that target a KindField node.
+	EdgeAccessesField EdgeKind = "accesses_field"
 	// EdgeTogglesFlag links a function to a feature flag it checks or
 	// toggles. Meta["op"] ∈ read|write|register.
 	EdgeTogglesFlag EdgeKind = "toggles_flag"
@@ -666,6 +693,9 @@ func DefaultOriginFor(kind EdgeKind, confidence float64, semanticSource string) 
 		// extractor (K8s/Kustomize/Dockerfile) that resolves the
 		// relationship structurally from the manifest text.
 		EdgeConfigures, EdgeMounts, EdgeExposes, EdgeDependsOn, EdgeUsesEnv,
+		// Capability edges synthesised from already-structural edges
+		// (reads_config / reads / writes) ride at the same tier.
+		EdgeReadsEnv, EdgeAccessesField,
 		// Cross-repo type-hierarchy edges parallel the structural
 		// implements/extends edges, so they ride at the same tier.
 		// EdgeCrossRepoCalls is intentionally excluded — it parallels
@@ -817,6 +847,8 @@ func ConfidenceLabelFor(kind EdgeKind, confidence float64) string {
 		EdgeValueFlow, EdgeArgOf, EdgeReturnsTo,
 		// Infrastructure-graph edges (K8s / Kustomize / Dockerfile).
 		EdgeConfigures, EdgeMounts, EdgeExposes, EdgeDependsOn, EdgeUsesEnv,
+		// Capability edges synthesised from structural edges.
+		EdgeReadsEnv, EdgeAccessesField,
 		// Cross-repo type-hierarchy edges parallel structural
 		// implements/extends; EdgeCrossRepoCalls falls through to the
 		// confidence-score classifier like the base `calls` edge.

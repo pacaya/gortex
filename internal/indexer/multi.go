@@ -427,6 +427,13 @@ func (mi *MultiIndexer) RunGlobalGraphPasses(ctx context.Context) {
 			zap.Int("edges", emitted),
 		)
 	}
+	if re, ep, fa := synthesizeCapabilityEdges(mi.graph); re > 0 || ep > 0 || fa > 0 {
+		mi.logger.Info("capability edges emitted (global)",
+			zap.Int("reads_env", re),
+			zap.Int("executes_process", ep),
+			zap.Int("accesses_field", fa),
+		)
+	}
 	// Clone detection is PER-REPOSITORY: each tracked repo gets its own
 	// finalise + detect over its own nodes (scoped by RepoPrefix), so no
 	// cross-repo candidate pair is ever formed and each repo's boilerplate
