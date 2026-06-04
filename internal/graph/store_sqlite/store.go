@@ -31,6 +31,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/zzet/gortex/internal/graph"
 
@@ -55,6 +56,19 @@ type Store struct {
 	resolveMu sync.Mutex
 
 	edgeIdentityRevs atomic.Int64
+
+	// WAL-checkpoint loop lifecycle. In WAL mode a COMMIT only appends to
+	// the -wal file; pages move into the main DB (and the WAL becomes
+	// reusable) at a checkpoint. SQLite's default passive auto-checkpoint
+	// reuses the WAL in place and never shrinks the file, so under steady
+	// writes with ever-present readers (the pooled connections here, plus
+	// any other process holding the store open) the -wal ratchets up to a
+	// large high-water mark and stays there. runCheckpointLoop periodically
+	// runs `PRAGMA wal_checkpoint(TRUNCATE)` to drain the log into the DB
+	// and shrink the file back down. nil for in-memory stores (no WAL).
+	stopCheckpoint chan struct{} // closed by Close to stop the loop
+	checkpointDone chan struct{} // closed by the loop when it returns
+	stopOnce       sync.Once     // makes stopCheckpointLoop idempotent
 
 	// bundles is the content-addressed package-scoped cache over
 	// SearchSymbolBundles: a query serves cached Node + in/out edges for
@@ -126,7 +140,15 @@ func Open(path string) (*Store, error) {
 	// off disk; mmap_size(256 MiB) lets reads fault pages straight from the
 	// OS page cache instead of copying through SQLite's. These materially
 	// speed the resolver/query phases on a large graph.
-	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=cache_size(-32768)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)"
+	//
+	// journal_size_limit(64 MiB) caps the -wal high-water mark: after any
+	// checkpoint SQLite truncates the WAL back down to this size instead of
+	// leaving it at whatever it grew to. Without it the WAL only ratchets
+	// up (a passive checkpoint reuses the file in place, never shrinking
+	// it), which is how a 535 MB DB ends up with an 11 GB -wal. This bounds
+	// the file even between the explicit TRUNCATE checkpoints runCheckpointLoop
+	// issues, and even if that loop is not running.
+	dsn := path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=cache_size(-32768)&_pragma=temp_store(MEMORY)&_pragma=mmap_size(268435456)&_pragma=journal_size_limit(67108864)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open: %w", err)
@@ -173,11 +195,75 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite prepare: %w", err)
 	}
+	// In-memory databases have no WAL file to drain, so the periodic
+	// checkpoint is pointless there (and would leak a goroutine per
+	// short-lived test store). Only run it for on-disk stores.
+	if !strings.Contains(path, ":memory:") {
+		s.stopCheckpoint = make(chan struct{})
+		s.checkpointDone = make(chan struct{})
+		go s.runCheckpointLoop(walCheckpointInterval)
+	}
 	return s, nil
 }
 
-// Close closes every prepared statement and the underlying *sql.DB.
+// walCheckpointInterval is how often runCheckpointLoop drains the WAL into
+// the main DB and truncates the -wal file. Five minutes keeps the file
+// bounded under steady writes without making the checkpoint itself a hot
+// path; journal_size_limit in the DSN bounds growth between ticks.
+const walCheckpointInterval = 5 * time.Minute
+
+// runCheckpointLoop issues a TRUNCATE checkpoint every interval until Close
+// stops it. Best-effort: a checkpoint that can't fully complete because a
+// reader or writer holds the WAL just truncates what it can and retries on
+// the next tick.
+func (s *Store) runCheckpointLoop(interval time.Duration) {
+	defer close(s.checkpointDone)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopCheckpoint:
+			return
+		case <-ticker.C:
+			_ = s.CheckpointWAL()
+		}
+	}
+}
+
+// CheckpointWAL runs `PRAGMA wal_checkpoint(TRUNCATE)`: it flushes the
+// write-ahead log into the main database file and shrinks the -wal back to
+// zero. A passive checkpoint (SQLite's default) only reuses the WAL in
+// place and never reclaims the space; TRUNCATE is the mode that does.
+// Exposed so a daemon shutdown path or an operator command can force a
+// drain; the background loop calls it on a timer. Not held under writeMu —
+// SQLite coordinates checkpoints against writers internally, and blocking
+// steady-state writes on a maintenance op is the wrong tradeoff.
+func (s *Store) CheckpointWAL() error {
+	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
+// stopCheckpointLoop signals the background loop to exit and waits for it,
+// so callers can be sure no checkpoint is in flight before closing s.db.
+// Idempotent: safe to call from Close more than once.
+func (s *Store) stopCheckpointLoop() {
+	s.stopOnce.Do(func() {
+		if s.stopCheckpoint != nil {
+			close(s.stopCheckpoint)
+			<-s.checkpointDone
+		}
+	})
+}
+
+// Close closes every prepared statement and the underlying *sql.DB. It
+// first stops the WAL-checkpoint loop and issues one final TRUNCATE
+// checkpoint so the -wal file is drained and shrunk on graceful shutdown
+// rather than lingering at its high-water mark until the next open.
 func (s *Store) Close() error {
+	s.stopCheckpointLoop()
+	if s.checkpointDone != nil { // on-disk store: drain the WAL one last time
+		_ = s.CheckpointWAL()
+	}
 	stmts := []*sql.Stmt{
 		s.stmtInsertNode, s.stmtGetNode, s.stmtGetNodeByQual,
 		s.stmtFindByName, s.stmtFindByNameInRepo,

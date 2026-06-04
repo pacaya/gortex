@@ -174,7 +174,10 @@ func OpenSidecar(path string) (*SidecarStore, error) {
 
 	// Same WAL + synchronous=NORMAL + busy_timeout tradeoff the graph
 	// store_sqlite backend uses for write-heavy embedded workloads.
-	dsn := abs + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)"
+	// journal_size_limit caps the -wal high-water mark so it can't ratchet
+	// up unbounded under steady writes with ever-present readers (same WAL
+	// growth class the graph store guards against).
+	dsn := abs + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=journal_size_limit(67108864)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("persistence: open sidecar: %w", err)
