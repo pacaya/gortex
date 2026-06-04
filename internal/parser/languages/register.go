@@ -47,6 +47,11 @@ func RegisterAll(reg *parser.Registry) {
 	reg.Register(NewDartExtractor())
 	reg.Register(NewOCamlExtractor())
 	reg.Register(NewLuaExtractor())
+	// Luau (Roblox typed Lua) — hand-written depth (typed functions,
+	// type aliases, generic params). Registered before
+	// registerForestLanguages so it claims .luau over the generic forest
+	// luau grammar (which is then skipped on the .luau collision).
+	reg.Register(NewLuauExtractor())
 	reg.Register(NewZigExtractor())
 	reg.Register(NewHaskellExtractor())
 	reg.Register(NewClojureExtractor())
