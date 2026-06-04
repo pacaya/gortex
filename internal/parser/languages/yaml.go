@@ -62,6 +62,9 @@ func (e *YAMLExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 	if extractDbtSchemaYAML(filePath, fileNode.ID, src, result) {
 		return result, nil
 	}
+	if extractSymfonyServicesYAML(filePath, fileNode.ID, src, result) {
+		return result, nil
+	}
 
 	// Walk only top-level block_mapping_pair nodes.
 	e.extractTopLevelKeys(root, src, filePath, fileNode.ID, result)

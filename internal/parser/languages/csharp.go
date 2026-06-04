@@ -2,6 +2,7 @@ package languages
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -9,6 +10,14 @@ import (
 	sitter "github.com/zzet/gortex/internal/parser/tsitter"
 	"github.com/zzet/gortex/internal/parser/tsitter/csharp"
 )
+
+// csharpInterfaceNamePattern encodes the C# `I`-prefix convention
+// (IService, IRepository, IList): an interface name conventionally
+// starts with a capital `I` followed by another uppercase letter. The
+// base-list heuristic falls back to this when a base type is defined in
+// another compilation unit and so cannot be matched against the file's
+// own interface declarations.
+var csharpInterfaceNamePattern = regexp.MustCompile(`^I[A-Z]`)
 
 // qCSharpAll is a single tree-sitter query alternating over every
 // pattern the C# extractor needs. One tree walk per file replaces the
@@ -34,6 +43,9 @@ const qCSharpAll = `
 
   (struct_declaration
     name: (identifier) @struct.name) @struct.def
+
+  (record_declaration
+    name: (identifier) @record.name) @record.def
 
   (enum_declaration
     name: (identifier) @enum.name) @enum.def
@@ -129,6 +141,13 @@ func (e *CSharpExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 	annotationSeen := make(map[string]bool)
 	ifaceMethods := make(map[string][]string) // interface name → method names
 
+	// Pre-scan the file's own interface declarations. A base type that
+	// names one of these is definitively an interface, even when its name
+	// doesn't follow the `I`-prefix convention — the base-list heuristic
+	// (emitCSharpBaseList) checks this set before falling back to name
+	// shape so a locally-known interface always wins.
+	localInterfaces := collectCSharpInterfaceNames(root, src)
+
 	var calls []csharpDeferredCall
 	var locals []csharpDeferredLocal
 
@@ -139,16 +158,19 @@ func (e *CSharpExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 			e.emitNamespace(m, filePath, fileID, result, seen)
 
 		case m.Captures["class.def"] != nil:
-			e.emitContainer(m, "class", graph.KindType, filePath, fileID, src, result, seen, annotationSeen)
+			e.emitContainer(m, "class", graph.KindType, filePath, fileID, src, result, seen, annotationSeen, localInterfaces)
 
 		case m.Captures["iface.def"] != nil:
-			e.emitContainer(m, "iface", graph.KindInterface, filePath, fileID, src, result, seen, annotationSeen)
+			e.emitContainer(m, "iface", graph.KindInterface, filePath, fileID, src, result, seen, annotationSeen, localInterfaces)
 
 		case m.Captures["struct.def"] != nil:
-			e.emitContainer(m, "struct", graph.KindType, filePath, fileID, src, result, seen, annotationSeen)
+			e.emitContainer(m, "struct", graph.KindType, filePath, fileID, src, result, seen, annotationSeen, localInterfaces)
+
+		case m.Captures["record.def"] != nil:
+			e.emitContainer(m, "record", graph.KindType, filePath, fileID, src, result, seen, annotationSeen, localInterfaces)
 
 		case m.Captures["enum.def"] != nil:
-			e.emitContainer(m, "enum", graph.KindType, filePath, fileID, src, result, seen, annotationSeen)
+			e.emitContainer(m, "enum", graph.KindType, filePath, fileID, src, result, seen, annotationSeen, localInterfaces)
 
 		case m.Captures["method.def"] != nil:
 			e.emitMethod(m, filePath, fileID, src, result, seen, annotationSeen, ifaceMethods)
@@ -291,7 +313,7 @@ func (e *CSharpExtractor) emitNamespace(m parser.QueryResult, filePath, fileID s
 // emitContainer collapses the per-kind class/interface/struct/enum
 // node emission. The capture-name prefix selects which capture set to
 // read from (the legacy code repeated this body four times).
-func (e *CSharpExtractor) emitContainer(m parser.QueryResult, kind string, nodeKind graph.NodeKind, filePath, fileID string, src []byte, result *parser.ExtractionResult, seen, annotationSeen map[string]bool) {
+func (e *CSharpExtractor) emitContainer(m parser.QueryResult, kind string, nodeKind graph.NodeKind, filePath, fileID string, src []byte, result *parser.ExtractionResult, seen, annotationSeen map[string]bool, localInterfaces map[string]bool) {
 	name := m.Captures[kind+".name"].Text
 	def := m.Captures[kind+".def"]
 	id := filePath + "::" + name
@@ -314,6 +336,14 @@ func (e *CSharpExtractor) emitContainer(m parser.QueryResult, kind string, nodeK
 	})
 	emitCSharpAnnotationEdges(csharpCollectAttributes(def.Node, src), id, filePath, result, annotationSeen)
 	emitCSharpGenericParamNodes(id, def.Node, src, filePath, def.StartLine+1, result)
+	// Only classes, structs, and records carry a base class / interface
+	// list that splits into EdgeExtends + EdgeImplements. Structs and
+	// `record struct` declarations have no base class — every base is an
+	// interface — which emitCSharpBaseList infers from the declaration.
+	switch kind {
+	case "class", "struct", "record":
+		emitCSharpBaseList(id, def.Node, src, filePath, localInterfaces, result)
+	}
 }
 
 // csharpVisibility scans a declaration's modifier children for an
@@ -622,6 +652,183 @@ func csharpDirectMemberOwner(member *sitter.Node, src []byte, allowed ...string)
 		}
 	}
 	return csharpOwner{}
+}
+
+// collectCSharpInterfaceNames walks the tree for every
+// interface_declaration and records its bare name. The base-list
+// heuristic consults this set first: a base type that names a
+// locally-declared interface is unambiguously an interface, regardless
+// of whether its name follows the `I`-prefix convention.
+func collectCSharpInterfaceNames(root *sitter.Node, src []byte) map[string]bool {
+	names := make(map[string]bool)
+	walkNodes(root, func(n *sitter.Node) {
+		if n.Type() != "interface_declaration" {
+			return
+		}
+		if nameNode := n.ChildByFieldName("name"); nameNode != nil {
+			names[nameNode.Content(src)] = true
+		}
+	})
+	return names
+}
+
+// emitCSharpBaseList splits a class/struct/record base list into
+// EdgeExtends (the superclass) and EdgeImplements (the interfaces).
+//
+// C# lists the optional base class and any implemented interfaces in a
+// single comma-separated base_list, and — unlike Go or Java — the
+// grammar does not tag which entry is the class. When a base type is
+// defined elsewhere (another compilation unit) the extractor cannot
+// resolve its kind, so it discriminates with a heuristic:
+//
+//  1. A base whose name matches a locally-declared interface (the
+//     prescan set) is definitively an interface → EdgeImplements.
+//  2. Otherwise a base whose name matches the `I`-prefix convention
+//     (^I[A-Z], generics stripped first so IList<T> → IList) is treated
+//     as an interface → EdgeImplements.
+//  3. The first base that is neither is the superclass → EdgeExtends.
+//     C# allows at most one base class and it must come first; every
+//     base after it is an interface. Structs and `record struct`
+//     declarations have no base class, so all of their bases are
+//     interfaces regardless of position.
+//
+// All edges ride at OriginASTInferred: the discrimination is a
+// heuristic, not a type-checked fact. Targets are left unresolved so
+// the resolver binds them like every other C# reference. A base that
+// resolves to a same-file class still flows through unchanged — it is
+// neither a known interface nor I-prefixed, so it lands as EdgeExtends.
+func emitCSharpBaseList(typeID string, decl *sitter.Node, src []byte, filePath string, localInterfaces map[string]bool, result *parser.ExtractionResult) {
+	if decl == nil {
+		return
+	}
+	baseList := decl.ChildByFieldName("bases")
+	if baseList == nil {
+		// `bases` is not a named field in every grammar revision; fall
+		// back to a direct child scan for the base_list node.
+		for i := 0; i < int(decl.ChildCount()); i++ {
+			c := decl.Child(i)
+			if c != nil && c.Type() == "base_list" {
+				baseList = c
+				break
+			}
+		}
+	}
+	if baseList == nil {
+		return
+	}
+	// Structs and `record struct` cannot derive from a base class — the
+	// CLR forbids it — so every entry in their base list is an interface
+	// and the "first non-interface is the superclass" branch never runs.
+	allowsBaseClass := csharpDeclAllowsBaseClass(decl)
+	extendsTaken := false
+	for i := 0; i < int(baseList.NamedChildCount()); i++ {
+		entry := baseList.NamedChild(i)
+		if entry == nil {
+			continue
+		}
+		name, isCtorBase := csharpBaseTypeName(entry, src)
+		if name == "" {
+			continue
+		}
+		line := int(entry.StartPoint().Row) + 1
+		// A primary_constructor_base_type (`: Base(args)`) invokes a base
+		// constructor, which is only valid for a base class — it is never
+		// an interface.
+		isInterface := !isCtorBase &&
+			(localInterfaces[name] || csharpInterfaceNamePattern.MatchString(name))
+		kind := graph.EdgeImplements
+		if !isInterface && allowsBaseClass && !extendsTaken {
+			kind = graph.EdgeExtends
+			extendsTaken = true
+		}
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: typeID, To: "unresolved::" + name,
+			Kind: kind, FilePath: filePath, Line: line,
+			Origin: graph.OriginASTInferred,
+		})
+	}
+}
+
+// csharpDeclAllowsBaseClass reports whether a class/struct/record
+// declaration can have a base class. Structs never can; a record is a
+// struct when its declaration carries the `struct` keyword
+// (`record struct`), otherwise it is a reference type that can extend a
+// base record/class.
+func csharpDeclAllowsBaseClass(decl *sitter.Node) bool {
+	switch decl.Type() {
+	case "struct_declaration":
+		return false
+	case "record_declaration":
+		for i := 0; i < int(decl.ChildCount()); i++ {
+			if c := decl.Child(i); c != nil && c.Type() == "struct" {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
+}
+
+// csharpBaseTypeName extracts the bare type name from a single base_list
+// entry, stripping generic arguments and namespace qualification so the
+// `I`-prefix test sees IList rather than IList<int> or System.IList. The
+// bool return reports whether the entry is a primary_constructor_base_type
+// (`Base(args)`), which can only ever be a base class.
+func csharpBaseTypeName(entry *sitter.Node, src []byte) (string, bool) {
+	switch entry.Type() {
+	case "identifier":
+		return entry.Content(src), false
+	case "generic_name":
+		// First child is the base identifier; the type_argument_list
+		// follows. IList<int> → IList.
+		if id := entry.ChildByFieldName("name"); id != nil {
+			return id.Content(src), false
+		}
+		for i := 0; i < int(entry.ChildCount()); i++ {
+			if c := entry.Child(i); c != nil && c.Type() == "identifier" {
+				return c.Content(src), false
+			}
+		}
+	case "qualified_name":
+		// System.Object → Object (the last identifier).
+		var last string
+		for i := 0; i < int(entry.ChildCount()); i++ {
+			if c := entry.Child(i); c != nil && c.Type() == "identifier" {
+				last = c.Content(src)
+			}
+		}
+		return last, false
+	case "primary_constructor_base_type":
+		// `: Base(args)` — record base-constructor call; always a class.
+		if id := entry.ChildByFieldName("type"); id != nil {
+			return normalizeCSharpBaseName(id.Content(src)), true
+		}
+		for i := 0; i < int(entry.ChildCount()); i++ {
+			c := entry.Child(i)
+			if c == nil {
+				continue
+			}
+			if c.Type() == "identifier" || c.Type() == "generic_name" || c.Type() == "qualified_name" {
+				return normalizeCSharpBaseName(c.Content(src)), true
+			}
+		}
+	}
+	return "", false
+}
+
+// normalizeCSharpBaseName reduces a raw base-type spelling to its bare
+// simple name: drops generic arguments (Foo<T> → Foo) and namespace
+// qualification (A.B.Foo → Foo).
+func normalizeCSharpBaseName(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if idx := strings.Index(raw, "<"); idx > 0 {
+		raw = raw[:idx]
+	}
+	if idx := strings.LastIndex(raw, "."); idx >= 0 {
+		raw = raw[idx+1:]
+	}
+	return strings.TrimSpace(raw)
 }
 
 // extractCSharpMethodReturnType walks a method_declaration node for

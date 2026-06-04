@@ -1159,6 +1159,25 @@ type EdgeAdjacencyForKinds interface {
 	EdgeAdjacencyForKinds(edgeKinds []EdgeKind, nodeKinds []NodeKind) iter.Seq[[2]string]
 }
 
+// ExternalCallCandidates is the optional pushdown for external-call
+// synthesis. ExternalCallCandidateEdges returns only the call / reference
+// edges whose target is an un-indexed external-package terminal
+// (dep:: / stdlib:: / external::, including the per-repo-prefixed stdlib
+// form) or an already-materialised external-call:: node — the exact set
+// the synthesizer might act on. The disk backend selects these rows with
+// a GLOB predicate (served by a partial index) instead of marshaling
+// every call edge in the graph and filtering Go-side; the marshaling /
+// allocation saving dominates on large graphs even when the planner
+// full-scans.
+//
+// Optional capability — resolver.externalCallCandidateEdges falls back to
+// the EdgesByKinds scan + prefix filter when the backend doesn't
+// implement it (the in-memory store, where there is no row marshaling to
+// save).
+type ExternalCallCandidates interface {
+	ExternalCallCandidateEdges() []*Edge
+}
+
 // CommunityCrossingsByKind is an optional capability backends MAY
 // implement to return per-source crossing counts for edges whose
 // Kind is in the supplied set, given a node→community membership

@@ -116,6 +116,7 @@ func ResolveGRPCStubCalls(g graph.Store) int {
 			e.Confidence = conf
 			e.ConfidenceLabel = graph.ConfidenceLabelFor(graph.EdgeCalls, conf)
 			e.Meta["grpc_resolution"] = origin
+			StampSynthesized(e, SynthGRPCStub)
 			resolved++
 		} else {
 			// Re-orphaned (handler removed since the last pass): drop the
@@ -125,6 +126,7 @@ func ResolveGRPCStubCalls(g graph.Store) int {
 			e.Confidence = 0
 			e.ConfidenceLabel = ""
 			delete(e.Meta, "grpc_resolution")
+			UnstampSynthesized(e)
 		}
 		reindexBatch = append(reindexBatch, graph.EdgeReindex{Edge: e, OldTo: oldTo})
 	}

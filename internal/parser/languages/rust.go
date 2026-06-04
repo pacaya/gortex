@@ -90,6 +90,7 @@ func (e *RustExtractor) Extensions() []string { return []string{".rs"} }
 type rustDeferredCall struct {
 	name       string
 	receiver   string // selector receiver text (empty for plain/path calls)
+	path       string // full scoped_identifier text for path calls (e.g. "Foo::new", "crate::util::helper"); "" otherwise
 	line       int
 	isSelector bool
 }
@@ -186,10 +187,22 @@ func (e *RustExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 
 		case m.Captures["callp.expr"] != nil:
 			expr := m.Captures["callp.expr"]
-			calls = append(calls, rustDeferredCall{
+			c := rustDeferredCall{
 				name: m.Captures["callp.name"].Text,
 				line: expr.StartLine + 1,
-			})
+			}
+			// The query only captures the scoped_identifier's trailing
+			// segment, so the qualifier (Foo / Self / crate / super /
+			// module path) would otherwise be lost. Read the full
+			// `function` child text so the Rust scope resolver can bind
+			// `Type::method`, `Self::method`, and `crate::/super::/self::`
+			// module paths.
+			if expr.Node != nil {
+				if fn := expr.Node.ChildByFieldName("function"); fn != nil {
+					c.path = fn.Content(src)
+				}
+			}
+			calls = append(calls, c)
 
 		case m.Captures["call.expr"] != nil:
 			expr := m.Captures["call.expr"]
@@ -257,13 +270,31 @@ func (e *RustExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 					edge.Meta = map[string]any{"receiver_type": chainType}
 				}
 			}
+			// Record a self/Self receiver so the Rust scope resolver can
+			// bind a `self.method()` selector to the enclosing impl type
+			// without an explicit `receiver_type` hint. Only the
+			// self/Self receivers are stamped — other receivers carry no
+			// extra meta (their binding flows through receiver_type).
+			if c.receiver == "self" || c.receiver == "Self" {
+				if edge.Meta == nil {
+					edge.Meta = map[string]any{}
+				}
+				edge.Meta["rust_recv"] = c.receiver
+			}
 			result.Edges = append(result.Edges, edge)
 			continue
 		}
-		result.Edges = append(result.Edges, &graph.Edge{
+		edge := &graph.Edge{
 			From: callerID, To: "unresolved::" + c.name,
 			Kind: graph.EdgeCalls, FilePath: filePath, Line: c.line,
-		})
+		}
+		// Preserve the full scoped path (e.g. "Foo::new",
+		// "crate::util::helper") for the Rust scope resolver — the
+		// extractor's call target keeps only the trailing segment.
+		if c.path != "" && strings.Contains(c.path, "::") {
+			edge.Meta = map[string]any{"rust_path": c.path}
+		}
+		result.Edges = append(result.Edges, edge)
 	}
 
 	// Cross-language interop sentinel: when any function in this

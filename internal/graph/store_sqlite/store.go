@@ -148,6 +148,16 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite schema: %w", err)
 	}
+	// edges_external is a partial index over exactly the external-call
+	// terminals, so ExternalCallCandidateEdges scans a tiny index instead
+	// of the full edges table. Built from the shared predicate const (not
+	// inlined in schemaSQL) so the index WHERE and the query WHERE stay
+	// byte-identical — SQLite only uses a partial index when the query's
+	// WHERE matches the index's.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS edges_external ON edges(kind) WHERE ` + externalCallTargetPredicate); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite edges_external index: %w", err)
+	}
 
 	s := &Store{db: db}
 	// Initialise the bundle cache at construction so its pointer is

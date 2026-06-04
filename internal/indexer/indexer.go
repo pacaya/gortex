@@ -712,24 +712,17 @@ func (idx *Indexer) RunGlobalGraphPasses(ctx context.Context) {
 	if idx.cloneIndex != nil {
 		idx.cloneIndex.Rebuild(idx.graph, idx.repoPrefix)
 	}
-	// gRPC stub-call resolution. Runs after InferImplements (the
-	// interface-satisfaction fallback signal depends on its
-	// EdgeImplements edges) and before DetectCrossRepoEdges so a
-	// cross-repo gRPC call gets its parallel cross_repo_calls edge.
-	reporter.Report("gRPC stub resolution (global)", 0, 0)
-	if grpcResolved := resolver.ResolveGRPCStubCalls(idx.graph); grpcResolved > 0 {
-		idx.logger.Info("gRPC stub calls resolved (global)",
-			zap.Int("edges", grpcResolved),
-		)
-	}
-	// Temporal workflow → activity stub-call resolution. Same ordering
-	// constraints as gRPC: needs InferImplements (Java interface chain)
-	// to have run; runs before DetectCrossRepoEdges so cross-repo
-	// Temporal dispatch gets its parallel cross_repo_calls edge.
-	reporter.Report("Temporal stub resolution (global)", 0, 0)
-	if temporalResolved := resolver.ResolveTemporalCalls(idx.graph); temporalResolved > 0 {
-		idx.logger.Info("Temporal stub calls resolved (global)",
-			zap.Int("edges", temporalResolved),
+	// Framework dynamic-dispatch synthesis (gRPC stubs, Temporal
+	// workflow→activity, in-process / native event channels, native
+	// bridges). Runs after InferImplements/InferOverrides (the
+	// interface-satisfaction signals several synthesizers depend on) and
+	// before DetectCrossRepoEdges so a cross-repo synthesized call gets
+	// its parallel cross_repo_calls edge.
+	reporter.Report("framework dispatch synthesis (global)", 0, 0)
+	if rep := resolver.RunFrameworkSynthesizers(idx.graph); rep.Total > 0 {
+		idx.logger.Info("framework dispatch calls synthesized (global)",
+			zap.Int("edges", rep.Total),
+			zap.Any("per_synthesizer", rep.Per),
 		)
 	}
 	// External-call placeholder synthesis (opt-in). Runs after the
@@ -1045,6 +1038,22 @@ func (idx *Indexer) prefixPath(relPath string) string {
 		return relPath
 	}
 	return idx.repoPrefix + "/" + relPath
+}
+
+// graphFilePaths maps reindex file paths (absolute or root-relative, as
+// passed to IndexFile) to the canonical graph file-path form
+// (prefixPath(relKey)) that GetFileNodes is keyed by — so file-scoped
+// passes can look up the just-reindexed files' nodes.
+func (idx *Indexer) graphFilePaths(files []string) []string {
+	out := make([]string, 0, len(files))
+	for _, f := range files {
+		abs := f
+		if !filepath.IsAbs(abs) && idx.rootPath != "" {
+			abs = filepath.Join(idx.rootPath, f)
+		}
+		out = append(out, idx.prefixPath(idx.relKey(abs)))
+	}
+	return out
 }
 
 // applyRepoPrefix transforms nodes and edges produced by an extractor to include
@@ -2365,21 +2374,15 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 			if idx.cloneIndex != nil {
 				idx.cloneIndex.Rebuild(idx.graph, idx.repoPrefix)
 			}
-			// gRPC stub-call resolution — runs once the call graph and
-			// interface inference are final. Skipped under
+			// Framework dynamic-dispatch synthesis — runs once the call
+			// graph and interface inference are final. Skipped under
 			// deferGlobalPasses; the batch caller folds it into
 			// RunGlobalGraphPasses.
-			reporter.Report("gRPC stub resolution", 0, 0)
-			if grpcResolved := resolver.ResolveGRPCStubCalls(idx.graph); grpcResolved > 0 {
-				idx.logger.Info("gRPC stub calls resolved",
-					zap.Int("edges", grpcResolved),
-				)
-			}
-			// Temporal stub-call resolution — same staging as gRPC.
-			reporter.Report("Temporal stub resolution", 0, 0)
-			if temporalResolved := resolver.ResolveTemporalCalls(idx.graph); temporalResolved > 0 {
-				idx.logger.Info("Temporal stub calls resolved",
-					zap.Int("edges", temporalResolved),
+			reporter.Report("framework dispatch synthesis", 0, 0)
+			if rep := resolver.RunFrameworkSynthesizers(idx.graph); rep.Total > 0 {
+				idx.logger.Info("framework dispatch calls synthesized",
+					zap.Int("edges", rep.Total),
+					zap.Any("per_synthesizer", rep.Per),
 				)
 			}
 			// External-call placeholder synthesis (opt-in) — runs after
@@ -2806,12 +2809,10 @@ func (idx *Indexer) ResolveAll() {
 	idx.resolver.ResolveAll()
 	idx.resolver.InferImplements()
 	idx.resolver.InferOverrides()
-	// gRPC stub-call resolution depends on InferImplements (its
-	// interface-satisfaction fallback signal) having run first.
-	resolver.ResolveGRPCStubCalls(idx.graph)
-	// Temporal stub-call resolution piggybacks on the same staging —
-	// Java interface→impl propagation depends on EdgeImplements.
-	resolver.ResolveTemporalCalls(idx.graph)
+	// Framework dynamic-dispatch synthesis (gRPC / Temporal / event
+	// channels / native bridges) depends on InferImplements (the
+	// interface-satisfaction signals) having run first.
+	resolver.RunFrameworkSynthesizers(idx.graph)
 	// External-call placeholder synthesis (opt-in) — runs after the
 	// resolver and stub passes so only genuinely un-indexed external
 	// targets remain to materialise.
@@ -3814,9 +3815,10 @@ func (idx *Indexer) IncrementalReindexPaths(root string, paths []string) (*Index
 	if !idx.deferGlobalPasses && (len(staleFiles) > 0 || len(deletedFiles) > 0) {
 		idx.resolver.InferImplements()
 		idx.resolver.InferOverrides()
-		resolver.ResolveGRPCStubCalls(idx.graph)
-		resolver.ResolveTemporalCalls(idx.graph)
-		resolver.SynthesizeExternalCalls(idx.graph, idx.externalCallSynthesisEnabled())
+		resolver.RunFrameworkSynthesizers(idx.graph)
+		// Incremental: synthesize external calls only for the reindexed
+		// files (O(edited files)), not a full-graph recompute.
+		resolver.SynthesizeExternalCallsForFiles(idx.graph, idx.externalCallSynthesisEnabled(), idx.graphFilePaths(staleFiles))
 	}
 
 	// Skip the search-index rebuild on a zero-change reconcile when the
@@ -4022,16 +4024,16 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 	if !idx.deferGlobalPasses {
 		idx.resolver.InferImplements()
 		idx.resolver.InferOverrides()
-		// gRPC stub-call resolution — re-run because eviction may have
-		// dropped a handler or a registration edge, and the handler
-		// index must be rebuilt against the fresh graph.
-		resolver.ResolveGRPCStubCalls(idx.graph)
-		// Temporal stub-call resolution — same re-run rationale.
-		resolver.ResolveTemporalCalls(idx.graph)
-		// External-call placeholder synthesis (opt-in) — re-run for the
-		// same reason: eviction can leave a previously-synthetic edge
-		// pointing at a stale terminal. The pass is a full recompute.
-		resolver.SynthesizeExternalCalls(idx.graph, idx.externalCallSynthesisEnabled())
+		// Framework dynamic-dispatch synthesis — re-run because eviction
+		// may have dropped a handler, a registration edge, or an emit /
+		// listen edge, and each synthesizer's index must be rebuilt
+		// against the fresh graph. Every pass is a full recompute.
+		resolver.RunFrameworkSynthesizers(idx.graph)
+		// External-call synthesis (opt-in) — file-scoped to the reindexed
+		// files (O(edited files)), not a full-graph recompute. Eviction
+		// already dropped a removed file's synthetic edges; a re-indexed
+		// file's fresh external terminals are re-materialised here.
+		resolver.SynthesizeExternalCallsForFiles(idx.graph, idx.externalCallSynthesisEnabled(), idx.graphFilePaths(staleFiles))
 		// Clone detection is not re-run here: each stale file was
 		// re-indexed through IndexFile above, whose resolve pass
 		// already recomputed EdgeSimilarTo against the fresh graph,
@@ -4093,7 +4095,7 @@ func (idx *Indexer) TotalDetected() int {
 // check per file.
 func (idx *Indexer) buildPerFileContractExtractors() ([]contracts.Extractor, map[string][]contracts.Extractor) {
 	extractors := []contracts.Extractor{
-		&contracts.HTTPExtractor{},
+		&contracts.HTTPExtractor{ClientAliases: idx.config.HTTPClientAliases},
 		&contracts.GRPCExtractor{},
 		&contracts.GraphQLExtractor{},
 		&contracts.OpenAPIExtractor{},
@@ -4202,6 +4204,34 @@ func (idx *Indexer) commitContracts(reg *contracts.Registry) {
 	// piled on top of each other. Re-run enrichment with the
 	// correct per-handler scope now that the graph is complete.
 	idx.resolveProviderHandlers(reg)
+
+	// Cross-file route-prefix joining. A FastAPI APIRouter declared in
+	// one file (`router = APIRouter(prefix="/users")`) is mounted under
+	// a second prefix elsewhere (`app.include_router(router,
+	// prefix="/api")`), so a route declared `@router.get("/{id}")`
+	// belongs at /api/users/{id}, not /{id}. Rewrite the affected
+	// provider contract IDs to the joined path before the matcher pairs
+	// them with consumers. Also handles Express app.use mounts and
+	// NestJS @Controller class prefixes. Reads source straight off disk
+	// (cached per file) — the same access pattern resolveProviderHandlers
+	// uses for cross-file handler bodies.
+	//
+	// Mount sites (a main.py that only calls include_router) often carry
+	// no route contracts, so the scan-file set comes from the graph's
+	// py/ts/js file nodes, not the registry — but only when at least one
+	// prefix-eligible route contract exists, so non-FastAPI/Express/Nest
+	// repos pay nothing.
+	if scanFiles := idx.routerPrefixScanFiles(reg); len(scanFiles) > 0 {
+		srcCache := make(map[string][]byte)
+		contracts.JoinRouterPrefixes(reg, scanFiles, func(filePath string) []byte {
+			if data, ok := srcCache[filePath]; ok {
+				return data
+			}
+			data := idx.contractFileSrc(filePath)
+			srcCache[filePath] = data
+			return data
+		})
+	}
 
 	// Trace response variables back to their call-site return types.
 	// Handles `source, err := h.svc.Get(...)` → response_type is
@@ -4322,6 +4352,70 @@ func (idx *Indexer) bulkCommit(nodes []*graph.Node, edges []*graph.Edge) {
 		return
 	}
 	idx.graph.AddBatch(nodes, edges)
+}
+
+// routerPrefixScanFiles returns the set of source files
+// JoinRouterPrefixes must scan for router definitions and mount sites
+// (APIRouter / include_router / app.use). Returns nil when no HTTP
+// contract uses a prefix-joining framework (FastAPI / Express / NestJS),
+// so unrelated repos skip the file enumeration entirely. When eligible,
+// it enumerates py / ts / js / tsx / jsx file nodes from the graph — the
+// mount file (a FastAPI main.py) frequently has no route contract of its
+// own and so can't be discovered from the registry alone.
+func (idx *Indexer) routerPrefixScanFiles(reg *contracts.Registry) []string {
+	eligible := false
+	for _, c := range reg.All() {
+		if c.Type != contracts.ContractHTTP || c.Meta == nil {
+			continue
+		}
+		switch fw, _ := c.Meta["framework"].(string); fw {
+		case "fastapi/flask", "express", "nestjs":
+			eligible = true
+		}
+		if eligible {
+			break
+		}
+	}
+	if !eligible {
+		return nil
+	}
+
+	var out []string
+	for _, n := range idx.graph.AllNodes() {
+		if n.Kind != graph.KindFile {
+			continue
+		}
+		path := n.FilePath
+		if path == "" {
+			path = n.ID
+		}
+		switch {
+		case strings.HasSuffix(path, ".py"),
+			strings.HasSuffix(path, ".ts"),
+			strings.HasSuffix(path, ".tsx"),
+			strings.HasSuffix(path, ".js"),
+			strings.HasSuffix(path, ".jsx"):
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+// contractFileSrc reads the on-disk source for a contract FilePath
+// (which is repo-prefixed when the indexer uses a repo prefix). Returns
+// nil when the file can't be read. Mirrors the disk-resolution logic in
+// resolveProviderHandlers so cross-file passes share one access pattern.
+func (idx *Indexer) contractFileSrc(filePath string) []byte {
+	diskPath := filePath
+	if idx.repoPrefix != "" && strings.HasPrefix(diskPath, idx.repoPrefix+"/") {
+		diskPath = strings.TrimPrefix(diskPath, idx.repoPrefix+"/")
+	}
+	diskPath = filepath.Join(idx.rootPath, diskPath)
+	data, err := os.ReadFile(diskPath)
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 // isRouteContractType reports whether a ContractType corresponds to a

@@ -520,6 +520,14 @@ type Edge struct {
 	// dataflow encoders; empty by default on the in-memory edge.
 	Tier      string `json:"tier,omitempty"`
 	CrossRepo bool   `json:"cross_repo,omitempty"`
+	// Context is the per-reference role a usage plays relative to the
+	// target symbol — parameter_type, return_type, field, value, type,
+	// attribute, generic_arg, or call. Empty on the stored edge; populated
+	// on demand by RefContextOf when find_usages classifies a usage, so
+	// agents can filter references by how they use the symbol
+	// (`find_usages context:"parameter_type"`). Not part of the edge
+	// identity / dedup key.
+	Context string `json:"context,omitempty"`
 	// Meta is intentionally excluded from JSON. It holds internal
 	// instrumentation (semantic_source, provider hints, etc.) that agents
 	// don't consume but that adds measurable bytes to every edge in
@@ -719,6 +727,71 @@ func ProvenanceWeight(e *Edge) float64 {
 		return ProvenanceWeightMin
 	}
 	return provWeightASTInferred
+}
+
+// Reference-context labels — the role a usage plays relative to the
+// symbol it references. Mirrors graphify's REFERENCE_CONTEXTS so
+// find_usages can filter "show me only the places this type is used as a
+// parameter / return type / field …".
+const (
+	RefContextParameterType = "parameter_type"
+	RefContextReturnType    = "return_type"
+	RefContextField         = "field"
+	RefContextValue         = "value"
+	RefContextType          = "type"
+	RefContextAttribute     = "attribute"
+	RefContextGenericArg    = "generic_arg"
+	RefContextCall          = "call"
+)
+
+// RefContextOf classifies the reference context of an edge given the kind
+// of its origin (usage-site) node. An extractor-stamped
+// Meta["ref_context"] always wins (it lets a language extractor mark a
+// context the structure alone can't reveal — e.g. generic_arg). Otherwise
+// the context is derived from the edge kind plus the origin node kind,
+// which Gortex's edge model already distinguishes:
+//
+//   - returns → return_type
+//   - typed_as → parameter_type (from a param), field (from a field),
+//     value (from a variable/constant/local), else type
+//   - annotated → attribute
+//   - reads / writes → value
+//   - references / implements / extends / composes / aliases / overrides → type
+//   - calls / instantiates → call
+//
+// Returns "" for edge kinds that carry no reference context.
+func RefContextOf(e *Edge, fromKind NodeKind) string {
+	if e == nil {
+		return ""
+	}
+	if e.Meta != nil {
+		if c, _ := e.Meta["ref_context"].(string); c != "" {
+			return c
+		}
+	}
+	switch e.Kind {
+	case EdgeReturns:
+		return RefContextReturnType
+	case EdgeTypedAs:
+		switch fromKind {
+		case KindParam:
+			return RefContextParameterType
+		case KindField:
+			return RefContextField
+		case KindVariable, KindConstant, KindLocal:
+			return RefContextValue
+		}
+		return RefContextType
+	case EdgeAnnotated:
+		return RefContextAttribute
+	case EdgeReads, EdgeWrites:
+		return RefContextValue
+	case EdgeReferences, EdgeImplements, EdgeExtends, EdgeComposes, EdgeAliases, EdgeOverrides:
+		return RefContextType
+	case EdgeCalls, EdgeInstantiates:
+		return RefContextCall
+	}
+	return ""
 }
 
 // ConfidenceLabelFor returns EXTRACTED, INFERRED, or AMBIGUOUS for an edge

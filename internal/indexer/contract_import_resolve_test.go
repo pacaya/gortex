@@ -22,6 +22,57 @@ func TestTSFileCandidates(t *testing.T) {
 	require.Nil(t, tsFileCandidates(""))
 }
 
+// TestTSFileCandidates_SingleFileComponents confirms `.svelte` /
+// `.vue` module specifiers expand to a direct file candidate (the
+// stem with the SFC extension), and never to a directory `index`
+// barrel — single-file components have no `index.svelte` convention.
+func TestTSFileCandidates_SingleFileComponents(t *testing.T) {
+	got := tsFileCandidates("src/lib/Button.svelte")
+	require.Contains(t, got, "src/lib/Button.svelte")
+	require.NotContains(t, got, "src/lib/Button/index.svelte")
+
+	gotVue := tsFileCandidates("src/lib/Card.vue")
+	require.Contains(t, gotVue, "src/lib/Card.vue")
+	require.NotContains(t, gotVue, "src/lib/Card/index.vue")
+}
+
+// TestParseTSReExports_DefaultAsSvelte covers the Svelte component
+// barrel form `export { default as Button } from './Button.svelte'`:
+// the module specifier resolves to the `.svelte` file (no `.ts`
+// appended), and the local exported name `Button` maps to the
+// module's `default` export.
+func TestParseTSReExports_DefaultAsSvelte(t *testing.T) {
+	src := `
+export { default as Button } from './Button.svelte';
+export { default as Card } from './Card.vue';
+`
+	res := parseTSReExports(src, "src/lib/index.ts", nil, "")
+	require.Len(t, res, 2)
+
+	byFile := map[string]tsReExport{}
+	for _, re := range res {
+		byFile[re.fromFile] = re
+	}
+	// The `.svelte` / `.vue` specifier keeps its extension verbatim.
+	require.Equal(t, "default", byFile["src/lib/Button.svelte"].names["Button"])
+	require.Equal(t, "default", byFile["src/lib/Card.vue"].names["Card"])
+}
+
+// TestFollowReExportChain_DefaultAsSvelte drives the full follower over
+// a Svelte barrel: a consumer imports `Button`, the barrel re-exports
+// it as the default export of a `.svelte` component, and the chain must
+// reach that component file.
+func TestFollowReExportChain_DefaultAsSvelte(t *testing.T) {
+	mi := &MultiIndexer{}
+	srcCache := map[string][]byte{
+		"src/lib/index.ts":      []byte(`export { default as Button } from './Button.svelte';`),
+		"src/lib/Button.svelte": []byte(`<script lang="ts">export let label = "";</script>`),
+	}
+	reachable := mi.followReExportChain("src/lib/index.ts", "Button", srcCache)
+	require.True(t, reachable["src/lib/Button.svelte"],
+		"the `default as` re-export must reach the .svelte component file")
+}
+
 func TestParseTSReExports_StarNamedAndType(t *testing.T) {
 	src := `
 export * from './widgets';
@@ -361,11 +412,11 @@ func TestFollowReExportChain_RustPrivateUseNotForwarded(t *testing.T) {
 func TestResolveBareTypeViaImports_ThroughReExports(t *testing.T) {
 	cases := []struct {
 		name     string
-		consumer string                 // consumer file path
-		typeName string                 // bare type name being resolved
-		files    map[string][]byte      // re-export fixture sources
-		nodes    map[string]string      // candidate node ID -> FilePath
-		wantID   string                 // expected resolved node ID ("" = unresolved)
+		consumer string            // consumer file path
+		typeName string            // bare type name being resolved
+		files    map[string][]byte // re-export fixture sources
+		nodes    map[string]string // candidate node ID -> FilePath
+		wantID   string            // expected resolved node ID ("" = unresolved)
 	}{
 		{
 			name:     "ts wildcard multi-hop resolves to original definition",
@@ -378,7 +429,7 @@ func TestResolveBareTypeViaImports_ThroughReExports(t *testing.T) {
 				"web/src/ui/widget.ts": []byte(`export interface Widget { id: string }`),
 			},
 			nodes: map[string]string{
-				"web/src/ui/widget.ts::Widget": "web/src/ui/widget.ts",
+				"web/src/ui/widget.ts::Widget":  "web/src/ui/widget.ts",
 				"web/src/legacy/old.ts::Widget": "web/src/legacy/old.ts",
 			},
 			wantID: "web/src/ui/widget.ts::Widget",
@@ -388,12 +439,12 @@ func TestResolveBareTypeViaImports_ThroughReExports(t *testing.T) {
 			consumer: "app/src/main.js",
 			typeName: "Parser",
 			files: map[string][]byte{
-				"app/src/main.js":  []byte(`import { Parser } from './lib';`),
-				"app/src/lib.js":   []byte(`export * from './core';`),
-				"app/src/core.js":  []byte(`export class Parser {}`),
+				"app/src/main.js": []byte(`import { Parser } from './lib';`),
+				"app/src/lib.js":  []byte(`export * from './core';`),
+				"app/src/core.js": []byte(`export class Parser {}`),
 			},
 			nodes: map[string]string{
-				"app/src/core.js::Parser": "app/src/core.js",
+				"app/src/core.js::Parser":      "app/src/core.js",
 				"app/src/v1/legacy.js::Parser": "app/src/v1/legacy.js",
 			},
 			wantID: "app/src/core.js::Parser",
@@ -403,14 +454,14 @@ func TestResolveBareTypeViaImports_ThroughReExports(t *testing.T) {
 			consumer: "crate/src/main.rs",
 			typeName: "Account",
 			files: map[string][]byte{
-				"crate/src/main.rs":   []byte(`use crate::api::Account;`),
-				"crate/src/api.rs":    []byte(`pub use crate::model::Account;`),
-				"crate/src/model.rs":  []byte(`pub use crate::store::Account;`),
-				"crate/src/store.rs":  []byte(`pub struct Account { id: u64 }`),
+				"crate/src/main.rs":  []byte(`use crate::api::Account;`),
+				"crate/src/api.rs":   []byte(`pub use crate::model::Account;`),
+				"crate/src/model.rs": []byte(`pub use crate::store::Account;`),
+				"crate/src/store.rs": []byte(`pub struct Account { id: u64 }`),
 			},
 			nodes: map[string]string{
-				"crate/src/store.rs::Account":  "crate/src/store.rs",
-				"crate/src/other.rs::Account":  "crate/src/other.rs",
+				"crate/src/store.rs::Account": "crate/src/store.rs",
+				"crate/src/other.rs::Account": "crate/src/other.rs",
 			},
 			wantID: "crate/src/store.rs::Account",
 		},

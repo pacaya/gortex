@@ -491,20 +491,31 @@ type IndexConfig struct {
 	// round-trip.
 	MaxExtractMillis int `mapstructure:"max_extract_millis" yaml:"max_extract_millis,omitempty"`
 	// SynthesizeExternalCalls turns a call into an un-indexed third
-	// party (an npm/pip/cargo package, or a sibling microservice) into
-	// an explicit graph terminal. Without it such a call edge stays an
-	// `unresolved::` placeholder with no destination node, and a
-	// call-chain walk silently stops there — losing the fact that the
-	// function reaches out to an external system at all. When on, the
-	// resolver synthesises a clearly-marked synthetic placeholder node
-	// for the external target and retargets the call edge to it, so
-	// `get_call_chain` / `get_callers` keep the external hop visible.
-	// Off by default — the synthesis is noise on a codebase that only
-	// wants intra-repo edges, so it is strictly opt-in and changes no
-	// behaviour unless enabled. Turn on via
-	// `.gortex.yaml::index::synthesize_external_calls: true` or the
-	// GORTEX_SYNTH_EXTERNAL_CALLS=1 environment override.
-	SynthesizeExternalCalls bool `mapstructure:"synthesize_external_calls" yaml:"synthesize_external_calls,omitempty"`
+	// party (an npm/pip/cargo/maven/nuget package, or a sibling
+	// microservice) into an explicit graph terminal. Without it such a
+	// call edge stays an `unresolved::` placeholder with no destination
+	// node, and a call-chain walk silently stops there — losing the fact
+	// that the function reaches out to an external system at all. When
+	// on, the resolver synthesises a clearly-marked synthetic node per
+	// (ecosystem, import path) and retargets the call edge to it, so
+	// `get_call_chain` / `get_callers` keep the external hop visible and
+	// every call into the same package shares one stable, cross-repo
+	// identity node — `analyze kind=external_calls` then aggregates a
+	// service's whole external surface across repositories.
+	//
+	// Tri-state, default ON: a nil pointer (the key absent) resolves to
+	// enabled via ExternalCallSynthesisEnabledOrDefault, so external-call
+	// qualification is automatic for every language whose extractor lands
+	// calls on a dep/stdlib/external terminal (Go/Rust/Java/Python/C#/TS).
+	// Affordable by default because synthesis is incremental on the hot
+	// reindex path (only the edited file's terminals are re-materialised)
+	// and the disk backend pushes candidate-edge selection down to a
+	// partial-indexed query. Opt out per-repo with
+	// `.gortex.yaml::index::synthesize_external_calls: false` or the
+	// GORTEX_SYNTH_EXTERNAL_CALLS=0 environment override; language /
+	// stdlib calls are filtered out regardless so the synthetic nodes
+	// only ever name genuine third-party packages.
+	SynthesizeExternalCalls *bool `mapstructure:"synthesize_external_calls" yaml:"synthesize_external_calls,omitempty"`
 	// Transforms are pluggable pre-ingestion content processors. Each
 	// rewrites a matching file's bytes before the parser sees them —
 	// expanding minified bundles, normalising SVG/TOON, converting a
@@ -522,6 +533,21 @@ type IndexConfig struct {
 	// documented per-domain defaults" — cheap structural domains on,
 	// expensive ones off.
 	Coverage CoverageConfig `mapstructure:"coverage" yaml:"coverage,omitempty"`
+	// HTTPClientAliases names project-defined wrapped HTTP-client
+	// functions so calls to them are recognised as HTTP consumer
+	// contracts (RoleConsumer) — without relying on the type-driven
+	// fetch/axios heuristics. Each entry is a bare function name (or
+	// receiver.method) that forwards a string-literal path to an
+	// underlying client, e.g. `apiGet`, `apiPost`, `client.request`.
+	// The contracts HTTP extractor mints an `http::METHOD::/path`
+	// consumer contract for every call to one of these names. The
+	// method is taken from the name's verb suffix (`apiGet` → GET,
+	// `apiPost` → POST, ...) when present, falling back to the first
+	// string-literal argument when the call passes the method
+	// explicitly (`apiCall('GET', '/users')`); the path is the first
+	// path-shaped string literal. Empty by default. Configured under
+	// `index.http_client_aliases` in .gortex.yaml.
+	HTTPClientAliases []string `mapstructure:"http_client_aliases" yaml:"http_client_aliases,omitempty"`
 }
 
 // GrammarSpec declares a user-supplied tree-sitter grammar to load at
@@ -1040,6 +1066,23 @@ func (e EmbeddingConfig) EmbeddingEnabledOrDefault() bool {
 		return true
 	}
 	return *e.Enabled
+}
+
+// ExternalCallSynthesisEnabledOrDefault resolves the tri-state
+// SynthesizeExternalCalls flag against the default-on policy: an unset
+// flag (key absent) means external-package call qualification is ON, so
+// every external call gets a stable cross-repo identity node by default.
+// Default-on is affordable because the synthesis is incrementalised — a
+// single-file reindex re-materialises only that file's external terminals
+// (SynthesizeExternalCallsForFiles) instead of recomputing the whole
+// graph — and the disk backend selects candidate edges through a pushdown
+// (graph.ExternalCallCandidates) served by a partial index. Opt out
+// per-repo with the key set to false or GORTEX_SYNTH_EXTERNAL_CALLS=0.
+func (i IndexConfig) ExternalCallSynthesisEnabledOrDefault() bool {
+	if i.SynthesizeExternalCalls == nil {
+		return true
+	}
+	return *i.SynthesizeExternalCalls
 }
 
 // EmbeddingProviderOrDefault returns the configured provider name,

@@ -141,11 +141,12 @@ func wireContractGolden(name string) string {
 		// blank. Previously bumped when WorkspaceID / ProjectID were added.
 		return "b04bc4f58977e8220d31fdbf3fdab66867ab76790d6724bdabaf80b87958a7a4"
 	case "graph.Edge":
-		// Bumped when Tier was added — the coarse provenance label
-		// (ast / lsp / heuristic) derived from Origin and surfaced to
-		// agents. Additive: gob decodes older snapshots with Tier blank,
-		// and the enrich passes restamp it on next response.
-		return "954c994407f745b921ace19ab999d620f2e1aa071d177722a176f635ae7746dc"
+		// Bumped when Context was added — the per-reference role label
+		// (parameter_type / return_type / field / …) populated on demand by
+		// find_usages via RefContextOf. Additive: gob decodes older
+		// snapshots with Context blank, and it is recomputed at query time.
+		// (Previously bumped when Tier was added.)
+		return "ed897cce4720cd1482d8c217ba5ffb72d7f19d5d1c2d4015b9a98e9daa9d4b63"
 	case "snapshotHeader":
 		// Bumped when the VectorIndex / VectorDims / VectorCount fields
 		// were added (additive — gob decodes unknown fields as zero).

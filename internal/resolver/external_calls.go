@@ -71,6 +71,32 @@ func SynthesizeExternalCalls(g graph.Store, enabled bool) int {
 	if g == nil || !enabled {
 		return 0
 	}
+	return synthesizeExternalCalls(g, func() []*graph.Edge { return externalCallCandidateEdges(g) })
+}
+
+// SynthesizeExternalCallsForFiles is the incremental counterpart of
+// SynthesizeExternalCalls: it materialises external-call nodes for only
+// the out-edges of the given changed files, so a single-file reindex does
+// O(edited-file) work instead of the full-graph recompute. The synthetic
+// per-package nodes are shared (deterministic ID), so a file that adds a
+// caller for an already-materialised package just dedups onto the existing
+// node; graph.EvictFile drops a removed file's synthesised edges before
+// reindex, so no orphan-cleanup pass is needed. A no-op when disabled or
+// when no files changed.
+func SynthesizeExternalCallsForFiles(g graph.Store, enabled bool, files []string) int {
+	if g == nil || !enabled || len(files) == 0 {
+		return 0
+	}
+	return synthesizeExternalCalls(g, func() []*graph.Edge { return externalCallCandidateEdgesForFiles(g, files) })
+}
+
+// synthesizeExternalCalls is the shared materialisation core. collect runs
+// under the resolve lock and returns the candidate call / reference edges
+// (external-package terminals plus any already-synthesised external-call::
+// edges, so the returned count stays "edges terminating on a synthetic
+// node after the pass"). Each genuine external terminal gets a shared
+// per-(ecosystem, import path) node and the edge is retargeted onto it.
+func synthesizeExternalCalls(g graph.Store, collect func() []*graph.Edge) int {
 	// Serialise against the other graph-wide passes that mutate the
 	// graph (markTestSymbolsAndEmitEdges, ResolveTemporalCalls,
 	// reach.BuildIndex). This pass calls AddNode and ReindexEdge; a
@@ -82,25 +108,20 @@ func SynthesizeExternalCalls(g graph.Store, enabled bool) int {
 
 	synthesized := 0
 	var reindexBatch []graph.EdgeReindex
-	// First sweep: collect every candidate edge and the From IDs we'll
-	// need to read Language off. Narrow to the call-like edge kinds
-	// server-side via EdgesByKinds — AllEdges scanned the whole bucket
-	// just to filter Kind Go-side.
 	type candidate struct {
 		edge                  *graph.Edge
 		ecosystem, importPath string
 	}
 	var candidates []candidate
 	fromIDSet := map[string]struct{}{}
-	callKinds := []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences}
-	for e := range edgesByKinds(g, callKinds) {
+	for _, e := range collect() {
 		if e == nil {
 			continue
 		}
-		// Already pointing at a synthetic node — a prior run of this
-		// full-recompute pass landed it. Count it (the return value is
-		// "call edges terminating on a synthetic node after the pass")
-		// and leave it untouched, so re-running is a stable no-op.
+		// Already pointing at a synthetic node — a prior run landed it.
+		// Count it (the return value is "call edges terminating on a
+		// synthetic node after the pass") and leave it untouched, so
+		// re-running is a stable no-op.
 		if strings.HasPrefix(e.To, externalCallPrefix) {
 			synthesized++
 			continue
@@ -161,6 +182,78 @@ func SynthesizeExternalCalls(g graph.Store, enabled bool) int {
 		g.ReindexEdges(reindexBatch)
 	}
 	return synthesized
+}
+
+// externalCallCandidateEdges returns the call / reference edges whose
+// target is an un-indexed external-package terminal (dep:: / stdlib:: /
+// external::, including the per-repo-prefixed stdlib form) or an
+// already-synthesised external-call:: node. It uses the
+// ExternalCallCandidates pushdown capability when the backend implements
+// it — the disk backend then selects exactly these rows instead of
+// marshaling every call edge in the graph and filtering Go-side — and
+// falls back to the EdgesByKinds scan + prefix filter otherwise.
+func externalCallCandidateEdges(g graph.Store) []*graph.Edge {
+	if cap, ok := g.(graph.ExternalCallCandidates); ok {
+		return cap.ExternalCallCandidateEdges()
+	}
+	var out []*graph.Edge
+	for e := range edgesByKinds(g, []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences}) {
+		if e != nil && isExternalCandidateTarget(e.To) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// externalCallCandidateEdgesForFiles returns the external-terminal call /
+// reference out-edges originating in the given files only — the O(edited
+// files) input for incremental synthesis. Edges are gathered from the
+// out-edges of every symbol the files define.
+func externalCallCandidateEdgesForFiles(g graph.Store, files []string) []*graph.Edge {
+	idSet := make(map[string]struct{})
+	var ids []string
+	for _, f := range files {
+		for _, n := range g.GetFileNodes(f) {
+			if n == nil {
+				continue
+			}
+			if _, seen := idSet[n.ID]; seen {
+				continue
+			}
+			idSet[n.ID] = struct{}{}
+			ids = append(ids, n.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var out []*graph.Edge
+	for _, edges := range g.GetOutEdgesByNodeIDs(ids) {
+		for _, e := range edges {
+			if e == nil {
+				continue
+			}
+			if e.Kind != graph.EdgeCalls && e.Kind != graph.EdgeReferences {
+				continue
+			}
+			if isExternalCandidateTarget(e.To) {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+// isExternalCandidateTarget reports whether a target string is one that
+// synthesizeExternalCalls considers: an external-package terminal or an
+// already-materialised external-call:: node (kept so the pass's return
+// count stays stable across re-runs).
+func isExternalCandidateTarget(to string) bool {
+	if strings.HasPrefix(to, externalCallPrefix) {
+		return true
+	}
+	_, _, ok := parseExternalCallTarget(to)
+	return ok
 }
 
 // parseExternalCallTarget recognises the three bookkeeping-string
@@ -314,6 +407,32 @@ func isLanguageStdlib(lang, importPath string) bool {
 			return true
 		}
 		return false
+	case "java", "kotlin", "scala":
+		// JVM platform packages: the JDK (java.* / javax.*), the Jakarta
+		// EE successor (jakarta.*), and the JDK-internal trees (jdk.* /
+		// sun.* / com.sun.*). Everything else — including Kotlin/Scala
+		// stdlibs, which ship as ordinary Maven artifacts — is treated as
+		// a genuine dependency.
+		return hasDottedPrefix(importPath, "java", "javax", "jakarta", "jdk", "sun") ||
+			strings.HasPrefix(importPath, "com.sun.")
+	case "csharp", "fsharp":
+		// The .NET base class library: System.* and Microsoft.* (the
+		// framework-shipped namespaces) plus the legacy mscorlib. Third
+		// party NuGet packages live under their own vendor namespaces.
+		return hasDottedPrefix(importPath, "System", "Microsoft", "mscorlib", "netstandard")
+	}
+	return false
+}
+
+// hasDottedPrefix reports whether importPath equals one of roots or has
+// it as a dotted-namespace prefix (`java` matches `java` and `java.util`
+// but not `javafx`). Used by the JVM / .NET stdlib filters where the
+// platform namespace is the first dotted component.
+func hasDottedPrefix(importPath string, roots ...string) bool {
+	for _, r := range roots {
+		if importPath == r || strings.HasPrefix(importPath, r+".") {
+			return true
+		}
 	}
 	return false
 }

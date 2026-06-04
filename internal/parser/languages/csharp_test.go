@@ -409,3 +409,132 @@ func TestCSharpExtractor_DocAndVisibility(t *testing.T) {
 		t.Fatalf("Internal.vis = %q", internalT.Meta["visibility"])
 	}
 }
+
+// edgeTargetNames returns the bare target names of every edge of the
+// given kind whose From matches the given source ID. The C# base-list
+// heuristic emits unresolved targets (`unresolved::Name`), so the
+// prefix is stripped for readable assertions.
+func edgeTargetNames(edges []*graph.Edge, from string, kind graph.EdgeKind) []string {
+	var out []string
+	for _, e := range edges {
+		if e.Kind != kind || e.From != from {
+			continue
+		}
+		out = append(out, strings.TrimPrefix(e.To, "unresolved::"))
+	}
+	return out
+}
+
+func TestCSharpExtractor_BaseListDiscrimination(t *testing.T) {
+	e := NewCSharpExtractor()
+
+	t.Run("class with base class and interface", func(t *testing.T) {
+		src := []byte(`class Foo : BaseClass, IService {}`)
+		result, err := e.Extract("Foo.cs", src)
+		require.NoError(t, err)
+
+		extends := edgeTargetNames(result.Edges, "Foo.cs::Foo", graph.EdgeExtends)
+		implements := edgeTargetNames(result.Edges, "Foo.cs::Foo", graph.EdgeImplements)
+		assert.Equal(t, []string{"BaseClass"}, extends)
+		assert.Equal(t, []string{"IService"}, implements)
+
+		// Heuristic edges ride at the inferred tier, not resolved.
+		for _, ed := range result.Edges {
+			if ed.Kind == graph.EdgeExtends || ed.Kind == graph.EdgeImplements {
+				assert.Equal(t, graph.OriginASTInferred, ed.Origin)
+			}
+		}
+	})
+
+	t.Run("base resolved via local interface prescan", func(t *testing.T) {
+		// IThing breaks the I-prefix convention (it does, but we also
+		// confirm a same-file interface is honoured even by name): the
+		// prescan must classify Bar's base as an interface.
+		src := []byte(`interface IThing {}
+class Bar : IThing {}`)
+		result, err := e.Extract("Bar.cs", src)
+		require.NoError(t, err)
+
+		assert.Empty(t, edgeTargetNames(result.Edges, "Bar.cs::Bar", graph.EdgeExtends))
+		assert.Equal(t, []string{"IThing"},
+			edgeTargetNames(result.Edges, "Bar.cs::Bar", graph.EdgeImplements))
+	})
+
+	t.Run("prescan wins over name shape", func(t *testing.T) {
+		// Widget does not look like an interface (no I-prefix) but is
+		// declared as one in this file — the prescan must win, so it is
+		// implemented, not extended.
+		src := []byte(`interface Widget {}
+class Panel : Widget {}`)
+		result, err := e.Extract("Panel.cs", src)
+		require.NoError(t, err)
+
+		assert.Empty(t, edgeTargetNames(result.Edges, "Panel.cs::Panel", graph.EdgeExtends))
+		assert.Equal(t, []string{"Widget"},
+			edgeTargetNames(result.Edges, "Panel.cs::Panel", graph.EdgeImplements))
+	})
+
+	t.Run("struct implements only, never extends", func(t *testing.T) {
+		src := []byte(`struct S : IComparable {}`)
+		result, err := e.Extract("S.cs", src)
+		require.NoError(t, err)
+
+		assert.Empty(t, edgeTargetNames(result.Edges, "S.cs::S", graph.EdgeExtends))
+		assert.Equal(t, []string{"IComparable"},
+			edgeTargetNames(result.Edges, "S.cs::S", graph.EdgeImplements))
+	})
+
+	t.Run("generic interface strips type arguments", func(t *testing.T) {
+		src := []byte(`class L : IList<int> {}`)
+		result, err := e.Extract("L.cs", src)
+		require.NoError(t, err)
+
+		assert.Empty(t, edgeTargetNames(result.Edges, "L.cs::L", graph.EdgeExtends))
+		assert.Equal(t, []string{"IList"},
+			edgeTargetNames(result.Edges, "L.cs::L", graph.EdgeImplements))
+	})
+
+	t.Run("generic base class extends with stripped name", func(t *testing.T) {
+		src := []byte(`class C : Base<int>, IList<int> {}`)
+		result, err := e.Extract("C.cs", src)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"Base"},
+			edgeTargetNames(result.Edges, "C.cs::C", graph.EdgeExtends))
+		assert.Equal(t, []string{"IList"},
+			edgeTargetNames(result.Edges, "C.cs::C", graph.EdgeImplements))
+	})
+
+	t.Run("qualified base name reduced to simple name", func(t *testing.T) {
+		src := []byte(`class Outer : System.Object, ICloneable {}`)
+		result, err := e.Extract("Outer.cs", src)
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"Object"},
+			edgeTargetNames(result.Edges, "Outer.cs::Outer", graph.EdgeExtends))
+		assert.Equal(t, []string{"ICloneable"},
+			edgeTargetNames(result.Edges, "Outer.cs::Outer", graph.EdgeImplements))
+	})
+
+	t.Run("record extends base and implements interface", func(t *testing.T) {
+		src := []byte(`record Rec(int X) : Base(X), IThing {}`)
+		result, err := e.Extract("Rec.cs", src)
+		require.NoError(t, err)
+
+		// The primary_constructor_base_type Base(X) is always a base class.
+		assert.Equal(t, []string{"Base"},
+			edgeTargetNames(result.Edges, "Rec.cs::Rec", graph.EdgeExtends))
+		assert.Equal(t, []string{"IThing"},
+			edgeTargetNames(result.Edges, "Rec.cs::Rec", graph.EdgeImplements))
+	})
+
+	t.Run("record struct implements only", func(t *testing.T) {
+		src := []byte(`record struct RS : IFoo {}`)
+		result, err := e.Extract("RS.cs", src)
+		require.NoError(t, err)
+
+		assert.Empty(t, edgeTargetNames(result.Edges, "RS.cs::RS", graph.EdgeExtends))
+		assert.Equal(t, []string{"IFoo"},
+			edgeTargetNames(result.Edges, "RS.cs::RS", graph.EdgeImplements))
+	})
+}

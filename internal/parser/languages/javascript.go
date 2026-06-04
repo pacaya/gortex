@@ -76,7 +76,7 @@ func NewJavaScriptExtractor() *JavaScriptExtractor {
 	}
 }
 
-func (e *JavaScriptExtractor) Language() string     { return "javascript" }
+func (e *JavaScriptExtractor) Language() string { return "javascript" }
 func (e *JavaScriptExtractor) Extensions() []string {
 	return []string{".js", ".jsx", ".mjs", ".cjs"}
 }
@@ -289,9 +289,37 @@ func (e *JavaScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 			pubsubEvents = append(pubsubEvents, ev)
 		}
 	}
+	// WebSocket / EventSource real-time client channels.
+	pubsubEvents = append(pubsubEvents, detectJSRealtimeEvents(src)...)
 	emitPubsubEvents(pubsubEvents,
 		func(line int) string { return findEnclosingFunc(funcRanges, line) },
 		filePath, "javascript", result)
+
+	// SQL function call sites (Supabase/PostgREST .rpc('fn')).
+	emitSQLCallsiteEdges(src, "javascript",
+		func(line int) string { return findEnclosingFunc(funcRanges, line) },
+		filePath, result)
+
+	// --- React Native native-module bridge calls ---
+	rnVars := rnNativeModuleVars(src)
+	for _, c := range calls {
+		if !c.isMember {
+			continue
+		}
+		module := detectRNNativeModule(c.receiver, rnVars)
+		if module == "" {
+			continue
+		}
+		callerID := findEnclosingFunc(funcRanges, c.line)
+		if callerID == "" {
+			continue
+		}
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: callerID, To: rnNativePlaceholder(module, c.name),
+			Kind: graph.EdgeCalls, FilePath: filePath, Line: c.line,
+			Meta: map[string]any{"via": rnNativeVia, "rn_module": module, "rn_method": c.name},
+		})
+	}
 
 	// Test-runner classification (Mocha / Bun-test / Jest / Vitest /
 	// node:test / Playwright / Cypress). Stamped on the file node so

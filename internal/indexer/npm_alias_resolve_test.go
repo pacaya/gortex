@@ -113,6 +113,132 @@ func TestNpmAliasIndex_NilRootsYieldsNil(t *testing.T) {
 	assert.Nil(t, newNpmAliasIndex(map[string]string{"repo": ""}))
 }
 
+// TestParsePackageExports covers every `exports` shape the parser
+// recognises: string subpath targets, conditional-object targets
+// (`import` preferred over `default`), the `"."` root key, a bare
+// string `exports` collapsing to the root, a top-level conditional
+// object collapsing to the root, and a missing / non-`exports`
+// manifest yielding nil.
+func TestParsePackageExports(t *testing.T) {
+	t.Run("subpath string and conditional targets", func(t *testing.T) {
+		exp := parsePackageExports([]byte(`{
+  "name": "@acme/pkg",
+  "exports": {
+    ".": "./dist/index.js",
+    "./feature": "./dist/feature.js",
+    "./util": { "import": "./dist/util.mjs", "require": "./dist/util.cjs", "default": "./dist/util.js" },
+    "./only-default": { "default": "./dist/only.js" }
+  }
+}`))
+		require.NotNil(t, exp)
+		assert.Equal(t, "@acme/pkg", exp.name)
+		assert.Equal(t, "./dist/index.js", exp.subpaths["."])
+		assert.Equal(t, "./dist/feature.js", exp.subpaths["./feature"])
+		// `import` wins over `require` / `default`.
+		assert.Equal(t, "./dist/util.mjs", exp.subpaths["./util"])
+		// Falls back to `default` when `import` is absent.
+		assert.Equal(t, "./dist/only.js", exp.subpaths["./only-default"])
+	})
+
+	t.Run("bare string exports collapses to root", func(t *testing.T) {
+		exp := parsePackageExports([]byte(`{"name":"pkg","exports":"./index.js"}`))
+		require.NotNil(t, exp)
+		assert.Equal(t, "./index.js", exp.subpaths["."])
+	})
+
+	t.Run("top-level conditional object collapses to root", func(t *testing.T) {
+		exp := parsePackageExports([]byte(`{"name":"pkg","exports":{"import":"./esm.js","default":"./cjs.js"}}`))
+		require.NotNil(t, exp)
+		assert.Equal(t, "./esm.js", exp.subpaths["."])
+	})
+
+	t.Run("no exports field yields nil", func(t *testing.T) {
+		assert.Nil(t, parsePackageExports([]byte(`{"name":"pkg","main":"./index.js"}`)))
+		assert.Nil(t, parsePackageExports(nil))
+		assert.Nil(t, parsePackageExports([]byte(`not json`)))
+	})
+}
+
+// TestResolveExportsSubpath checks the subpath matcher: an exact key
+// wins, an empty sub-path resolves the `"."` root, and a `./*`
+// wildcard splices the captured tail into the target's own `*`. The
+// longest static prefix wins when several wildcards could match.
+func TestResolveExportsSubpath(t *testing.T) {
+	subpaths := map[string]string{
+		".":              "./dist/index.js",
+		"./feature":      "./dist/feature.js",
+		"./components/*": "./dist/components/*.js",
+		"./*":            "./dist/*.js",
+	}
+	cases := []struct {
+		name, subPath, want string
+	}{
+		{"root", "", "./dist/index.js"},
+		{"exact subpath", "feature", "./dist/feature.js"},
+		{"wildcard tail", "math", "./dist/math.js"},
+		{"longest-prefix wildcard wins", "components/Button", "./dist/components/Button.js"},
+		{"no match", "../escape", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, resolveExportsSubpath(subpaths, c.subPath))
+		})
+	}
+	assert.Equal(t, "", resolveExportsSubpath(nil, "feature"))
+}
+
+// TestNpmAliasIndex_ResolveExports drives the disk-backed resolver over
+// a package whose package.json declares an `exports` map: an import of
+// the package by name with a sub-path resolves through `exports` to the
+// mapped target file, the `"."` root resolves a bare package import,
+// and a `./*` wildcard splices the tail. A subpath the map does not
+// declare falls through (returns ""), and a package WITHOUT an
+// `exports` field is left untouched (no regression to bare-directory
+// resolution).
+func TestNpmAliasIndex_ResolveExports(t *testing.T) {
+	root := t.TempDir()
+	// The package itself lives at packages/ui; its files import it by
+	// its published name `@acme/ui`.
+	writePackageJSON(t, filepath.Join(root, "packages", "ui"), `{
+  "name": "@acme/ui",
+  "exports": {
+    ".": "./dist/index.js",
+    "./feature": "./dist/feature.js",
+    "./button": { "import": "./dist/button.mjs", "default": "./dist/button.js" },
+    "./components/*": "./dist/components/*.js"
+  }
+}`)
+	// A sibling package with no `exports` map — imports of it must not
+	// be rewritten through exports resolution.
+	writePackageJSON(t, filepath.Join(root, "packages", "plain"), `{
+  "name": "@acme/plain"
+}`)
+
+	idx := newNpmAliasIndex(map[string]string{"": root})
+	require.NotNil(t, idx)
+
+	caller := "packages/ui/src/widget.ts"
+	cases := []struct {
+		name      string
+		callerRel string
+		specifier string
+		want      string
+	}{
+		{"subpath maps to target file", caller, "@acme/ui/feature", "@acme/ui/dist/feature.js"},
+		{"conditional subpath prefers import", caller, "@acme/ui/button", "@acme/ui/dist/button.mjs"},
+		{"wildcard subpath splices the tail", caller, "@acme/ui/components/Card", "@acme/ui/dist/components/Card.js"},
+		{"root entry resolves a bare package import", caller, "@acme/ui", "@acme/ui/dist/index.js"},
+		{"undeclared subpath falls through", caller, "@acme/ui/missing", ""},
+		{"package without exports is untouched", "packages/plain/src/x.ts", "@acme/plain/sub", ""},
+		{"third-party package is untouched", caller, "react/jsx-runtime", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, idx.Resolve(c.callerRel, c.specifier))
+		})
+	}
+}
+
 // addPackageNode registers a KindPackage node with the given qualified
 // name — this is what CrossRepoResolver.resolveImport matches an
 // import path against (mirrors the existing cross-repo import tests).

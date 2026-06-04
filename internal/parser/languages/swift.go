@@ -164,6 +164,10 @@ func (e *SwiftExtractor) Extract(filePath string, src []byte) (*parser.Extractio
 		})
 	}
 
+	// Expo Modules native DSL (Name/Function/AsyncFunction) → synthetic
+	// JS-callable method nodes for the Expo bridge synthesizer.
+	emitExpoModuleNodes(src, filePath, "swift", fileID, result, seen)
+
 	return result, nil
 }
 
@@ -333,6 +337,9 @@ func (e *SwiftExtractor) emitFunction(m parser.QueryResult, filePath, fileID str
 		}
 		if doc != "" {
 			meta["doc"] = doc
+		}
+		if sel := swiftObjCSelector(def.Node, name, src); sel != "" {
+			meta["objc_selector"] = sel
 		}
 		result.Nodes = append(result.Nodes, &graph.Node{
 			ID: id, Kind: graph.KindMethod, Name: name,

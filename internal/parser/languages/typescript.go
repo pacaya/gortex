@@ -103,7 +103,8 @@ func NewTypeScriptExtractor() *TypeScriptExtractor {
 	}
 }
 
-func (e *TypeScriptExtractor) Language() string     { return "typescript" }
+func (e *TypeScriptExtractor) Language() string { return "typescript" }
+
 // .mts (ES module TS) and .cts (CommonJS TS) parse with the plain TS
 // grammar; grammarFor only selects TSX for the .tsx suffix.
 func (e *TypeScriptExtractor) Extensions() []string {
@@ -409,9 +410,40 @@ func (e *TypeScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 			pubsubEvents = append(pubsubEvents, ev)
 		}
 	}
+	// WebSocket / EventSource real-time client channels.
+	pubsubEvents = append(pubsubEvents, detectJSRealtimeEvents(src)...)
 	emitPubsubEvents(pubsubEvents,
 		func(line int) string { return findEnclosingFunc(funcRanges, line) },
 		filePath, "typescript", result)
+
+	// SQL function call sites (Supabase/PostgREST .rpc('fn')).
+	emitSQLCallsiteEdges(src, "typescript",
+		func(line int) string { return findEnclosingFunc(funcRanges, line) },
+		filePath, result)
+
+	// --- React Native native-module bridge calls ---
+	rnVars := rnNativeModuleVars(src)
+	for _, c := range calls {
+		if !c.isMember {
+			continue
+		}
+		module := detectRNNativeModule(c.receiver, rnVars)
+		if module == "" {
+			continue
+		}
+		callerID := findEnclosingFunc(funcRanges, c.line)
+		if callerID == "" {
+			continue
+		}
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: callerID, To: rnNativePlaceholder(module, c.method),
+			Kind: graph.EdgeCalls, FilePath: filePath, Line: c.line,
+			Meta: map[string]any{"via": rnNativeVia, "rn_module": module, "rn_method": c.method},
+		})
+	}
+
+	// --- React Native Fabric / Codegen component spec ---
+	emitFabricComponentNodes(src, filePath, "typescript", fileID, result)
 
 	// Test-runner classification (Mocha / Bun-test / Jest / Vitest /
 	// node:test / Playwright / Cypress). Stamped on the file node so

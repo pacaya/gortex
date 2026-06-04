@@ -137,8 +137,34 @@ func sniffAmbiguous(ext string, content []byte) (string, bool) {
 		if hasMathematicaMarkers(probe) {
 			return "mathematica", true
 		}
+	case ".xml":
+		// A MyBatis mapper / Spring beans XML routes to its specific
+		// extractor; every other .xml keeps the generic "xml" default.
+		if hasMyBatisMapperMarkers(probe) {
+			return "mybatis", true
+		}
+		if hasSpringBeansMarkers(probe) {
+			return "spring", true
+		}
 	}
 	return "", false
+}
+
+// hasMyBatisMapperMarkers reports whether the content is a MyBatis mapper
+// XML document — a `<mapper` root element or the MyBatis mapper DTD. Kept
+// in package parser (inlined rather than calling languages.IsMyBatisMapper)
+// to avoid an import cycle.
+func hasMyBatisMapperMarkers(b []byte) bool {
+	return bytes.Contains(b, []byte("<mapper")) || bytes.Contains(b, []byte("mybatis.org//DTD Mapper"))
+}
+
+// hasSpringBeansMarkers reports whether the content is a Spring beans XML
+// document — the Spring beans schema namespace, or a `<beans>`/`<bean>`
+// DTD-style document. Inlined in package parser to avoid an import cycle
+// with languages.IsSpringBeansXML.
+func hasSpringBeansMarkers(b []byte) bool {
+	return bytes.Contains(b, []byte("springframework.org/schema/beans")) ||
+		(bytes.Contains(b, []byte("<beans")) && bytes.Contains(b, []byte("<bean")))
 }
 
 // hasObjCMarkers reports whether the content carries a syntax

@@ -92,6 +92,18 @@ type kotlinDeferredProperty struct {
 	endLine     int
 }
 
+// kotlinLambdaScope records the parameters bound by one lambda literal
+// over the line span of its body. A use of such a parameter inside the
+// span is locally bound and must not be resolved against the outer type
+// environment (which would mis-attribute a `receiver_type` to an
+// unrelated outer variable / type of the same name). Implicit `it` is
+// always in scope inside a lambda that declares no explicit params.
+type kotlinLambdaScope struct {
+	params    map[string]bool
+	startLine int
+	endLine   int
+}
+
 func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.ExtractionResult, error) {
 	tree, err := parser.ParseFile(src, e.lang)
 	if err != nil {
@@ -228,6 +240,32 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 		})
 	}
 
+	// Companion-object properties (`companion object { const val NAME; val x }`)
+	// are statically accessible on the enclosing TYPE (`Foo.NAME`). Emit
+	// them as members of that type so the constant / property is
+	// discoverable, mirroring the companion-function attribution above.
+	for _, p := range props {
+		if p.defNode == nil {
+			continue
+		}
+		owner := kotlinResolveMemberOwner(p.defNode, src)
+		if !owner.companion || owner.name == "" {
+			continue
+		}
+		emitKotlinCompanionProperty(p, owner, filePath, src, result, seen)
+	}
+
+	// Type-name set for static (companion-object) dispatch. A call whose
+	// receiver names a class / object — or a named-companion alias
+	// (`Type.Companion`) — is a static access on the TYPE; attribute the
+	// receiver_type to the type name itself so it resolves to the
+	// companion's member (emitted with Meta["receiver"] = <enclosing type>).
+	typeNames := kotlinCollectTypeNames(result)
+
+	// Lambda-parameter scopes: receivers that name a lambda param are
+	// locally bound and must not pick up an outer receiver_type.
+	lambdaScopes := collectKotlinLambdaScopes(root, src)
+
 	// Resolve calls against funcRanges + tenv.
 	funcRanges := buildFuncRanges(result)
 	for _, c := range calls {
@@ -239,10 +277,14 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 			From: callerID, To: "unresolved::*." + c.name,
 			Kind: graph.EdgeCalls, FilePath: filePath, Line: c.line,
 		}
-		if c.isMember {
-			if recvType, ok := tenv[c.receiver]; ok {
-				edge.Meta = map[string]any{"receiver_type": recvType}
-			} else if strings.Contains(c.receiver, ".") || strings.Contains(c.receiver, "(") {
+		if c.isMember && !kotlinReceiverIsLambdaParam(lambdaScopes, c.receiver, c.line) {
+			switch {
+			case tenv[c.receiver] != "":
+				edge.Meta = map[string]any{"receiver_type": tenv[c.receiver]}
+			case typeNames[c.receiver]:
+				// Static dispatch: `Foo.create()` / `Foo.Factory.thing()`.
+				edge.Meta = map[string]any{"receiver_type": c.receiver}
+			case strings.Contains(c.receiver, ".") || strings.Contains(c.receiver, "("):
 				if chainType := resolveChainType(c.receiver, tenv, result); chainType != "" {
 					edge.Meta = map[string]any{"receiver_type": chainType}
 				}
@@ -250,6 +292,10 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 		}
 		result.Edges = append(result.Edges, edge)
 	}
+
+	// Expo Modules native DSL (Name/Function/AsyncFunction) → synthetic
+	// JS-callable method nodes for the Expo bridge synthesizer.
+	emitExpoModuleNodes(src, filePath, "kotlin", fileID, result, seen)
 
 	return result, nil
 }
@@ -385,7 +431,8 @@ func (e *KotlinExtractor) emitFunction(m parser.QueryResult, filePath, fileID st
 	doc := ExtractDocAbove(src, def.StartLine, DocLangBlockStar)
 	visibility := kotlinVisibility(def.Node, src)
 
-	owner, ownerKind := kotlinDirectMemberOwner(def.Node, src)
+	ownerInfo := kotlinResolveMemberOwner(def.Node, src)
+	owner, ownerKind := ownerInfo.name, ownerInfo.kind
 	if ownerKind != "" {
 		id := filePath + "::" + owner + "." + name
 		if seen[id] {
@@ -398,6 +445,17 @@ func (e *KotlinExtractor) emitFunction(m parser.QueryResult, filePath, fileID st
 		meta := map[string]any{
 			"receiver":   owner,
 			"visibility": visibility,
+		}
+		// Companion-object members dispatch on the TYPE (`Foo.create()`),
+		// so the method is attributed to the enclosing class and flagged
+		// static. Without this an agent can't see that the companion's
+		// `create` is reachable via the class name.
+		if ownerInfo.companion {
+			meta["static"] = true
+			meta["companion"] = true
+			if ownerInfo.companionName != "" {
+				meta["companion_name"] = ownerInfo.companionName
+			}
 		}
 		if doc != "" {
 			meta["doc"] = doc
@@ -421,6 +479,41 @@ func (e *KotlinExtractor) emitFunction(m parser.QueryResult, filePath, fileID st
 		emitKotlinAnnotationEdges(kotlinCollectAnnotations(def.Node, src), id, filePath, result, annotationSeen)
 		if body := kotlinFunctionBody(def.Node); body != nil {
 			emitKotlinAsyncSpawns(id, body, src, filePath, result)
+		}
+
+		// Named companion: `companion object Factory { fun thing() }` is
+		// callable as both `Foo.thing()` (handled above via the enclosing
+		// owner) and `Foo.Factory.thing()`. Emit an alias method whose
+		// receiver is `Foo.Factory` so the qualified call resolves too.
+		if ownerInfo.companion && ownerInfo.companionName != "" {
+			aliasRecv := owner + "." + ownerInfo.companionName
+			aliasID := filePath + "::" + aliasRecv + "." + name
+			if !seen[aliasID] {
+				seen[aliasID] = true
+				aliasMeta := map[string]any{
+					"receiver":        aliasRecv,
+					"visibility":      visibility,
+					"static":          true,
+					"companion":       true,
+					"companion_name":  ownerInfo.companionName,
+					"companion_alias": true,
+				}
+				if doc != "" {
+					aliasMeta["doc"] = doc
+				}
+				if rt := extractKotlinReturnType(def.Node, src); rt != "" {
+					aliasMeta["return_type"] = rt
+				}
+				result.Nodes = append(result.Nodes, &graph.Node{
+					ID: aliasID, Kind: graph.KindMethod, Name: name,
+					FilePath: filePath, StartLine: startLine1, EndLine: endLine1,
+					Language: "kotlin",
+					Meta:     aliasMeta,
+				})
+				result.Edges = append(result.Edges, &graph.Edge{
+					From: aliasID, To: ownerID, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: startLine1,
+				})
+			}
 		}
 		return
 	}
@@ -568,33 +661,261 @@ func (e *KotlinExtractor) emitImport(m parser.QueryResult, filePath, fileID stri
 
 // --- Helpers --------------------------------------------------------
 
-// kotlinDirectMemberOwner returns the (name, container kind) of the
-// nearest class_declaration / object_declaration whose body directly
-// contains fn. Returns ("", "") for free functions and nested
-// functions — preserving the legacy nested-query semantics.
-func kotlinDirectMemberOwner(fn *sitter.Node, src []byte) (string, string) {
+// kotlinMemberOwner describes the container a declaration belongs to.
+// For a plain class/object method, name is the type name and
+// companionName is empty. For a companion-object member, name is the
+// ENCLOSING class (so `Foo.create()` resolves to the companion's
+// create) and companionName carries the companion's declared name —
+// empty for an anonymous `companion object`, the identifier for a named
+// one like `companion object Factory`.
+type kotlinMemberOwner struct {
+	name          string // enclosing type/object name
+	kind          string // "class_declaration" | "object_declaration"
+	companion     bool   // member lives in a companion object
+	companionName string // declared companion name, "" if anonymous
+}
+
+// kotlinResolveMemberOwner walks up from a declaration to find its
+// container. It transparently sees through a companion_object wrapper:
+// `class Foo { companion object Factory { fun create() {} } }` resolves
+// the owner of create to Foo while recording companion=true and
+// companionName="Factory". This is what makes `Foo.create()` (static
+// dispatch on the type) discoverable.
+func kotlinResolveMemberOwner(fn *sitter.Node, src []byte) kotlinMemberOwner {
 	if fn == nil {
-		return "", ""
+		return kotlinMemberOwner{}
 	}
 	parent := fn.Parent()
 	if parent == nil || parent.Type() != "class_body" {
-		return "", ""
+		return kotlinMemberOwner{}
 	}
 	grand := parent.Parent()
 	if grand == nil {
-		return "", ""
+		return kotlinMemberOwner{}
 	}
-	gtype := grand.Type()
-	if gtype != "class_declaration" && gtype != "object_declaration" {
-		return "", ""
-	}
-	for i := 0; i < int(grand.ChildCount()); i++ {
-		ch := grand.Child(i)
-		if ch != nil && ch.Type() == "type_identifier" {
-			return ch.Content(src), gtype
+
+	// Companion-object member: `class Foo { companion object [Name] { ... } }`.
+	// The grandparent is the companion_object; its enclosing class is two
+	// more levels up (class_body → class_declaration / object_declaration).
+	if grand.Type() == "companion_object" {
+		companionName := kotlinTypeIdentifierChild(grand, src)
+		outerBody := grand.Parent()
+		if outerBody == nil || outerBody.Type() != "class_body" {
+			return kotlinMemberOwner{}
+		}
+		outer := outerBody.Parent()
+		if outer == nil {
+			return kotlinMemberOwner{}
+		}
+		otype := outer.Type()
+		if otype != "class_declaration" && otype != "object_declaration" {
+			return kotlinMemberOwner{}
+		}
+		name := kotlinTypeIdentifierChild(outer, src)
+		if name == "" {
+			return kotlinMemberOwner{}
+		}
+		return kotlinMemberOwner{
+			name:          name,
+			kind:          otype,
+			companion:     true,
+			companionName: companionName,
 		}
 	}
-	return "", ""
+
+	gtype := grand.Type()
+	if gtype != "class_declaration" && gtype != "object_declaration" {
+		return kotlinMemberOwner{}
+	}
+	name := kotlinTypeIdentifierChild(grand, src)
+	if name == "" {
+		return kotlinMemberOwner{}
+	}
+	return kotlinMemberOwner{name: name, kind: gtype}
+}
+
+// kotlinTypeIdentifierChild returns the first type_identifier child of
+// node (the declared name of a class/object/companion), or "" when the
+// node is anonymous.
+func kotlinTypeIdentifierChild(node *sitter.Node, src []byte) string {
+	if node == nil {
+		return ""
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		ch := node.Child(i)
+		if ch != nil && ch.Type() == "type_identifier" {
+			return ch.Content(src)
+		}
+	}
+	return ""
+}
+
+// kotlinCollectTypeNames returns the set of receiver strings that name a
+// type for the purpose of static (companion-object) dispatch: every
+// class / object / interface name, plus the `Type.Companion` aliases
+// emitted for named companion objects (so `Bar.Factory.thing()` lands on
+// the alias method's receiver). The companion alias receivers are read
+// back from the alias method nodes' Meta["receiver"].
+func kotlinCollectTypeNames(result *parser.ExtractionResult) map[string]bool {
+	names := map[string]bool{}
+	for _, n := range result.Nodes {
+		switch n.Kind {
+		case graph.KindType, graph.KindInterface:
+			if n.Name != "" {
+				names[n.Name] = true
+			}
+		case graph.KindMethod:
+			if n.Meta == nil {
+				continue
+			}
+			if alias, _ := n.Meta["companion_alias"].(bool); !alias {
+				continue
+			}
+			if recv, _ := n.Meta["receiver"].(string); recv != "" {
+				names[recv] = true
+			}
+		}
+	}
+	return names
+}
+
+// emitKotlinCompanionProperty emits one member node for a property
+// declared inside a companion object, attributed to the enclosing type
+// so `Foo.NAME` is discoverable. A `const`-modified property is a
+// KindConstant; a plain `val`/`var` is a KindField. Both carry
+// Meta["receiver"] = <enclosing type> and Meta["static"] = true. For a
+// named companion an alias member (`Type.Companion.NAME`) is added too.
+func emitKotlinCompanionProperty(p kotlinDeferredProperty, owner kotlinMemberOwner, filePath string, src []byte, result *parser.ExtractionResult, seen map[string]bool) {
+	kind := graph.KindField
+	if kotlinPropertyIsConst(p.defNode, src) {
+		kind = graph.KindConstant
+	}
+	emit := func(recv string) {
+		id := filePath + "::" + recv + "." + p.name
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		meta := map[string]any{
+			"receiver":  recv,
+			"static":    true,
+			"companion": true,
+		}
+		if owner.companionName != "" {
+			meta["companion_name"] = owner.companionName
+		}
+		ownerID := filePath + "::" + owner.name
+		result.Nodes = append(result.Nodes, &graph.Node{
+			ID: id, Kind: kind, Name: p.name,
+			FilePath: filePath, StartLine: p.line, EndLine: p.endLine,
+			Language: "kotlin",
+			Meta:     meta,
+		})
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: id, To: ownerID, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: p.line,
+		})
+	}
+	emit(owner.name)
+	if owner.companionName != "" {
+		emit(owner.name + "." + owner.companionName)
+	}
+}
+
+// kotlinPropertyIsConst reports whether a property_declaration carries a
+// `const` modifier.
+func kotlinPropertyIsConst(decl *sitter.Node, src []byte) bool {
+	if decl == nil {
+		return false
+	}
+	for i := 0; i < int(decl.ChildCount()); i++ {
+		c := decl.Child(i)
+		if c == nil || c.Type() != "modifiers" {
+			continue
+		}
+		for j := 0; j < int(c.ChildCount()); j++ {
+			tok := c.Child(j)
+			if tok == nil {
+				continue
+			}
+			if strings.TrimSpace(tok.Content(src)) == "const" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// collectKotlinLambdaScopes walks the tree for lambda_literal nodes and
+// records, for each, the parameter names it binds plus the line span of
+// its body. Explicit params come from the `lambda_parameters` child
+// (`{ a, b -> ... }`); a lambda with no declared params implicitly binds
+// `it` (`list.forEach { println(it) }`). These scopes let the call
+// resolver recognise that a member call whose receiver is a lambda
+// parameter is locally bound, so it is not mis-resolved against the
+// outer type environment.
+func collectKotlinLambdaScopes(root *sitter.Node, src []byte) []kotlinLambdaScope {
+	var scopes []kotlinLambdaScope
+	walkNodes(root, func(n *sitter.Node) {
+		if n == nil || n.Type() != "lambda_literal" {
+			return
+		}
+		params := map[string]bool{}
+		hasExplicit := false
+		for i := 0; i < int(n.ChildCount()); i++ {
+			ch := n.Child(i)
+			if ch == nil || ch.Type() != "lambda_parameters" {
+				continue
+			}
+			hasExplicit = true
+			// lambda_parameters → variable_declaration → simple_identifier,
+			// possibly several (destructuring / multi-param).
+			walkNodes(ch, func(p *sitter.Node) {
+				if p != nil && p.Type() == "simple_identifier" {
+					params[p.Content(src)] = true
+				}
+			})
+		}
+		if !hasExplicit {
+			// No declared params: the implicit single parameter `it`.
+			params["it"] = true
+		}
+		if len(params) == 0 {
+			return
+		}
+		scopes = append(scopes, kotlinLambdaScope{
+			params:    params,
+			startLine: int(n.StartPoint().Row) + 1,
+			endLine:   int(n.EndPoint().Row) + 1,
+		})
+	})
+	return scopes
+}
+
+// kotlinReceiverIsLambdaParam reports whether the head identifier of a
+// receiver expression names a lambda parameter that is in scope at the
+// call's line. The head is the first dotted segment, so both `it` and
+// `item` (in `item.x`) are caught.
+func kotlinReceiverIsLambdaParam(scopes []kotlinLambdaScope, receiver string, line int) bool {
+	head := receiver
+	if idx := strings.IndexByte(head, '.'); idx >= 0 {
+		head = head[:idx]
+	}
+	if idx := strings.IndexByte(head, '('); idx >= 0 {
+		head = head[:idx]
+	}
+	head = strings.TrimSpace(head)
+	if head == "" {
+		return false
+	}
+	for _, s := range scopes {
+		if line < s.startLine || line > s.endLine {
+			continue
+		}
+		if s.params[head] {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeKotlinTypeName strips generics and nullable markers from a Kotlin type name.

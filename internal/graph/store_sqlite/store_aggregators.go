@@ -391,6 +391,26 @@ func (s *Store) EdgesByKinds(kinds []graph.EdgeKind) iter.Seq[*graph.Edge] {
 	}
 }
 
+// externalCallTargetPredicate selects edges whose target is an
+// external-package terminal (dep:: / stdlib:: / external::, including the
+// per-repo-prefixed stdlib form) or an already-materialised
+// external-call:: node. Shared verbatim by ExternalCallCandidateEdges and
+// the edges_external partial index (schema.go) so SQLite matches the
+// partial index for the query — keep the two identical.
+const externalCallTargetPredicate = `(to_id GLOB 'dep::*' OR to_id GLOB 'external::*' OR to_id GLOB 'stdlib::*' OR to_id GLOB '*::stdlib::*' OR to_id GLOB 'external-call::*')`
+
+// ExternalCallCandidateEdges implements graph.ExternalCallCandidates: it
+// returns only the call / reference edges the external-call synthesizer
+// might act on, selected server-side so the whole call-edge table never
+// crosses into Go just to be prefix-filtered. The GLOB predicate is
+// served by the edges_external partial index.
+func (s *Store) ExternalCallCandidateEdges() []*graph.Edge {
+	q := `SELECT ` + lookupEdgeCols + ` FROM edges
+		WHERE kind IN ('calls','references') AND ` + externalCallTargetPredicate + `
+		ORDER BY id`
+	return s.queryEdgesSQL(q)
+}
+
 // NodesByKinds returns every node whose kind is in the supplied set.
 func (s *Store) NodesByKinds(kinds []graph.NodeKind) []*graph.Node {
 	_, args := aggDedupeNodeKinds(kinds)

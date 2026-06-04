@@ -468,24 +468,17 @@ func (mi *MultiIndexer) RunGlobalGraphPasses(ctx context.Context) {
 			idx.cloneIndex.Rebuild(mi.graph, idx.repoPrefix)
 		}
 	}
-	// gRPC stub-call resolution. After InferImplements (the
-	// interface-satisfaction fallback signal) and before
-	// DetectCrossRepoEdges so a cross-repo gRPC call gets its parallel
-	// cross_repo_calls edge.
-	reporter.Report("gRPC stub resolution (global)", 0, 0)
-	if grpcResolved := resolver.ResolveGRPCStubCalls(mi.graph); grpcResolved > 0 {
-		mi.logger.Info("gRPC stub calls resolved (global)",
-			zap.Int("edges", grpcResolved),
-		)
-	}
-	// Temporal stub-call resolution mirrors the gRPC staging — Java
-	// interface→impl propagation needs EdgeImplements already
-	// materialised; cross-repo workflow→activity dispatch then picks
-	// up its parallel cross_repo_calls edge below.
-	reporter.Report("Temporal stub resolution (global)", 0, 0)
-	if temporalResolved := resolver.ResolveTemporalCalls(mi.graph); temporalResolved > 0 {
-		mi.logger.Info("Temporal stub calls resolved (global)",
-			zap.Int("edges", temporalResolved),
+	// Framework dynamic-dispatch synthesis (gRPC stubs, Temporal
+	// workflow→activity, in-process / native event channels, native
+	// bridges). After InferImplements/InferOverrides (the
+	// interface-satisfaction signals) and before DetectCrossRepoEdges so
+	// a cross-repo synthesized call gets its parallel cross_repo_calls
+	// edge.
+	reporter.Report("framework dispatch synthesis (global)", 0, 0)
+	if rep := resolver.RunFrameworkSynthesizers(mi.graph); rep.Total > 0 {
+		mi.logger.Info("framework dispatch calls synthesized (global)",
+			zap.Int("edges", rep.Total),
+			zap.Any("per_synthesizer", rep.Per),
 		)
 	}
 	// External-call placeholder synthesis (opt-in). Runs after the

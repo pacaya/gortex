@@ -13,7 +13,15 @@ import (
 
 // HTTPExtractor detects HTTP route provider and consumer patterns across
 // multiple languages using regex matching on source text.
-type HTTPExtractor struct{}
+type HTTPExtractor struct {
+	// ClientAliases are project-defined wrapped HTTP-client function
+	// names (e.g. "apiGet", "apiPost", "client.request"). Calls to any
+	// of these are treated as HTTP consumer contracts even though they
+	// don't match the built-in fetch/axios heuristics. Empty disables
+	// the alias pass. Sourced from index.http_client_aliases. See
+	// detectClientAliasConsumers for the supported call shapes.
+	ClientAliases []string
+}
 
 var _ Extractor = (*HTTPExtractor)(nil)
 
@@ -608,7 +616,14 @@ func (h *HTTPExtractor) extract(
 ) []Contract {
 	lang := detectLanguage(filePath)
 	if markers, ok := httpPrefilterMarkers[lang]; ok && !srcHasAnyMarker(src, markers) {
-		return nil
+		// A configured client-alias call (e.g. apiGet) carries none of
+		// the fetch/axios/app. markers, so the prefilter would skip the
+		// file and the alias pass would never run. Keep the file alive
+		// when it mentions an alias name; the alias pass below is the
+		// only work that will then fire.
+		if !srcMentionsAnyAlias(src, h.ClientAliases) {
+			return nil
+		}
 	}
 
 	text := string(src)
@@ -775,6 +790,15 @@ func (h *HTTPExtractor) extract(
 
 			out = append(out, c)
 		}
+	}
+
+	// Configurable HTTP-client wrapper aliases. Calls to a
+	// project-named wrapper (e.g. apiGet('/users')) become consumer
+	// contracts even though no built-in fetch/axios pattern matched.
+	// Scoped to the TS/JS family — the alias mechanism mirrors the
+	// fetch/axios consumer heuristics, which are TS/JS only.
+	if len(h.ClientAliases) > 0 && (lang == "typescript" || lang == "javascript") {
+		out = append(out, h.detectClientAliasConsumers(filePath, text, lines, fileNodes, lang, tree)...)
 	}
 
 	return out

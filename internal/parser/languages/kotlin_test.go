@@ -443,3 +443,199 @@ internal fun helper() {}
 		t.Fatalf("helper.vis = %q", helper.Meta["visibility"])
 	}
 }
+
+// kotlinCallEdgeTo returns the first EdgeCalls whose target ends in the
+// given method name. Mirrors the lookup the type-env tests use.
+func kotlinCallEdgeTo(result *parser.ExtractionResult, method string) *graph.Edge {
+	for _, c := range edgesOfKind(result.Edges, graph.EdgeCalls) {
+		if strings.HasSuffix(c.To, "."+method) {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestKotlinExtractor_CompanionObject_AnonymousStaticDispatch(t *testing.T) {
+	src := []byte(`class Foo {
+    companion object {
+        fun create(): Foo {
+            return Foo()
+        }
+    }
+}
+
+fun main() {
+    Foo.create()
+}
+`)
+	e := NewKotlinExtractor()
+	result, err := e.Extract("Foo.kt", src)
+	require.NoError(t, err)
+
+	byID := map[string]*graph.Node{}
+	for _, n := range result.Nodes {
+		byID[n.ID] = n
+	}
+
+	// The companion function is attributed to the enclosing class Foo.
+	create := byID["Foo.kt::Foo.create"]
+	require.NotNil(t, create, "companion create should be a member of Foo")
+	assert.Equal(t, graph.KindMethod, create.Kind)
+	assert.Equal(t, "Foo", create.Meta["receiver"])
+	assert.Equal(t, true, create.Meta["static"])
+	assert.Equal(t, true, create.Meta["companion"])
+
+	// EdgeMemberOf should point the method at Foo.
+	var memberOf bool
+	for _, ed := range edgesOfKind(result.Edges, graph.EdgeMemberOf) {
+		if ed.From == "Foo.kt::Foo.create" && ed.To == "Foo.kt::Foo" {
+			memberOf = true
+		}
+	}
+	assert.True(t, memberOf, "expected create -> Foo member_of edge")
+
+	// The Foo.create() call carries receiver_type=Foo so the resolver
+	// can land it on the companion's create method.
+	callEdge := kotlinCallEdgeTo(result, "create")
+	require.NotNil(t, callEdge, "expected a call edge to create")
+	require.NotNil(t, callEdge.Meta, "expected receiver_type meta on Foo.create() call")
+	assert.Equal(t, "Foo", callEdge.Meta["receiver_type"])
+}
+
+func TestKotlinExtractor_CompanionObject_NamedStaticDispatch(t *testing.T) {
+	src := []byte(`class Bar {
+    companion object Factory {
+        @JvmStatic
+        fun thing(): Bar = Bar()
+    }
+}
+
+fun main() {
+    Bar.thing()
+    Bar.Factory.thing()
+}
+`)
+	e := NewKotlinExtractor()
+	result, err := e.Extract("Bar.kt", src)
+	require.NoError(t, err)
+
+	byID := map[string]*graph.Node{}
+	for _, n := range result.Nodes {
+		byID[n.ID] = n
+	}
+
+	// Both the type-receiver method (Bar.thing) and the named-companion
+	// alias (Bar.Factory.thing) exist.
+	barThing := byID["Bar.kt::Bar.thing"]
+	require.NotNil(t, barThing, "expected Bar.thing member")
+	assert.Equal(t, "Bar", barThing.Meta["receiver"])
+	assert.Equal(t, "Factory", barThing.Meta["companion_name"])
+
+	aliasThing := byID["Bar.kt::Bar.Factory.thing"]
+	require.NotNil(t, aliasThing, "expected Bar.Factory.thing alias member")
+	assert.Equal(t, "Bar.Factory", aliasThing.Meta["receiver"])
+	assert.Equal(t, true, aliasThing.Meta["companion_alias"])
+
+	// Bar.thing() resolves via receiver_type=Bar; Bar.Factory.thing()
+	// resolves via receiver_type=Bar.Factory.
+	var sawBar, sawFactory bool
+	for _, c := range edgesOfKind(result.Edges, graph.EdgeCalls) {
+		if !strings.HasSuffix(c.To, ".thing") || c.Meta == nil {
+			continue
+		}
+		switch c.Meta["receiver_type"] {
+		case "Bar":
+			sawBar = true
+		case "Bar.Factory":
+			sawFactory = true
+		}
+	}
+	assert.True(t, sawBar, "expected Bar.thing() call with receiver_type=Bar")
+	assert.True(t, sawFactory, "expected Bar.Factory.thing() call with receiver_type=Bar.Factory")
+}
+
+func TestKotlinExtractor_CompanionObject_ConstProperty(t *testing.T) {
+	src := []byte(`class Config {
+    companion object {
+        const val NAME = "config"
+        val version = "1.0"
+    }
+}
+`)
+	e := NewKotlinExtractor()
+	result, err := e.Extract("Config.kt", src)
+	require.NoError(t, err)
+
+	byID := map[string]*graph.Node{}
+	for _, n := range result.Nodes {
+		byID[n.ID] = n
+	}
+
+	name := byID["Config.kt::Config.NAME"]
+	require.NotNil(t, name, "companion const should be a member of Config")
+	assert.Equal(t, graph.KindConstant, name.Kind)
+	assert.Equal(t, "Config", name.Meta["receiver"])
+	assert.Equal(t, true, name.Meta["static"])
+
+	version := byID["Config.kt::Config.version"]
+	require.NotNil(t, version, "companion val should be a member of Config")
+	assert.Equal(t, graph.KindField, version.Kind)
+	assert.Equal(t, "Config", version.Meta["receiver"])
+
+	// Companion props must not be emitted as top-level variables.
+	for _, n := range nodesOfKind(result.Nodes, graph.KindVariable) {
+		assert.NotEqual(t, "NAME", n.Name)
+		assert.NotEqual(t, "version", n.Name)
+	}
+}
+
+func TestKotlinExtractor_LambdaParam_NotMisresolved(t *testing.T) {
+	// `item` is also the name of a top-level value of a known type;
+	// inside the lambda it is a different, locally-bound parameter. The
+	// lambda use of item.toLong() must NOT pick up the outer item's type.
+	src := []byte(`class Widget {
+    fun render() {}
+}
+
+fun process(list: List<Int>) {
+    val item = Widget()
+    list.map { item -> item.toLong() }
+}
+`)
+	e := NewKotlinExtractor()
+	result, err := e.Extract("app.kt", src)
+	require.NoError(t, err)
+
+	toLong := kotlinCallEdgeTo(result, "toLong")
+	require.NotNil(t, toLong, "expected a call edge to toLong")
+	// The lambda parameter shadows the outer `item`, so no outer
+	// receiver_type (Widget) may be attached.
+	if toLong.Meta != nil {
+		assert.Nil(t, toLong.Meta["receiver_type"],
+			"lambda-param receiver must not be resolved against the outer type env")
+	}
+}
+
+func TestKotlinExtractor_LambdaImplicitIt_NotMisresolved(t *testing.T) {
+	// A top-level `it` of a known type exists; the implicit lambda `it`
+	// must shadow it inside `forEach { it.compute() }`.
+	src := []byte(`class Engine {
+    fun compute() {}
+}
+
+fun run(list: List<Int>) {
+    val it = Engine()
+    list.forEach { it.compute() }
+}
+`)
+	e := NewKotlinExtractor()
+	result, err := e.Extract("run.kt", src)
+	require.NoError(t, err)
+
+	compute := kotlinCallEdgeTo(result, "compute")
+	require.NotNil(t, compute, "expected a call edge to compute")
+	if compute.Meta != nil {
+		assert.Nil(t, compute.Meta["receiver_type"],
+			"implicit lambda `it` must not be resolved against the outer type env")
+	}
+}

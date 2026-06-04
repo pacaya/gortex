@@ -262,6 +262,11 @@ func (e *PythonExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 		func(line int) string { return findEnclosingFunc(funcRanges, line) },
 		filePath, "python", result)
 
+	// SQL function call sites (Supabase .rpc('fn'), SQLAlchemy func.fn()).
+	emitSQLCallsiteEdges(src, "python",
+		func(line int) string { return findEnclosingFunc(funcRanges, line) },
+		filePath, result)
+
 	MaybeEnrichDatabricks(filePath, fileID, src, result)
 
 	return result, nil

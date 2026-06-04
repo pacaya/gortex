@@ -14,5 +14,5 @@ func (idx *Indexer) externalCallSynthesisEnabled() bool {
 	if v := os.Getenv("GORTEX_SYNTH_EXTERNAL_CALLS"); v != "" {
 		return v == "1" || strings.EqualFold(v, "true")
 	}
-	return idx.config.SynthesizeExternalCalls
+	return idx.config.ExternalCallSynthesisEnabledOrDefault()
 }
