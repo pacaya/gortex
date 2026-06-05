@@ -56,3 +56,62 @@ def downgrade():
 		require.NotEqual(t, "downgrade", d.Name, "Alembic downgrade() must not be flagged dead")
 	}
 }
+
+// TestIndex_JavaDeadCodeAndEntryPoints is the end-to-end parity check:
+// after indexing a Spring controller, dead-code must (a) flag an
+// uncalled private method — which the old name-based heuristic could
+// never do for Java — while (b) leaving public API and framework
+// entry points alone.
+func TestIndex_JavaDeadCodeAndEntryPoints(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "UserController.java"), `package com.example.web;
+
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@RestController
+public class UserController {
+
+    @GetMapping("/users")
+    public String listUsers() {
+        return "ok";
+    }
+
+    private String deadHelper() {
+        return "never called";
+    }
+
+    public static void main(String[] args) {
+        new UserController();
+    }
+}
+`)
+	g := graph.New()
+	reg := parser.NewRegistry()
+	reg.Register(languages.NewJavaExtractor())
+	idx := New(g, reg, config.Default().Index, zap.NewNop())
+	_, err := idx.Index(dir)
+	require.NoError(t, err)
+
+	byName := map[string]*graph.Node{}
+	for _, n := range g.AllNodes() {
+		if n.Kind == graph.KindMethod || n.Kind == graph.KindType {
+			byName[n.Name] = n
+		}
+	}
+
+	// Framework entry points are stamped by entrypoints.Detect during indexing.
+	require.NotNil(t, byName["UserController"], "controller type must be indexed")
+	require.Equal(t, true, byName["UserController"].Meta["entry_point"], "@RestController is an entry point")
+	require.Equal(t, "spring:controller", byName["UserController"].Meta["entry_point_kind"])
+	require.NotNil(t, byName["listUsers"], "handler must be indexed")
+	require.Equal(t, true, byName["listUsers"].Meta["entry_point"], "@GetMapping handler is an entry point")
+
+	dead := map[string]bool{}
+	for _, d := range analysis.FindDeadCode(g, nil, nil) {
+		dead[d.Name] = true
+	}
+	require.True(t, dead["deadHelper"], "an uncalled private Java method must now be reported dead")
+	require.False(t, dead["listUsers"], "a public @GetMapping handler is not dead")
+	require.False(t, dead["main"], "main is the JVM entry point, not dead")
+}

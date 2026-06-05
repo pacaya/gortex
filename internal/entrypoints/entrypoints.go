@@ -22,10 +22,11 @@ const (
 	MetaEntryKind  = "entry_point_kind"
 )
 
-// Detect inspects one file's extracted nodes for framework entry
-// points and stamps the file node plus the relevant symbols. It
-// returns the number of nodes stamped.
-func Detect(relPath, lang string, nodes []*graph.Node) int {
+// Detect inspects one file's extracted nodes (and edges, for the
+// annotation-driven detectors) for framework entry points and stamps
+// the file node plus the relevant symbols. It returns the number of
+// nodes stamped.
+func Detect(relPath, lang string, nodes []*graph.Node, edges []*graph.Edge) int {
 	slashed := path.Clean(strings.ReplaceAll(relPath, "\\", "/"))
 	switch lang {
 	case "python":
@@ -34,6 +35,8 @@ func Detect(relPath, lang string, nodes []*graph.Node) int {
 		return detectNextJS(slashed, nodes)
 	case "csharp":
 		return detectASPNet(slashed, nodes)
+	case "java":
+		return detectJava(nodes, edges)
 	}
 	return 0
 }
@@ -162,6 +165,112 @@ func detectASPNet(relPath string, nodes []*graph.Node) int {
 			(n.Name == "Main" || n.Name == "ConfigureServices" || n.Name == "Configure"):
 			stamp(n, "aspnet:host")
 			count++
+		}
+	}
+	return count
+}
+
+// javaAnnoPrefix is the synthetic annotation node-ID prefix the Java
+// extractor emits (languages.AnnotationNodeID("java", name)); the bare
+// annotation name is the suffix.
+const javaAnnoPrefix = "annotation::java::"
+
+// javaEntryClassAnnos maps a class/interface-level annotation to the
+// entry-point kind it confers. These mark a *type* the framework
+// instantiates and drives (Spring stereotypes, JAX-RS resources,
+// annotated servlets / websocket endpoints).
+var javaEntryClassAnnos = map[string]string{
+	"RestController": "spring:controller",
+	"Controller":     "spring:controller",
+	"Service":        "spring:bean",
+	"Component":      "spring:bean",
+	"Repository":     "spring:bean",
+	"Configuration":  "spring:config",
+	"Path":           "jaxrs:resource",
+	"WebServlet":     "servlet:endpoint",
+	"ServerEndpoint": "websocket:endpoint",
+}
+
+// javaEntryMethodAnnos maps a method-level annotation to the entry-point
+// kind it confers. These mark a *method* the framework invokes directly
+// — request handlers, lifecycle callbacks, scheduled jobs, test cases —
+// which therefore has no in-application caller.
+var javaEntryMethodAnnos = map[string]string{
+	"RequestMapping":    "spring:handler",
+	"GetMapping":        "spring:handler",
+	"PostMapping":       "spring:handler",
+	"PutMapping":        "spring:handler",
+	"DeleteMapping":     "spring:handler",
+	"PatchMapping":      "spring:handler",
+	"EventListener":     "spring:listener",
+	"Scheduled":         "spring:scheduled",
+	"Bean":              "spring:bean",
+	"PostConstruct":     "lifecycle:init",
+	"PreDestroy":        "lifecycle:destroy",
+	"Test":              "junit:test",
+	"ParameterizedTest": "junit:test",
+	"RepeatedTest":      "junit:test",
+	"BeforeEach":        "junit:fixture",
+	"AfterEach":         "junit:fixture",
+	"BeforeAll":         "junit:fixture",
+	"AfterAll":          "junit:fixture",
+	"GET":               "jaxrs:handler",
+	"POST":              "jaxrs:handler",
+	"PUT":               "jaxrs:handler",
+	"DELETE":            "jaxrs:handler",
+	"HEAD":              "jaxrs:handler",
+}
+
+// detectJava flags Java framework entry points from annotation edges:
+// Spring stereotypes / request handlers, JAX-RS resources, annotated
+// servlets, JUnit test methods, lifecycle callbacks, and the JVM
+// `main` method. Unlike the path-based detectors it stamps the
+// individual annotated symbols, NOT the file node — a Spring controller
+// file can still hold genuinely-dead private helpers, and only the
+// framework-invoked members should be treated as live roots.
+func detectJava(nodes []*graph.Node, edges []*graph.Edge) int {
+	// symbol ID → set of annotation names applied to it.
+	annos := map[string]map[string]bool{}
+	for _, e := range edges {
+		if e.Kind != graph.EdgeAnnotated {
+			continue
+		}
+		name, ok := strings.CutPrefix(e.To, javaAnnoPrefix)
+		if !ok {
+			continue
+		}
+		if annos[e.From] == nil {
+			annos[e.From] = map[string]bool{}
+		}
+		annos[e.From][name] = true
+	}
+
+	count := 0
+	for _, n := range nodes {
+		switch n.Kind {
+		case graph.KindType, graph.KindInterface:
+			for a := range annos[n.ID] {
+				if kind, ok := javaEntryClassAnnos[a]; ok {
+					stamp(n, kind)
+					count++
+					break
+				}
+			}
+		case graph.KindFunction, graph.KindMethod:
+			kind := ""
+			for a := range annos[n.ID] {
+				if k, ok := javaEntryMethodAnnos[a]; ok {
+					kind = k
+					break
+				}
+			}
+			if kind == "" && n.Name == "main" {
+				kind = "java:main"
+			}
+			if kind != "" {
+				stamp(n, kind)
+				count++
+			}
 		}
 	}
 	return count

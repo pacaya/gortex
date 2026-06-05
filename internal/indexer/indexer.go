@@ -1174,7 +1174,7 @@ func (idx *Indexer) applyCoverageDomains(relPath, lang string, src []byte, resul
 	// Framework entry points (Alembic migrations / Next.js pages /
 	// ASP.NET host files): symbols reachable only from a runtime.
 	// Stamped so dead-code analysis treats them as live roots.
-	entrypoints.Detect(relPath, lang, result.Nodes)
+	entrypoints.Detect(relPath, lang, result.Nodes, result.Edges)
 	if !idx.config.Coverage.IsEnabled("function_shape") {
 		stripFunctionShape(result)
 	}

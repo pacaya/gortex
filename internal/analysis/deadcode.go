@@ -400,6 +400,24 @@ func FindDeadCode(g graph.Store, processes *ProcessResult, excludePatterns []str
 				continue
 			}
 
+			// Java: a method tagged @Override implements or overrides a
+			// supertype member and is reachable through that contract even
+			// with no direct caller in the indexed graph. Public overrides
+			// are already excluded by visibility; this rescues protected /
+			// package-private overrides from a false positive.
+			if n.Language == "java" {
+				overridden := false
+				for _, e := range outEdges {
+					if e.Kind == graph.EdgeAnnotated && e.To == javaOverrideAnnoID {
+						overridden = true
+						break
+					}
+				}
+				if overridden {
+					continue
+				}
+			}
+
 			// Fallback: well-known standard-library interface methods.
 			// If the implements edge wasn't inferred, methods like ServeHTTP,
 			// MarshalJSON, String, etc. are still almost certainly alive.
@@ -434,7 +452,7 @@ func FindDeadCode(g graph.Store, processes *ProcessResult, excludePatterns []str
 		if isTestFilePath(n.FilePath) {
 			continue
 		}
-		if isExportedSymbol(n.Name, n.Language) && !isPackagePrivateByConvention(n.FilePath, n.Language) {
+		if isExportedNode(n) && !isPackagePrivateByConvention(n.FilePath, n.Language) {
 			continue
 		}
 		if matchesExcludePattern(n.FilePath, n.ID, excludePatterns) {
@@ -883,6 +901,40 @@ func isPackagePrivateByConvention(filePath, lang string) bool {
 	// from its enclosing tree.
 	return strings.Contains(filePath, "/internal/") ||
 		strings.HasPrefix(filePath, "internal/")
+}
+
+// keywordVisibilityLangs are languages whose access level is an explicit
+// modifier keyword (public/private/protected/...) that the extractor
+// records in Meta["visibility"], rather than a naming convention. For
+// these the name-based isExportedSymbol gives the wrong answer — every
+// Java identifier is non-underscore, so the underscore heuristic marks
+// them ALL exported and dead-code analysis skips the whole language.
+// Extend as other keyword-visibility extractors are verified to stamp
+// Meta["visibility"] with the same value set.
+var keywordVisibilityLangs = map[string]bool{
+	"java": true,
+}
+
+// javaOverrideAnnoID is the synthetic node ID the Java extractor emits
+// for @Override (mirrors languages.AnnotationNodeID("java", "Override"),
+// duplicated here to avoid an analysis→parser import).
+const javaOverrideAnnoID = "annotation::java::Override"
+
+// isExportedNode reports whether n is part of the public API surface and
+// therefore not a dead-code candidate even with zero callers. For
+// keyword-visibility languages it trusts the recorded modifier; for
+// everything else it falls back to the name-based isExportedSymbol.
+func isExportedNode(n *graph.Node) bool {
+	if keywordVisibilityLangs[n.Language] {
+		if v, ok := n.Meta["visibility"].(string); ok && v != "" {
+			// public / protected are reachable from outside the indexed
+			// graph (other packages, subclasses); private / package-private
+			// are fully visible to the indexed call graph, so an unused one
+			// is genuinely dead and worth reporting.
+			return v == "public" || v == "protected"
+		}
+	}
+	return isExportedSymbol(n.Name, n.Language)
 }
 
 // isExportedSymbol checks if a symbol name is exported (public API).

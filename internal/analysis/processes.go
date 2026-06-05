@@ -142,7 +142,7 @@ func scoreEntryPoint(n *graph.Node, calleeCount, callerCount int) float64 {
 
 	// Export/visibility multiplier
 	exportMult := 1.0
-	if isExported(n.Name, n.Language) {
+	if isExportedForProcess(n) {
 		exportMult = 1.5
 	}
 
@@ -154,7 +154,32 @@ func scoreEntryPoint(n *graph.Node, calleeCount, callerCount int) float64 {
 		callerMult = 1.3
 	}
 
-	return base * nameMult * exportMult * callerMult
+	// Framework entry points stamped by the entrypoints detector (Spring
+	// handlers, JAX-RS resources, annotated servlets, the JVM main, …)
+	// are invoked by a runtime, not application code — the most reliable
+	// process roots. Test fixtures are stamped too (so dead-code keeps
+	// them live) but are noise as top-level processes, so skip the boost
+	// for them.
+	entryMult := 1.0
+	if ep, _ := n.Meta["entry_point"].(bool); ep {
+		if kind, _ := n.Meta["entry_point_kind"].(string); !strings.HasPrefix(kind, "junit:") {
+			entryMult = 2.0
+		}
+	}
+
+	return base * nameMult * exportMult * callerMult * entryMult
+}
+
+// isExportedForProcess mirrors the dead-code visibility logic: for
+// keyword-visibility languages (Java) it trusts the recorded modifier
+// so a private helper isn't handed the public-API entry-point boost.
+func isExportedForProcess(n *graph.Node) bool {
+	if n.Language == "java" {
+		if v, ok := n.Meta["visibility"].(string); ok && v != "" {
+			return v == "public" || v == "protected"
+		}
+	}
+	return isExported(n.Name, n.Language)
 }
 
 func namePatternMultiplier(name, lang string) float64 {
