@@ -197,6 +197,64 @@ func (cr *CrossRepoResolver) crossWorkspaceEligible(sourceWS, targetWS, importPa
 	return false
 }
 
+// pickImportCandidate chooses the best cross-repo file candidate for an
+// import: a candidate in the importer's own workspace wins outright;
+// otherwise the first candidate the cross-workspace policy permits is
+// used. Returns nil when no candidate clears the boundary, so the caller
+// falls through to its dep-module / external handling.
+//
+// This replaces the old "first dir match, then a single boundary check
+// that bailed to external" rule, which mis-resolved when two same-named
+// modules live in different workspaces — the worktree-instance case,
+// where the importer's workspace has its own copy of the imported module
+// but the canonical copy (in another workspace) sorted first.
+func (cr *CrossRepoResolver) pickImportCandidate(callerWS, importPath string, candidates []*graph.Node) *graph.Node {
+	for _, c := range candidates {
+		if candidateWorkspaceID(c) == callerWS {
+			return c
+		}
+	}
+	for _, c := range candidates {
+		if cr.crossWorkspaceEligible(callerWS, candidateWorkspaceID(c), importPath) {
+			return c
+		}
+	}
+	return nil
+}
+
+// pickQualNameCandidate enumerates every node that shares qualName and
+// returns the one in the caller's own workspace, else the first the
+// cross-workspace policy permits, else nil. The graph's qual-name index
+// is single-valued, so when the same module is checked out twice (a
+// canonical checkout plus a worktree instance under its own prefix) only
+// one node is reachable by qual name; the two share a Name, so the
+// multi-valued by-name index recovers the full candidate set. `single`
+// is the node the single-valued lookup already returned — used to learn
+// the shared Name without a second qual-name probe.
+func (cr *CrossRepoResolver) pickQualNameCandidate(callerWS, qualName string, single *graph.Node) *graph.Node {
+	if single == nil || single.Name == "" {
+		return nil
+	}
+	all := cr.graph.FindNodesByNames([]string{single.Name})[single.Name]
+	var cands []*graph.Node
+	for _, c := range all {
+		if c != nil && c.QualName == qualName {
+			cands = append(cands, c)
+		}
+	}
+	for _, c := range cands {
+		if candidateWorkspaceID(c) == callerWS {
+			return c
+		}
+	}
+	for _, c := range cands {
+		if cr.crossWorkspaceEligible(callerWS, candidateWorkspaceID(c), qualName) {
+			return c
+		}
+	}
+	return nil
+}
+
 // ResolveAll resolves all unresolved edges in the graph, trying same-repo
 // matches first, then cross-repo search. Sets Edge.CrossRepo = true for
 // cross-repo matches.
@@ -911,25 +969,30 @@ func (cr *CrossRepoResolver) resolveImport(e *graph.Edge, importPath string, sta
 	importPath, npmAliased := rewriteNpmAliasImport(cr.npmAlias, e.FilePath, importPath)
 
 	// Look for a package node with matching qualified name.
-	node := cr.cachedGetNodeByQualName(importPath)
-	if node != nil {
-		// Workspace boundary check: if the candidate is in a
-		// different workspace, allow only when an explicit
-		// cross_workspace_dep declares it.
-		if !cr.crossWorkspaceEligible(callerWS, candidateWorkspaceID(node), importPath) {
-			// Treat as external — the dep wasn't opted in.
-			e.To = "external::" + importPath
-			stats.Unresolved++
+	if node := cr.cachedGetNodeByQualName(importPath); node != nil {
+		picked := node
+		if !cr.crossWorkspaceEligible(callerWS, candidateWorkspaceID(picked), importPath) {
+			// The qual-name index is single-valued, so a same-module
+			// instance in the caller's own workspace (a worktree of the
+			// imported module, tracked under its own prefix) can be
+			// shadowed by a copy in another workspace. Enumerate every
+			// node sharing this qual name and prefer the caller's
+			// workspace before giving up.
+			picked = cr.pickQualNameCandidate(callerWS, importPath, node)
+		}
+		if picked != nil {
+			e.To = picked.ID
+			if picked.RepoPrefix != callerRepo {
+				e.CrossRepo = true
+				stats.CrossRepoEdges++
+				stats.ByRepo[picked.RepoPrefix]++
+			}
+			stats.Resolved++
 			return
 		}
-		e.To = node.ID
-		if node.RepoPrefix != callerRepo {
-			e.CrossRepo = true
-			stats.CrossRepoEdges++
-			stats.ByRepo[node.RepoPrefix]++
-		}
-		stats.Resolved++
-		return
+		// A qual-name hit with no workspace-eligible instance falls
+		// through to the directory-match scan below rather than bailing
+		// straight to external.
 	}
 
 	// Look for file nodes whose directory matches the import path. Two
@@ -950,8 +1013,8 @@ func (cr *CrossRepoResolver) resolveImport(e *graph.Edge, importPath string, sta
 	// own workspace; otherwise the first same-repo hit short-circuits
 	// the scan as before.
 	collectAll := cr.workspaceMembers != nil
-	var sameRepo, crossRepo *graph.Node
-	var sameRepoAll []*graph.Node
+	var sameRepo *graph.Node
+	var sameRepoAll, crossRepoAll []*graph.Node
 	consider := func(n *graph.Node) {
 		if n.Kind != graph.KindFile {
 			return
@@ -969,9 +1032,11 @@ func (cr *CrossRepoResolver) resolveImport(e *graph.Edge, importPath string, sta
 		// suffix match. lastDirIndex / the full-scan fallback key on the
 		// last path component only, so without this gate an import of
 		// `.../tree-sitter-c/bindings/go` resolves to whichever
-		// `*/bindings/go` directory sorts first.
-		if crossRepo == nil && dirMatchesImport(filepath.Dir(n.FilePath), importPath) {
-			crossRepo = n
+		// `*/bindings/go` directory sorts first. Collect every match so
+		// the workspace-aware pick below can prefer the importer's own
+		// workspace instead of the first one encountered.
+		if dirMatchesImport(filepath.Dir(n.FilePath), importPath) {
+			crossRepoAll = append(crossRepoAll, n)
 		}
 	}
 	stop := func() bool { return sameRepo != nil && !collectAll }
@@ -1012,18 +1077,17 @@ func (cr *CrossRepoResolver) resolveImport(e *graph.Edge, importPath string, sta
 		stats.Resolved++
 		return
 	}
-	if crossRepo != nil {
-		// Apply workspace boundary on the directory-match path too.
-		if !cr.crossWorkspaceEligible(callerWS, candidateWorkspaceID(crossRepo), importPath) {
-			e.To = "external::" + importPath
-			stats.Unresolved++
-			return
-		}
-		e.To = crossRepo.ID
+	// Cross-repo directory match: prefer a candidate in the caller's own
+	// workspace, then any the cross-workspace policy permits. Never bail
+	// on the first ineligible candidate — a same-workspace instance (a
+	// worktree of the imported module tracked under its own prefix) may
+	// appear later in the list.
+	if picked := cr.pickImportCandidate(callerWS, importPath, crossRepoAll); picked != nil {
+		e.To = picked.ID
 		e.CrossRepo = true
 		stats.Resolved++
 		stats.CrossRepoEdges++
-		stats.ByRepo[crossRepo.RepoPrefix]++
+		stats.ByRepo[picked.RepoPrefix]++
 		return
 	}
 
