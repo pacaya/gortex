@@ -66,7 +66,7 @@ func (s *Server) buildRerankContext(ctx context.Context, query string) *rerank.C
 
 	if s.feedback != nil && s.feedback.HasData() {
 		fb := s.feedback
-		rctx.FeedbackOf = func(id string) float64 { return fb.GetSymbolScore(id) }
+		rctx.FeedbackOf = func(id string) float64 { return fb.GetSymbolScoreForQuery(id, query) }
 	}
 
 	if s.symHistory != nil {

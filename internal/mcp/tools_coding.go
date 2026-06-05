@@ -307,6 +307,9 @@ func (s *Server) handleGetEditingContext(ctx context.Context, req mcp.CallToolRe
 	s.ensureFresh([]string{fp})
 
 	s.sessionFor(ctx).recordFile(fp)
+	// Tool-call observer: credit the recent search for the symbols in
+	// the file the agent is about to edit.
+	s.creditFileConsumption(ctx, fp)
 	out := editingContext{}
 	var fileNodeForScope *graph.Node
 	callerCap := 20
@@ -1756,7 +1759,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 	// previously-dropped result back into the embedded slots — not
 	// just append it at the tail.
 	if s.feedback != nil && s.feedback.HasData() {
-		missed := s.feedback.MissedSymbols(3)
+		missed := s.feedback.MissedSymbolsForQuery(task, 3)
 		injected := 0
 		for _, missedID := range missed {
 			if injected >= 2 {
@@ -1813,7 +1816,7 @@ func (s *Server) handleSmartContext(ctx context.Context, req mcp.CallToolRequest
 			scoredSyms := make([]scored, len(relevantSymbols))
 			for i, sym := range relevantSymbols {
 				baseScore := 1.0 / float64(i+1) // BM25 rank-based score
-				fbScore := s.feedback.GetSymbolScore(sym.ID)
+				fbScore := s.feedback.GetSymbolScoreForQuery(sym.ID, task)
 				scoredSyms[i] = scored{node: sym, score: baseScore + fbScore*0.3}
 			}
 			sort.SliceStable(scoredSyms, func(i, j int) bool {

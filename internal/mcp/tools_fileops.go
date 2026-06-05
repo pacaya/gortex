@@ -693,6 +693,9 @@ func (s *Server) handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*
 	bodiesElided := false
 	var keptSymbols []string
 	language := s.detectLanguageForPath(ctx, absPath, relPath)
+	// Tool-call observer: credit the recent search for the symbols in
+	// the file the agent is reading.
+	s.creditFileConsumption(ctx, relPath)
 	// File symbols power both the `keep` predicate and frecency credit.
 	sg := s.engineFor(ctx).GetFileSymbols(relPath)
 	if req.GetBool("compress_bodies", false) && language != "" && elide.IsSupported(language) {

@@ -26,6 +26,13 @@ type FeedbackEntry struct {
 	NotNeeded []string // symbol IDs returned but not needed
 	Missing   []string // symbol IDs that should have been included
 	Source    string   // "smart_context" or "prefetch_context"
+	// Keywords is the task's keyword cluster (derived from Task at
+	// record time). Feedback is scored only against entries whose
+	// keyword cluster overlaps the querying task's, so a symbol marked
+	// useful for one task does not contaminate an unrelated one. A nil
+	// Keywords (legacy entry, or a keyword-less task) is treated as
+	// matching any query for backward compatibility.
+	Keywords []string
 }
 
 // FeedbackStore holds all feedback entries for a single repo.

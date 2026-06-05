@@ -1449,6 +1449,13 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 		}
 	}
 
+	// Force-inject the implicit-feedback channel: symbols the agent has
+	// reached for on this query before but that BM25 did not surface
+	// this time. Injected before the rerank so the combo / feedback
+	// signals rank them in context; post-filtered so they honour the
+	// caller's repo / kind / lang / path / corpus scope.
+	nodes = s.forceInjectLearnedCandidates(ctx, q, nodes, applyAllPostFilters)
+
 	// Rerank: run the I13 11-signal pipeline over the candidate set
 	// with the session-aware Context wired in. Structural signals
 	// (BM25 rank, fan-in / fan-out, MinHash similarity, signature
@@ -1537,6 +1544,16 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	diversifyStart := time.Now()
 	nodes, rerankBreakdown = diversifyByFile(nodes, rerankBreakdown, req.GetInt("max_per_file", defaultMaxPerFile))
 	diversifyMS := time.Since(diversifyStart).Milliseconds()
+
+	// Flush the prior search's implicit skip-above negatives before this
+	// search overwrites the attribution state: results that ranked above
+	// the deepest one the agent consumed but were themselves passed over
+	// lose a little of their learned per-keyword boost.
+	if sess != nil && q != "" {
+		if nq, skipped := sess.drainSkippedNegatives(); nq != "" && len(skipped) > 0 {
+			s.combo.RecordNegative(nq, skipped)
+		}
+	}
 
 	// Remember the returned IDs for attribution on later consume calls.
 	// Cap at top limit so unseen "overflow" results don't get credited.

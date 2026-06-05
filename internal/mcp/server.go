@@ -457,8 +457,15 @@ type sessionState struct {
 }
 
 type lastSearchState struct {
-	query       string
-	returnedIDs map[string]struct{}
+	query string
+	// returned is the result IDs in rank order (0 = top); returnedIDs
+	// maps an ID to its rank for O(1) membership + rank lookup. consumed
+	// tracks which returned IDs the agent went on to use, so a later
+	// search can record an implicit "skip-above" negative for the
+	// higher-ranked results that were passed over.
+	returned    []string
+	returnedIDs map[string]int
+	consumed    map[string]struct{}
 	at          time.Time
 }
 
@@ -689,11 +696,17 @@ const comboWindow = 5 * time.Minute
 func (ss *sessionState) recordLastSearch(query string, ids []string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	set := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		set[id] = struct{}{}
+	set := make(map[string]int, len(ids))
+	for i, id := range ids {
+		set[id] = i
 	}
-	ss.lastSearch = lastSearchState{query: query, returnedIDs: set, at: time.Now()}
+	ss.lastSearch = lastSearchState{
+		query:       query,
+		returned:    append([]string(nil), ids...),
+		returnedIDs: set,
+		consumed:    make(map[string]struct{}),
+		at:          time.Now(),
+	}
 }
 
 // attributedQuery returns the query string that should receive credit for
@@ -712,7 +725,82 @@ func (ss *sessionState) attributedQuery(symbolID string) string {
 	if _, ok := ss.lastSearch.returnedIDs[symbolID]; !ok {
 		return ""
 	}
+	if ss.lastSearch.consumed == nil {
+		ss.lastSearch.consumed = make(map[string]struct{})
+	}
+	ss.lastSearch.consumed[symbolID] = struct{}{}
 	return ss.lastSearch.query
+}
+
+// attributedConsumptionBatch credits a set of symbol IDs to the recent
+// search in one pass: it returns the search's query and the subset of
+// ids that the search returned within the attribution window (marking
+// each consumed). Used by the tool-call observer when the agent opens a
+// file — every symbol in it that the search surfaced is credited at
+// once. Returns ("", nil) when no fresh search is attributable.
+func (ss *sessionState) attributedConsumptionBatch(ids []string) (string, []string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.lastSearch.query == "" || time.Since(ss.lastSearch.at) > comboWindow {
+		return "", nil
+	}
+	if ss.lastSearch.consumed == nil {
+		ss.lastSearch.consumed = make(map[string]struct{})
+	}
+	var matched []string
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := ss.lastSearch.returnedIDs[id]; !ok {
+			continue
+		}
+		ss.lastSearch.consumed[id] = struct{}{}
+		matched = append(matched, id)
+	}
+	return ss.lastSearch.query, matched
+}
+
+// hasFreshSearch reports whether a search is recent enough to attribute
+// a consume to. A cheap gate so file-open handlers skip the work of
+// enumerating a file's symbols when nothing could be credited anyway.
+func (ss *sessionState) hasFreshSearch() bool {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.lastSearch.query != "" && time.Since(ss.lastSearch.at) <= comboWindow
+}
+
+// drainSkippedNegatives computes the implicit "skip-above" negatives for
+// the current last-search: the results ranked above the deepest one the
+// agent actually consumed but that were themselves never consumed — i.e.
+// passed over. Called when a search is about to be superseded (the state
+// is overwritten right after), so each skip is emitted at most once.
+// Returns ("", nil) when the agent consumed nothing or only the top hit.
+func (ss *sessionState) drainSkippedNegatives() (string, []string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ls := &ss.lastSearch
+	if ls.query == "" || len(ls.consumed) == 0 || len(ls.returned) == 0 {
+		return "", nil
+	}
+	maxRank := -1
+	for id := range ls.consumed {
+		if r, ok := ls.returnedIDs[id]; ok && r > maxRank {
+			maxRank = r
+		}
+	}
+	if maxRank <= 0 {
+		return "", nil // top pick (or nothing) — nothing was skipped over
+	}
+	var skipped []string
+	for i := 0; i < maxRank && i < len(ls.returned); i++ {
+		id := ls.returned[i]
+		if _, ok := ls.consumed[id]; ok {
+			continue
+		}
+		skipped = append(skipped, id)
+	}
+	return ls.query, skipped
 }
 
 func (ss *sessionState) snapshot() map[string]any {

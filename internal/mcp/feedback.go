@@ -37,6 +37,11 @@ func (fm *feedbackManager) Record(entry persistence.FeedbackEntry) error {
 	defer fm.mu.Unlock()
 
 	entry.Timestamp = time.Now()
+	// Stamp the task's keyword cluster so feedback can be scoped to the
+	// querying task and never contaminate an unrelated one.
+	if len(entry.Keywords) == 0 && entry.Task != "" {
+		entry.Keywords = keywordTokens(entry.Task)
+	}
 	fm.store.Entries = append(fm.store.Entries, entry)
 
 	if fm.dir == "" {
@@ -62,21 +67,33 @@ func (ss symbolStats) Score() float64 {
 	return float64(ss.UsefulCount-ss.NotNeededCount) / float64(total)
 }
 
-// GetSymbolScore returns the feedback score for a single symbol.
-// Returns 0 if the symbol has no feedback data.
+// GetSymbolScore returns the GLOBAL feedback score for a symbol (across
+// every task). Prefer GetSymbolScoreForQuery, which scopes the score to
+// the querying task's keyword cluster to avoid cross-task contamination.
 func (fm *feedbackManager) GetSymbolScore(symbolID string) float64 {
-	fm.mu.Lock()
-	defer fm.mu.Unlock()
-
-	stats := fm.aggregateSymbol(symbolID)
-	return stats.Score()
+	return fm.GetSymbolScoreForQuery(symbolID, "")
 }
 
-// aggregateSymbol computes stats for one symbol across all entries.
-// Caller must hold fm.mu.
-func (fm *feedbackManager) aggregateSymbol(symbolID string) symbolStats {
+// GetSymbolScoreForQuery returns the feedback score for a symbol scoped
+// to the task cluster of query: only entries whose keyword set overlaps
+// the query's keywords (plus legacy entries with no keywords) are
+// counted. An empty query falls back to the global score. This is the
+// fix for the contamination where a symbol marked useful for task A
+// boosted it for unrelated task B.
+func (fm *feedbackManager) GetSymbolScoreForQuery(symbolID, query string) float64 {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	return fm.aggregateSymbolScoped(symbolID, queryKeywordSet(query)).Score()
+}
+
+// aggregateSymbolScoped computes stats for one symbol across the entries
+// whose keyword cluster matches qset. Caller must hold fm.mu.
+func (fm *feedbackManager) aggregateSymbolScoped(symbolID string, qset map[string]struct{}) symbolStats {
 	var ss symbolStats
 	for _, e := range fm.store.Entries {
+		if !entryMatchesKeywords(e, qset) {
+			continue
+		}
 		for _, id := range e.Useful {
 			if id == symbolID {
 				ss.UsefulCount++
@@ -94,6 +111,37 @@ func (fm *feedbackManager) aggregateSymbol(symbolID string) symbolStats {
 		}
 	}
 	return ss
+}
+
+// queryKeywordSet returns the set of keyword-cluster tokens for a query.
+// Empty when the query has no usable keywords (the global scope).
+func queryKeywordSet(query string) map[string]struct{} {
+	kws := keywordTokens(query)
+	if len(kws) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(kws))
+	for _, k := range kws {
+		set[k] = struct{}{}
+	}
+	return set
+}
+
+// entryMatchesKeywords reports whether a feedback entry belongs to the
+// task cluster identified by qset. An empty qset (global query) matches
+// every entry; an entry with no keywords (legacy / keyword-less task)
+// matches any query for backward compatibility; otherwise the two
+// clusters must share at least one keyword.
+func entryMatchesKeywords(e persistence.FeedbackEntry, qset map[string]struct{}) bool {
+	if len(qset) == 0 || len(e.Keywords) == 0 {
+		return true
+	}
+	for _, k := range e.Keywords {
+		if _, ok := qset[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // AggregatedStats returns summary statistics across all feedback entries.
@@ -206,14 +254,29 @@ func (fm *feedbackManager) HasData() bool {
 	return len(fm.store.Entries) > 0
 }
 
-// MissedSymbols returns symbol IDs that have been reported missing
-// at least minCount times, sorted by miss frequency descending.
+// MissedSymbols returns symbol IDs reported missing at least minCount
+// times across ALL tasks, sorted by miss frequency descending.
 func (fm *feedbackManager) MissedSymbols(minCount int) []string {
+	return fm.missedSymbols(minCount, nil)
+}
+
+// MissedSymbolsForQuery is MissedSymbols scoped to the querying task's
+// keyword cluster — only "missing" reports from overlapping tasks count,
+// so a force-inject driven by this list surfaces symbols relevant to the
+// current task, not whatever was ever reported missing anywhere.
+func (fm *feedbackManager) MissedSymbolsForQuery(query string, minCount int) []string {
+	return fm.missedSymbols(minCount, queryKeywordSet(query))
+}
+
+func (fm *feedbackManager) missedSymbols(minCount int, qset map[string]struct{}) []string {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
 	counts := make(map[string]int)
 	for _, e := range fm.store.Entries {
+		if !entryMatchesKeywords(e, qset) {
+			continue
+		}
 		for _, id := range e.Missing {
 			counts[id]++
 		}

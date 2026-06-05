@@ -145,7 +145,77 @@ func (cm *comboManager) Record(rawQuery, symbolID string) {
 	defer cm.mu.Unlock()
 
 	cm.reapStaleLocked()
+	cm.recordOneLocked(rawQuery, q, symbolID, cm.now())
+	cm.persistLocked()
+}
+
+// RecordBatch tallies several (query → symbol) hits for the same query
+// in one locked section with a single persist. Used by the tool-call
+// observer: when the agent opens a file (get_editing_context /
+// read_file) that contains symbols a recent search returned, every such
+// symbol is credited to that search's query at once.
+func (cm *comboManager) RecordBatch(rawQuery string, symbolIDs []string) {
+	if cm == nil || len(symbolIDs) == 0 {
+		return
+	}
+	q := normalizeQuery(rawQuery)
+	if q == "" {
+		return
+	}
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.reapStaleLocked()
 	now := cm.now()
+	recorded := false
+	for _, id := range symbolIDs {
+		if id == "" {
+			continue
+		}
+		cm.recordOneLocked(rawQuery, q, id, now)
+		recorded = true
+	}
+	if recorded {
+		cm.persistLocked()
+	}
+}
+
+// RecordNegative tallies an implicit negative — the agent was shown
+// these symbols for a query carrying the given keywords but skipped over
+// them to pick a lower-ranked result. Recorded only in the per-keyword
+// index (the cluster grain), so KeywordBoostMap nets hits−misses and a
+// persistently-skipped symbol loses its learned boost. The exact
+// whole-query index stays positive-only.
+func (cm *comboManager) RecordNegative(rawQuery string, skippedIDs []string) {
+	if cm == nil || len(skippedIDs) == 0 {
+		return
+	}
+	keywords := keywordTokens(rawQuery)
+	if len(keywords) == 0 {
+		return
+	}
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.reapStaleLocked()
+	now := cm.now()
+	recorded := false
+	for _, id := range skippedIDs {
+		if id == "" {
+			continue
+		}
+		for _, kw := range keywords {
+			cm.recordKeywordMissLocked(kw, id, now)
+			recorded = true
+		}
+	}
+	if recorded && cm.kwDir != "" {
+		_ = persistence.SaveKeyword(cm.kwDir, &cm.kwStore)
+	}
+}
+
+// recordOneLocked tallies one (query → symbol) hit in both the
+// whole-query and per-keyword indexes. Caller holds cm.mu and is
+// responsible for persistence.
+func (cm *comboManager) recordOneLocked(rawQuery, q, symbolID string, now int64) {
 	idx := cm.findQueryLocked(q)
 	if idx < 0 {
 		cm.store.Queries = append(cm.store.Queries, persistence.ComboQuery{
@@ -187,7 +257,10 @@ func (cm *comboManager) Record(rawQuery, symbolID string) {
 	// with overlapping keywords -- but different phrasing -- inherits
 	// these even though its whole-query key never matches.
 	cm.recordKeywordsLocked(rawQuery, symbolID, now)
+}
 
+// persistLocked flushes both stores. Caller holds cm.mu.
+func (cm *comboManager) persistLocked() {
 	if cm.dir != "" {
 		_ = persistence.SaveCombo(cm.dir, &cm.store)
 	}
@@ -353,6 +426,37 @@ func (cm *comboManager) recordKeywordsLocked(rawQuery, symbolID string, now int6
 	}
 }
 
+// recordKeywordMissLocked bumps the implicit-negative MissCount for a
+// (keyword -> symbol) association, creating a miss-only entry when the
+// symbol has no prior association for the keyword. Caller holds cm.mu.
+func (cm *comboManager) recordKeywordMissLocked(kw, symbolID string, now int64) {
+	idx := cm.findKeywordLocked(kw)
+	if idx < 0 {
+		cm.kwStore.Keywords = append(cm.kwStore.Keywords, persistence.KeywordAssoc{
+			Keyword: kw,
+			Matches: []persistence.KeywordMatch{{SymbolID: symbolID, MissCount: 1, LastUsed: now}},
+		})
+		return
+	}
+	ka := &cm.kwStore.Keywords[idx]
+	for i := range ka.Matches {
+		if ka.Matches[i].SymbolID == symbolID {
+			ka.Matches[i].MissCount++
+			ka.Matches[i].LastUsed = now
+			return
+		}
+	}
+	ka.Matches = append(ka.Matches, persistence.KeywordMatch{SymbolID: symbolID, MissCount: 1, LastUsed: now})
+	// Keep the list bounded; order by hit count so a miss-only entry is
+	// the first to be dropped under pressure (it carries no boost).
+	if cap := persistence.MaxKeywordEntries(); len(ka.Matches) > cap {
+		sort.Slice(ka.Matches, func(i, j int) bool {
+			return ka.Matches[i].HitCount > ka.Matches[j].HitCount
+		})
+		ka.Matches = ka.Matches[:cap]
+	}
+}
+
 // findKeywordLocked returns the index of kw in kwStore.Keywords, or
 // -1. Caller holds cm.mu.
 func (cm *comboManager) findKeywordLocked(kw string) int {
@@ -402,7 +506,10 @@ func (cm *comboManager) KeywordBoostMap(rawQuery string) map[string]float64 {
 			continue
 		}
 		for _, m := range cm.kwStore.Keywords[idx].Matches {
-			if int(m.HitCount) < keywordMinHits {
+			// Net the implicit-negative misses against the hits: a
+			// symbol the agent keeps skipping over loses its boost.
+			effective := int(m.HitCount) - int(m.MissCount)
+			if effective < keywordMinHits {
 				continue
 			}
 			a := per[m.SymbolID]
@@ -411,7 +518,7 @@ func (cm *comboManager) KeywordBoostMap(rawQuery string) map[string]float64 {
 				per[m.SymbolID] = a
 			}
 			a.matched++
-			a.hits += int(m.HitCount)
+			a.hits += effective
 		}
 	}
 	if len(per) == 0 {

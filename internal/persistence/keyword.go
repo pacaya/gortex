@@ -23,6 +23,13 @@ type KeywordMatch struct {
 	SymbolID string
 	HitCount uint32
 	LastUsed int64
+	// MissCount is the implicit-negative tally: how many times the
+	// agent was shown this symbol for a query carrying the keyword but
+	// skipped over it to pick a lower-ranked result. The per-keyword
+	// boost nets HitCount-MissCount, so a symbol the agent keeps passing
+	// over loses its learned boost. A zero value (legacy data) is the
+	// pre-negative-signal behaviour. Decays on the same clock as hits.
+	MissCount uint32
 }
 
 // KeywordAssoc holds all recorded matches for one query keyword
