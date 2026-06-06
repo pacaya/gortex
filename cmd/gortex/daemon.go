@@ -219,20 +219,19 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	// straight to the in-process MCP server unchanged.
 	if scfg, scfgErr := daemon.LoadServersConfig(""); scfgErr == nil && scfg != nil && len(scfg.Server) > 0 {
 		rosters := daemon.NewWorkspaceRosterCache(60 * time.Second)
-		var localSlug string
-		if def := scfg.DefaultServer(); def != nil {
-			localSlug = def.Slug
-		}
+		// Local identity is a reserved sentinel, never DefaultServer().Slug:
+		// a remote marked default=true must still be proxied to, not
+		// treated as the daemon's own graph.
 		router := daemon.NewRouter(daemon.RouterConfig{
 			Servers:      scfg,
 			Rosters:      rosters,
-			LocalSlug:    localSlug,
+			LocalSlug:    daemon.LocalServerSentinel,
 			LocalExecute: newLocalToolExecutor(state.mcpServer, logger),
 			Logger:       logger,
 		})
 		disp.SetRouter(router)
 		logger.Info("daemon: multi-server router wired",
-			zap.Int("servers", len(scfg.Server)), zap.String("local_slug", localSlug))
+			zap.Int("servers", len(scfg.Server)), zap.String("local_slug", daemon.LocalServerSentinel))
 	} else if scfgErr != nil {
 		logger.Warn("daemon: servers.toml load error (running single-server)", zap.Error(scfgErr))
 	}

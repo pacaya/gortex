@@ -748,18 +748,13 @@ func (c *realController) collectConfiguredServers() []daemon.ConfiguredServerSta
 	return out
 }
 
-// localServerSlug returns the slug servers.toml's `default = true`
-// entry uses, falling back to the first entry when none is marked.
-// Empty when no servers.toml.
+// localServerSlug returns the reserved sentinel identifying the
+// daemon's own in-process graph. It is intentionally NOT derived from
+// DefaultServer().Slug: a roster row is always a remote now, so no
+// roster entry is ever "local" (the status Local flag is false for
+// every row), and a remote marked default=true is still proxied.
 func (c *realController) localServerSlug() string {
-	cfg, err := daemon.LoadServersConfig("")
-	if err != nil || cfg == nil || len(cfg.Server) == 0 {
-		return ""
-	}
-	if def := cfg.DefaultServer(); def != nil {
-		return def.Slug
-	}
-	return ""
+	return daemon.LocalServerSentinel
 }
 
 // collectLSPRouterStatus reflects the daemon's LSP router (when

@@ -10,6 +10,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// LocalServerSentinel is the Router's reserved identity for "this
+// daemon's own in-process graph". It can never be a user slug:
+// ServersConfig.Validate rejects any [[server]] claiming it, and the
+// workspace resolver rejects any workspace slug equal to it (or
+// containing ~ or /). Local identity is NO LONGER derived from
+// DefaultServer().Slug — so a remote marked default=true is still
+// proxied to, never mistaken for local.
+const LocalServerSentinel = "@local"
+
 // Router is the "hybrid-read query router". It takes a tool
 // invocation plus an optional scope override, decides
 // whether the request should run locally or be proxied to a remote
@@ -138,13 +147,13 @@ func (r *Router) RouteToolCall(ctx context.Context, toolName string, body []byte
 			return nil, 0, fmt.Errorf("%w: workspace=%q", ErrRouteUnresolved, lookup.Workspace)
 		}
 	}
-	if lookup.Server.Slug == r.localSlug || r.localSlug == "" && lookup.Source == "default" && r.localExecute != nil {
-		// Local fast path. Empty localSlug + default-server source
-		// also resolves to local because there's no other server we
-		// could reach.
-		return r.callLocal(ctx, toolName, body)
-	}
 	if lookup.Server.Slug == r.localSlug {
+		// Local fast path: the resolved slug is the reserved local
+		// sentinel (the daemon's own in-process graph). A roster row can
+		// never carry the sentinel, so a remote marked default=true now
+		// proxies correctly instead of being mistaken for local. The
+		// "no server resolves" case is already handled above by the
+		// lookup.Server == nil fall-through.
 		return r.callLocal(ctx, toolName, body)
 	}
 	cli, err := r.clientFor(*lookup.Server)

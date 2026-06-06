@@ -246,6 +246,9 @@ func (c *ServersConfig) Validate() error {
 		if s.Slug == "" {
 			return fmt.Errorf("server[%d]: slug is required", i)
 		}
+		if s.Slug == LocalServerSentinel {
+			return fmt.Errorf("server[%d]: slug %q is reserved for the local daemon's own graph", i, s.Slug)
+		}
 		if seenSlug[s.Slug] {
 			return fmt.Errorf("server[%d]: duplicate slug %q", i, s.Slug)
 		}
@@ -631,6 +634,15 @@ func scanWorkspaceField(data []byte) string {
 			// Could be a struct shape (e.g. `workspace:\n  auto_detect: true`)
 			// — that's the legacy config.WorkspaceConfig shape, now
 			// migrated to `multi:` instead. Skip.
+			continue
+		}
+		// A workspace slug may never collide with the reserved local
+		// sentinel, nor contain ~ or / (which would alias path/home
+		// expansion and the proxy-node origin segment). A rejected slug
+		// degrades to "no workspace" so routing falls back to local
+		// rather than re-opening the localSlug foot-gun from the
+		// workspace side.
+		if v == LocalServerSentinel || strings.ContainsAny(v, "~/") {
 			continue
 		}
 		return v
