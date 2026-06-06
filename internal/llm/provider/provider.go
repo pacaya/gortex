@@ -45,7 +45,11 @@ func New(cfg llm.Config) (llm.Provider, error) {
 	case "local":
 		return local.New(cfg.Local)
 	case "anthropic":
-		return anthropic.New(cfg.Anthropic)
+		ac := cfg.Anthropic
+		return anthropic.New(ac.RemoteConfig,
+			anthropic.WithPromptCaching(ac.PromptCaching, ac.CacheTTL),
+			anthropic.WithThinking(ac.ThinkingMode, ac.ThinkingBudgetTokens, ac.ThinkingDisplay),
+		)
 	case "openai":
 		return openai.New(cfg.OpenAI)
 	case "azure":

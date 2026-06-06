@@ -21,7 +21,7 @@ func (p *fakeAgentProvider) Complete(_ context.Context, _ llm.CompletionRequest)
 
 func TestProviderForModel_BaseAndRouted(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	cfg := llm.Config{Provider: "anthropic", Anthropic: llm.RemoteConfig{Model: "claude-sonnet-4-6"}}.ApplyDefaults()
+	cfg := llm.Config{Provider: "anthropic", Anthropic: llm.AnthropicConfig{RemoteConfig: llm.RemoteConfig{Model: "claude-sonnet-4-6"}}}.ApplyDefaults()
 	s := NewService(cfg, llm.MockBackend{})
 	if !s.Enabled() {
 		t.Fatal("service should be enabled with an API key set")
@@ -52,7 +52,7 @@ func TestProviderForModel_BaseAndRouted(t *testing.T) {
 
 func TestProviderForModel_ClosedByClose(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "test-key")
-	cfg := llm.Config{Provider: "anthropic", Anthropic: llm.RemoteConfig{Model: "claude-sonnet-4-6"}}.ApplyDefaults()
+	cfg := llm.Config{Provider: "anthropic", Anthropic: llm.AnthropicConfig{RemoteConfig: llm.RemoteConfig{Model: "claude-sonnet-4-6"}}}.ApplyDefaults()
 	s := NewService(cfg, llm.MockBackend{})
 	if _, err := s.providerForModel("claude-haiku-4-5"); err != nil {
 		t.Fatalf("providerForModel: %v", err)

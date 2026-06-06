@@ -49,6 +49,23 @@ func supportsEffortLevel(model, level string) bool {
 	}
 }
 
+// adaptiveThinkingPrefixes are the model families that support adaptive
+// extended thinking (thinking.type = "adaptive"). Older families only
+// support the manual budget form.
+var adaptiveThinkingPrefixes = []string{
+	"claude-opus-4-6",
+	"claude-opus-4-7",
+	"claude-opus-4-8",
+	"claude-sonnet-4-6",
+	"claude-mythos-preview",
+}
+
+// supportsAdaptiveThinking reports whether model accepts adaptive
+// thinking. Unknown models fall back to the manual budget form.
+func supportsAdaptiveThinking(model string) bool {
+	return matchesFamily(model, adaptiveThinkingPrefixes)
+}
+
 // matchesFamily reports whether model starts with one of the given
 // family prefixes (case-insensitive).
 func matchesFamily(model string, prefixes []string) bool {

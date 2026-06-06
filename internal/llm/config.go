@@ -40,8 +40,10 @@ type Config struct {
 
 	// Local configures the in-process llama.cpp provider.
 	Local LocalConfig `mapstructure:"local" yaml:"local,omitempty"`
-	// Anthropic configures the hosted Anthropic Messages API provider.
-	Anthropic RemoteConfig `mapstructure:"anthropic" yaml:"anthropic,omitempty"`
+	// Anthropic configures the hosted Anthropic Messages API provider —
+	// a RemoteConfig plus Anthropic-only knobs (prompt caching, extended
+	// thinking).
+	Anthropic AnthropicConfig `mapstructure:"anthropic" yaml:"anthropic,omitempty"`
 	// OpenAI configures the hosted OpenAI Chat Completions provider.
 	OpenAI RemoteConfig `mapstructure:"openai" yaml:"openai,omitempty"`
 	// Azure configures the Azure OpenAI Service provider — the OpenAI
@@ -188,6 +190,38 @@ type RemoteConfig struct {
 	// reasoning_effort (minimal|low|medium|high). Empty leaves the knob
 	// untouched.
 	Effort string `mapstructure:"effort" yaml:"effort,omitempty"`
+}
+
+// AnthropicConfig is the `llm.anthropic:` sub-block — a RemoteConfig
+// (model / api_key_env / base_url / effort) plus knobs unique to the
+// Anthropic Messages API. The embedded RemoteConfig is squashed, so its
+// fields sit directly under `llm.anthropic:` in config.
+type AnthropicConfig struct {
+	RemoteConfig `mapstructure:",squash" yaml:",inline"`
+
+	// PromptCaching opts into Anthropic prompt caching: the system
+	// prompt (and the structured-output tool) are marked as cache
+	// breakpoints so a repeated stable prefix is billed at the cache-hit
+	// rate. Off by default — gortex requests rarely reuse a prefix often
+	// enough to offset the cache-write surcharge.
+	PromptCaching bool `mapstructure:"prompt_caching" yaml:"prompt_caching,omitempty"`
+	// CacheTTL is the cache lifetime: "5m" (default when caching is on,
+	// free to refresh) or "1h" (2x write cost, for prefixes reused less
+	// often than every 5 minutes). Ignored when PromptCaching is off.
+	CacheTTL string `mapstructure:"cache_ttl" yaml:"cache_ttl,omitempty"`
+	// ThinkingMode controls extended thinking on freeform completions:
+	// "off" (default), "auto" (adaptive on capable models, else manual),
+	// "manual" (a fixed token budget), or "adaptive" (the model decides).
+	// Thinking is incompatible with the forced-tool structured-output
+	// path, so it is applied only to freeform requests.
+	ThinkingMode string `mapstructure:"thinking_mode" yaml:"thinking_mode,omitempty"`
+	// ThinkingBudgetTokens is the manual-mode thinking budget (min 1024).
+	// Ignored in adaptive/off modes; defaults to a modest budget when
+	// manual mode is selected without one.
+	ThinkingBudgetTokens int `mapstructure:"thinking_budget_tokens" yaml:"thinking_budget_tokens,omitempty"`
+	// ThinkingDisplay is the adaptive-mode thinking visibility:
+	// "summarized" or "omitted". Optional.
+	ThinkingDisplay string `mapstructure:"thinking_display" yaml:"thinking_display,omitempty"`
 }
 
 // AzureConfig is the `llm.azure:` sub-block — settings for the Azure
@@ -578,6 +612,12 @@ func (c Config) MergeEnv() Config {
 	if v := os.Getenv("GORTEX_LLM_AZURE_API_VERSION"); v != "" {
 		c.Azure.APIVersion = v
 	}
+	if v := os.Getenv("GORTEX_LLM_ANTHROPIC_PROMPT_CACHING"); v != "" {
+		c.Anthropic.PromptCaching = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("GORTEX_LLM_ANTHROPIC_THINKING_MODE"); v != "" {
+		c.Anthropic.ThinkingMode = v
+	}
 	if v := os.Getenv("GORTEX_LLM_EFFORT"); v != "" {
 		switch c.ProviderName() {
 		case "anthropic":
@@ -792,6 +832,26 @@ func (l LocalConfig) mergedWith(fb LocalConfig) LocalConfig {
 		l.Template = fb.Template
 	}
 	return l
+}
+
+func (a AnthropicConfig) mergedWith(fb AnthropicConfig) AnthropicConfig {
+	a.RemoteConfig = a.RemoteConfig.mergedWith(fb.RemoteConfig)
+	if !a.PromptCaching {
+		a.PromptCaching = fb.PromptCaching
+	}
+	if a.CacheTTL == "" {
+		a.CacheTTL = fb.CacheTTL
+	}
+	if a.ThinkingMode == "" {
+		a.ThinkingMode = fb.ThinkingMode
+	}
+	if a.ThinkingBudgetTokens == 0 {
+		a.ThinkingBudgetTokens = fb.ThinkingBudgetTokens
+	}
+	if a.ThinkingDisplay == "" {
+		a.ThinkingDisplay = fb.ThinkingDisplay
+	}
+	return a
 }
 
 func (r RemoteConfig) mergedWith(fb RemoteConfig) RemoteConfig {

@@ -42,6 +42,13 @@ type Provider struct {
 	baseURL string
 	effort  string
 	client  *http.Client
+
+	// optional behaviours configured via Option (see thinking.go).
+	caching         bool
+	cacheTTL        string
+	thinkingMode    string
+	thinkingBudget  int
+	thinkingDisplay string
 }
 
 var _ llm.Provider = (*Provider)(nil)
@@ -50,7 +57,7 @@ var _ llm.Provider = (*Provider)(nil)
 // env var named by cfg.APIKeyEnv (default ANTHROPIC_API_KEY) — an
 // unset key is a hard error so misconfiguration surfaces at startup,
 // not on the first query.
-func New(cfg llm.RemoteConfig) (llm.Provider, error) {
+func New(cfg llm.RemoteConfig, opts ...Option) (llm.Provider, error) {
 	keyEnv := strings.TrimSpace(cfg.APIKeyEnv)
 	if keyEnv == "" {
 		keyEnv = "ANTHROPIC_API_KEY"
@@ -70,13 +77,17 @@ func New(cfg llm.RemoteConfig) (llm.Provider, error) {
 	// Resolve a tier sentinel (claude-haiku / claude-sonnet /
 	// claude-opus) to a live model id; a dated model id passes through.
 	model := resolveModel(cfg.Model, key, base, client)
-	return &Provider{
+	p := &Provider{
 		model:   model,
 		apiKey:  key,
 		baseURL: base,
 		effort:  strings.TrimSpace(cfg.Effort),
 		client:  client,
-	}, nil
+	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p, nil
 }
 
 // Name implements llm.Provider.
@@ -95,19 +106,23 @@ type apiMessage struct {
 }
 
 type apiTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	InputSchema  map[string]any `json:"input_schema"`
+	CacheControl map[string]any `json:"cache_control,omitempty"`
 }
 
 type apiRequest struct {
-	Model        string         `json:"model"`
-	MaxTokens    int            `json:"max_tokens"`
-	System       string         `json:"system,omitempty"`
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+	// System is either a plain string or, when prompt caching is on, an
+	// array of content blocks carrying a cache_control marker.
+	System       any            `json:"system,omitempty"`
 	Messages     []apiMessage   `json:"messages"`
 	Tools        []apiTool      `json:"tools,omitempty"`
 	ToolChoice   map[string]any `json:"tool_choice,omitempty"`
 	OutputConfig map[string]any `json:"output_config,omitempty"`
+	Thinking     map[string]any `json:"thinking,omitempty"`
 }
 
 type apiContentBlock struct {
@@ -136,22 +151,49 @@ func (p *Provider) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	body := apiRequest{
 		Model:     p.model,
 		MaxTokens: maxTokens,
-		System:    system,
 		Messages:  msgs,
+	}
+	// System carries a cache_control breakpoint when prompt caching is
+	// on, so the (stable) system prefix is billed at the cache-hit rate;
+	// otherwise it is the plain string.
+	if system != "" {
+		if p.caching {
+			body.System = []map[string]any{{
+				"type":          "text",
+				"text":          system,
+				"cache_control": p.cacheControl(),
+			}}
+		} else {
+			body.System = system
+		}
 	}
 	structured := req.Shape != llm.ShapeFreeform
 	if structured {
-		body.Tools = []apiTool{{
+		tool := apiTool{
 			Name:        respondToolName,
 			Description: "Return your response as the structured arguments of this tool.",
 			InputSchema: llm.JSONSchemaFor(req.Shape, req.Tools),
-		}}
+		}
+		// The tool definition is stable too — cache it alongside system.
+		if p.caching {
+			tool.CacheControl = p.cacheControl()
+		}
+		body.Tools = []apiTool{tool}
 		body.ToolChoice = map[string]any{"type": "tool", "name": respondToolName}
 	}
 	// Reasoning effort is opt-in and model-gated: only send it when the
 	// configured model is known to accept the requested level.
 	if p.effort != "" && supportsEffortLevel(p.model, p.effort) {
 		body.OutputConfig = map[string]any{"effort": strings.ToLower(strings.TrimSpace(p.effort))}
+	}
+	// Extended thinking applies to freeform requests only (incompatible
+	// with the forced tool_choice). When on, max_tokens must leave room
+	// above the thinking budget.
+	if think, minMax := p.thinkingConfig(req.Shape); think != nil {
+		body.Thinking = think
+		if body.MaxTokens < minMax {
+			body.MaxTokens = minMax
+		}
 	}
 
 	raw, err := json.Marshal(body)

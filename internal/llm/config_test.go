@@ -23,7 +23,7 @@ func TestConfig_IsEnabled(t *testing.T) {
 		{"empty", Config{}, false},
 		{"local with model", Config{Provider: "local", Local: LocalConfig{Model: "/m.gguf"}}, true},
 		{"local no model", Config{Provider: "local"}, false},
-		{"anthropic with model", Config{Provider: "anthropic", Anthropic: RemoteConfig{Model: "claude"}}, true},
+		{"anthropic with model", Config{Provider: "anthropic", Anthropic: AnthropicConfig{RemoteConfig: RemoteConfig{Model: "claude"}}}, true},
 		{"anthropic no model", Config{Provider: "anthropic"}, false},
 		{"openai with model", Config{Provider: "openai", OpenAI: RemoteConfig{Model: "gpt"}}, true},
 		{"azure with deployment", Config{Provider: "azure", Azure: AzureConfig{Deployment: "gpt4o"}}, true},
@@ -178,6 +178,42 @@ func TestConfig_MergedWith_CustomProviders(t *testing.T) {
 	}
 	if got.Custom["shared"].Model != "local-shared" {
 		t.Errorf("local must win for a name in both, got %q", got.Custom["shared"].Model)
+	}
+}
+
+func TestConfig_Anthropic_CachingThinking_EnvAndMerge(t *testing.T) {
+	t.Setenv("GORTEX_LLM_PROVIDER", "anthropic")
+	t.Setenv("GORTEX_LLM_ANTHROPIC_PROMPT_CACHING", "1")
+	t.Setenv("GORTEX_LLM_ANTHROPIC_THINKING_MODE", "auto")
+	c := Config{}.MergeEnv()
+	if !c.Anthropic.PromptCaching {
+		t.Error("GORTEX_LLM_ANTHROPIC_PROMPT_CACHING should enable caching")
+	}
+	if c.Anthropic.ThinkingMode != "auto" {
+		t.Errorf("thinking_mode=%q want auto", c.Anthropic.ThinkingMode)
+	}
+
+	// MergedWith fills the Anthropic-only knobs (and the embedded model)
+	// from global; local wins where set.
+	global := Config{
+		Provider: "anthropic",
+		Anthropic: AnthropicConfig{
+			RemoteConfig:  RemoteConfig{Model: "claude-sonnet", APIKeyEnv: "ANTHROPIC_API_KEY"},
+			PromptCaching: true,
+			CacheTTL:      "1h",
+			ThinkingMode:  "manual",
+		},
+	}
+	local := Config{Anthropic: AnthropicConfig{ThinkingMode: "adaptive"}}
+	got := local.MergedWith(global)
+	if got.Anthropic.Model != "claude-sonnet" {
+		t.Errorf("embedded model not merged: %q", got.Anthropic.Model)
+	}
+	if !got.Anthropic.PromptCaching || got.Anthropic.CacheTTL != "1h" {
+		t.Errorf("caching knobs not merged: %+v", got.Anthropic)
+	}
+	if got.Anthropic.ThinkingMode != "adaptive" {
+		t.Errorf("thinking_mode=%q want adaptive (local wins)", got.Anthropic.ThinkingMode)
 	}
 }
 
@@ -390,7 +426,7 @@ func TestConfig_ActiveModelAndWithModel(t *testing.T) {
 }
 
 func TestConfig_WithModel_EmptyIsNoOp(t *testing.T) {
-	c := Config{Provider: "anthropic", Anthropic: RemoteConfig{Model: "claude-sonnet-4-6"}}
+	c := Config{Provider: "anthropic", Anthropic: AnthropicConfig{RemoteConfig: RemoteConfig{Model: "claude-sonnet-4-6"}}}
 	if got := c.WithModel("").ActiveModel(); got != "claude-sonnet-4-6" {
 		t.Errorf("WithModel(\"\") must be a no-op, got %q", got)
 	}
@@ -399,7 +435,7 @@ func TestConfig_WithModel_EmptyIsNoOp(t *testing.T) {
 func TestConfig_WithModel_DoesNotTouchOtherProviders(t *testing.T) {
 	c := Config{
 		Provider:  "anthropic",
-		Anthropic: RemoteConfig{Model: "claude-sonnet-4-6"},
+		Anthropic: AnthropicConfig{RemoteConfig: RemoteConfig{Model: "claude-sonnet-4-6"}},
 		OpenAI:    RemoteConfig{Model: "gpt-4o"},
 	}
 	got := c.WithModel("claude-haiku-4-5")
@@ -454,7 +490,7 @@ func TestConfig_MergedWith_ClaudeCLI(t *testing.T) {
 }
 
 func TestConfig_ApplyDefaults_Idempotent(t *testing.T) {
-	once := Config{Provider: "anthropic", Anthropic: RemoteConfig{Model: "m"}}.ApplyDefaults()
+	once := Config{Provider: "anthropic", Anthropic: AnthropicConfig{RemoteConfig: RemoteConfig{Model: "m"}}}.ApplyDefaults()
 	twice := once.ApplyDefaults()
 	if !reflect.DeepEqual(once, twice) {
 		t.Fatalf("ApplyDefaults not idempotent:\n once=%+v\n twice=%+v", once, twice)
@@ -491,7 +527,7 @@ func TestConfig_MergedWith(t *testing.T) {
 		Provider:  "local",
 		MaxSteps:  16,
 		Local:     LocalConfig{Model: "/g.gguf", Template: "chatml", Ctx: 4096},
-		Anthropic: RemoteConfig{APIKeyEnv: "ANTHROPIC_API_KEY"},
+		Anthropic: AnthropicConfig{RemoteConfig: RemoteConfig{APIKeyEnv: "ANTHROPIC_API_KEY"}},
 	}
 	local := Config{Local: LocalConfig{Model: "/repo.gguf"}} // overrides only the model
 
