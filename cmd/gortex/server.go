@@ -178,10 +178,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// resolveEmbedder applies explicit flag/env > `embedding:` config >
 	// default-on static, so a stock server gets semantic search.
 	embedder, embDesc, embErr := resolveEmbedder(embedderRequest{
-		flagChanged: cmd.Flags().Changed("embeddings"),
-		flagEnabled: serverEmbeddings,
-		flagURL:     serverEmbeddingsURL,
-		flagModel:   serverEmbeddingsModel,
+		FlagChanged: cmd.Flags().Changed("embeddings"),
+		FlagEnabled: serverEmbeddings,
+		FlagURL:     serverEmbeddingsURL,
+		FlagModel:   serverEmbeddingsModel,
 	}, cfg)
 	if embErr != nil {
 		fmt.Fprintf(os.Stderr, "[gortex] server: embeddings disabled: %v\n", embErr)

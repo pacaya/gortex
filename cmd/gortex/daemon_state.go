@@ -379,8 +379,8 @@ func buildDaemonState(logger *zap.Logger) (*daemonState, error) {
 	// download on first use and the per-symbol warmup cost; static is
 	// the default precisely to avoid that.
 	embedder, embDesc, embErr := resolveEmbedder(embedderRequest{
-		flagChanged: daemonEmbeddingsChanged,
-		flagEnabled: daemonEmbeddings,
+		FlagChanged: daemonEmbeddingsChanged,
+		FlagEnabled: daemonEmbeddings,
 	}, cfg)
 	switch {
 	case embErr != nil:

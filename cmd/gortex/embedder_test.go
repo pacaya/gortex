@@ -65,7 +65,7 @@ func TestResolveEmbedder_FlagOverridesConfig(t *testing.T) {
 	cfg.Embedding.Enabled = &enabled
 
 	// flagChanged=true, flagEnabled=false → explicit off wins.
-	emb, _, err := resolveEmbedder(embedderRequest{flagChanged: true, flagEnabled: false}, cfg)
+	emb, _, err := resolveEmbedder(embedderRequest{FlagChanged: true, FlagEnabled: false}, cfg)
 	require.NoError(t, err)
 	assert.Nil(t, emb, "an explicit --embeddings=false flag must override config-enabled")
 }
@@ -95,7 +95,7 @@ func TestResolveEmbedder_ExplicitURLForcesAPI(t *testing.T) {
 	cfg.Embedding.Enabled = &disabled // even with embeddings off in config…
 
 	emb, desc, err := resolveEmbedder(embedderRequest{
-		flagURL: "http://localhost:11434",
+		FlagURL: "http://localhost:11434",
 	}, cfg)
 	require.NoError(t, err)
 	require.NotNil(t, emb, "an explicit URL must produce an embedder even when config disables embeddings")

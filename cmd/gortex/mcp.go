@@ -185,10 +185,10 @@ func runMCP(cmd *cobra.Command, args []string) error {
 	// explicit flag/env > `embedding:` config > default-on static, so
 	// a stock install gets semantic search with no flags.
 	embedder, embDesc, embErr := resolveEmbedder(embedderRequest{
-		flagChanged: cmd.Flags().Changed("embeddings"),
-		flagEnabled: mcpEmbeddings,
-		flagURL:     mcpEmbeddingsURL,
-		flagModel:   mcpEmbeddingsModel,
+		FlagChanged: cmd.Flags().Changed("embeddings"),
+		FlagEnabled: mcpEmbeddings,
+		FlagURL:     mcpEmbeddingsURL,
+		FlagModel:   mcpEmbeddingsModel,
 	}, cfg)
 	if embErr != nil {
 		fmt.Fprintf(os.Stderr, "[gortex] warning: embeddings disabled: %v\n", embErr)
