@@ -1929,6 +1929,7 @@ func (s *Server) handleGetCallChain(ctx context.Context, req mcp.CallToolRequest
 		WorkspaceID: scopeWS,
 		ProjectID:   scopeProj,
 	}
+	s.hydrateProxyTargets(ctx, id)
 	sg := s.engineFor(ctx).GetCallChain(id, opts)
 
 	// Apply repo/project/ref filter.
@@ -1958,6 +1959,7 @@ func (s *Server) handleGetCallers(ctx context.Context, req mcp.CallToolRequest) 
 		ProjectID:    scopeProj,
 		ExcludeTests: req.GetBool("exclude_tests", false),
 	}
+	s.hydrateProxyTargets(ctx, id)
 	sg := s.engineFor(ctx).GetCallers(id, opts)
 	sg.FilterByMinTier(minTier)
 	enrichSubGraphEdges(sg)

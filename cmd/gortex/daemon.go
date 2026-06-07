@@ -255,6 +255,9 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 		// for the read path. No-op when the flag is off.
 		if hyd := daemon.WireRemoteStitch(router, state.multiIndexer, state.graph, resolveFederationEdgesConfig(), logger); hyd != nil {
 			state.proxyHydrator = hyd
+			if state.mcpServer != nil {
+				state.mcpServer.SetProxyHydrator(hyd.Hydrate)
+			}
 			logger.Info("daemon: federation Option-B edges enabled (proxy minting + hydration)")
 		}
 	} else if scfgErr != nil {

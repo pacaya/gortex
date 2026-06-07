@@ -284,6 +284,12 @@ type Server struct {
 	// leaves it nil so the live server is used.
 	resourcesNotifier resourcesUpdatedNotifier
 
+	// proxyHydrate is the federation Option-B lazy hydration hook (spec-08).
+	// nil unless the daemon installed one (federation.edges on); the
+	// traversal tools call it to pull a proxy node's neighbour ring before
+	// crossing into it. See proxy_hydrate.go.
+	proxyHydrate func(ctx context.Context, proxyID string) (int, error)
+
 
 	// toolScopes is the per-Server tool-name → ToolScope registry.
 	// Populated by registerToolWithScope as tools are added; consulted
