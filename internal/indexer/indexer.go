@@ -481,6 +481,12 @@ func ftsTokensFor(n *graph.Node) string {
 // incremental add, upgradeSearchToBleve repopulate) must go through
 // this predicate so they can't drift.
 func (idx *Indexer) shouldIndexForSearch(n *graph.Node) bool {
+	// Federation Option-B proxy nodes stand in for remote symbols; they
+	// are never surfaced in local name search (R-FED-7). Inert until
+	// edge-minting is enabled.
+	if graph.IsProxyNode(n) {
+		return false
+	}
 	if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
 		return false
 	}

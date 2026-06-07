@@ -61,9 +61,14 @@ func DetectCommunitiesLouvain(g graph.Store) *CommunityResult {
 	nodes := g.AllNodes()
 	edges := g.AllEdges()
 
-	// Filter to symbol nodes only (skip file and import nodes)
+	// Filter to symbol nodes only (skip file and import nodes, and
+	// federation Option-B proxy nodes — they stand in for remote symbols
+	// and must not form or join local communities; R-FED-7).
 	symbolNodes := make(map[string]bool)
 	for _, n := range nodes {
+		if graph.IsProxyNode(n) {
+			continue
+		}
 		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
 			symbolNodes[n.ID] = true
 		}
