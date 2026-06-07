@@ -44,10 +44,7 @@
   "mcpServers": {
     "gortex": {
       "args": [
-        "mcp",
-        "--index",
-        ".",
-        "--watch"
+        "mcp"
       ],
       "autoApprove": [
         "graph_stats",

@@ -55,10 +55,7 @@ This gives you perfectly accurate AST-level analysis, guaranteeing safe edits.
   "mcpServers": {
     "gortex": {
       "args": [
-        "mcp",
-        "--index",
-        ".",
-        "--watch"
+        "mcp"
       ],
       "command": "gortex",
       "env": {

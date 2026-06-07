@@ -1,7 +1,7 @@
 === home/.codex/config.toml ===
 [mcp_servers]
 [mcp_servers.gortex]
-args = ['mcp', '--index', '.', '--watch']
+args = ['mcp']
 command = 'gortex'
 
 [mcp_servers.gortex.env]

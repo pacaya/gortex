@@ -3,10 +3,7 @@
   "mcpServers": {
     "gortex": {
       "args": [
-        "mcp",
-        "--index",
-        ".",
-        "--watch"
+        "mcp"
       ],
       "command": "gortex",
       "env": {

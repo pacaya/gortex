@@ -5,10 +5,7 @@
     "gortex": {
       "command": [
         "gortex",
-        "mcp",
-        "--index",
-        ".",
-        "--watch"
+        "mcp"
       ],
       "enabled": true,
       "environment": {
