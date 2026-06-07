@@ -61,7 +61,43 @@ func newLogger() *zap.Logger {
 }
 
 func execute() {
+	assignCommandGroups()
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+// assignCommandGroups organizes `gortex --help` into intent groups instead
+// of one flat command list, with the MCP server (how editors and agents
+// connect) called out first and the CLI commands grouped by what they do.
+// Called once before Execute, after every command's init() has registered
+// it. Commands left unmapped (internal/utility verbs) fall under cobra's
+// "Additional Commands" heading.
+func assignCommandGroups() {
+	if rootCmd.ContainsGroup("serve") {
+		return // idempotent — already grouped
+	}
+	rootCmd.AddGroup(
+		&cobra.Group{ID: "serve", Title: "MCP server — connect editors & agents:"},
+		&cobra.Group{ID: "engine", Title: "Daemon & repositories:"},
+		&cobra.Group{ID: "query", Title: "Query & explore the graph:"},
+		&cobra.Group{ID: "index", Title: "Index & enrich:"},
+		&cobra.Group{ID: "setup", Title: "Setup & configuration:"},
+	)
+	groupOf := map[string]string{
+		"mcp": "serve",
+		"daemon": "engine", "track": "engine", "untrack": "engine",
+		"repos": "engine", "status": "engine", "proxy": "engine", "workspace": "engine",
+		"query": "query", "context": "query", "audit": "query", "wiki": "query",
+		"docs": "query", "export": "query", "wakeup": "query",
+		"index": "index", "enrich": "index", "db": "index",
+		"init": "setup", "install": "setup", "uninstall": "setup", "agents": "setup",
+		"hook": "setup", "githook": "setup", "config": "setup",
+		"provider": "setup", "plugin": "setup", "cloud": "setup",
+	}
+	for _, c := range rootCmd.Commands() {
+		if id, ok := groupOf[c.Name()]; ok {
+			c.GroupID = id
+		}
 	}
 }

@@ -5,7 +5,7 @@ gortex install               One-time machine-wide setup (user-level MCP, skills
 gortex init [path]           Per-repo setup (.mcp.json, hooks, community routing, per-community SKILL.md)
 gortex init doctor           Zero-op drift report across all detected agents (human or --json)
 gortex mcp [flags]           Start the MCP stdio server (auto-detects daemon; --no-daemon / --proxy; --server adds HTTP API)
-gortex server [flags]        Start the HTTP/JSON API under /v1/* (--bind, --auth-token, --watch, --cors-origin)
+gortex daemon start [flags]  Start the daemon; --http-addr <addr> serves the HTTP/JSON API under /v1/* plus the MCP /mcp transport (--http-auth-token, --cors-origin)
 gortex daemon <sub>          start / stop / restart / reload / status / logs / install-service / service-status / uninstall-service / server (multi-server roster)
 gortex eval <sub>            Retrieval + token benchmarks — recall / embedders / swebench / tokens / baselines / quality (substrate; prefer `gortex bench` for the user-facing surface)
 gortex eval-server [flags]   HTTP server used by the swebench harness
@@ -97,7 +97,7 @@ All query commands support `--format text|json|dot` (DOT output for Graphviz vis
 ## Other commands
 
 ```bash
-gortex server --index .                  # HTTP/JSON API on :4747 (/v1/*). UI lives at github.com/gortexhq/web.
+gortex track . && gortex daemon start --http-addr 127.0.0.1:7411  # HTTP/JSON API on :7411 (/v1/* + /mcp). UI lives at github.com/gortexhq/web.
 gortex savings [--verbose] [--json]      # Today / Last 7 days / All time bar-chart dashboard + $ avoided
 gortex bench <sub>                       # user-facing benchmark suite (recall / tokens / tokens-efficiency / perf / daemon-latency / embedders / swebench / all)
 gortex audit [--badge|--format svg|json|text]  # A-F repo health grade + README-ready SVG shield

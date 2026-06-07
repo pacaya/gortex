@@ -93,13 +93,13 @@ gortex mcp --index . --watch
 
 `--watch` re-indexes changed files live via fsnotify. `--cache-dir ~/.gortex/cache` (default) saves snapshots between restarts so subsequent starts are ~200ms instead of 3-5s.
 
-To also get the HTTP server API (the UI is a separate Next.js app in `web/` that talks to it over HTTP):
+To also get the HTTP server API (the UI is a separate Next.js app in `web/` that talks to it over HTTP), add `--server` to the same process:
 
 ```bash
-gortex server --index . --watch
+gortex mcp --index . --watch --server
 ```
 
-`gortex server` listens on `http://localhost:4747` and exposes `/v1/*` (including `/v1/graph` and `/v1/events` for force-directed rendering).
+`--server` listens on `http://localhost:8765` and exposes `/v1/*` (including `/v1/graph` and `/v1/events` for force-directed rendering). The long-living daemon serves the same surface — run `gortex daemon start --http-addr 127.0.0.1:7411` to expose `/v1/*` and `/mcp` for every tracked repo at once.
 
 **Option B — your IDE starts it automatically.** The `.mcp.json` that `gortex init` created tells the IDE how to spawn `gortex mcp`. You don't run anything yourself. Claude Code, Cursor, and VS Code all work this way. Downside: each tool gets its own server process (memory cost scales with number of tools).
 
@@ -184,7 +184,7 @@ Once the basics are working:
 - **Token savings + cost tracking** — `gortex savings` prints cumulative tokens saved + dollars avoided per model across all sessions. Accumulates automatically; no setup.
 - **Compact wire format (GCX1)** — every list-shaped tool accepts `format: "gcx"` for a round-trippable compact response. Median **−27.4% tokens** vs JSON on the benchmark, 100% round-trip integrity. Spec: [docs/wire-format.md](wire-format.md). TypeScript decoder on npm: [`@gortex/wire`](https://www.npmjs.com/package/@gortex/wire). Agents pick it up automatically — the PreToolUse and subagent hooks surface the opt-in. Applies to: `search_symbols`, `find_usages`, `analyze`, `contracts`, `batch_symbols`, `get_callers` / `get_call_chain` / `get_dependencies` / `get_dependents` / `find_implementations`, `get_file_summary`, `get_editing_context`, `smart_context`.
 - **Feedback loop** — after a successful task, call the `feedback` MCP tool with `action: "record"`. Future `smart_context` results rerank based on what was actually useful.
-- **Custom HTTP integration** — `gortex server --index . --cors-origin '*'` exposes every MCP tool as HTTP. Good for editor plugins, CI hooks, custom dashboards.
+- **Custom HTTP integration** — `gortex daemon start --http-addr 127.0.0.1:7411 --cors-origin '*'` exposes every MCP tool as HTTP (`/v1/*` + `/mcp`) for the tracked repos. Good for editor plugins, CI hooks, custom dashboards.
 
 ## Daemon Mode
 
@@ -287,8 +287,9 @@ A **project** is a sub-bucket inside a workspace, useful when you have many repo
 
 ```bash
 gortex mcp --project my-saas         # only loads repos in this project
-gortex server --workspace api        # workspace-scoped HTTP server
 ```
+
+The daemon, by contrast, loads every tracked repo and scopes at query time: over its HTTP surface (`gortex daemon start --http-addr ...`) the `/v1/graph` route takes `?project=` / `?repo=` to narrow a single request to one workspace or repo.
 
 Inside the agent, `set_active_project` switches the default scope for every subsequent query — no need to repeat the `project:` parameter on each call.
 

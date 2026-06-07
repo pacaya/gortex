@@ -4,7 +4,7 @@ Gortex detects API contracts across repos and matches providers to consumers:
 
 ```bash
 # After indexing, contracts are auto-detected
-gortex server --index .
+gortex track .
 
 # Via MCP tools
 contracts                        # list all detected contracts (default action)
