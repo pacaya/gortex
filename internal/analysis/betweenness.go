@@ -104,6 +104,9 @@ func ComputeBetweenness(g graph.Store) *BetweennessResult {
 			}
 		}
 	}
+	// Federation proxy nodes carry real kinds, so the kind filter above
+	// keeps them — drop them here so a remote stub is never a pivot.
+	ids = excludeProxyIDs(ids)
 	n := len(ids)
 	if n == 0 {
 		return &BetweennessResult{Scores: map[string]float64{}}

@@ -53,7 +53,7 @@ func ComputePageRank(g graph.Store) *PageRankResult {
 	if g == nil {
 		return &PageRankResult{Scores: map[string]float64{}}
 	}
-	nodes := g.AllNodes()
+	nodes := excludeProxyNodes(g.AllNodes())
 	n := len(nodes)
 	if n == 0 {
 		return &PageRankResult{Scores: map[string]float64{}}
@@ -71,6 +71,9 @@ func ComputePageRank(g graph.Store) *PageRankResult {
 	inLinks := make(map[string][]weightedLink)
 	for _, e := range g.AllEdges() {
 		if e.Kind != graph.EdgeCalls && e.Kind != graph.EdgeReferences {
+			continue
+		}
+		if edgeTouchesProxy(e) {
 			continue
 		}
 		w := graph.ProvenanceWeight(e)

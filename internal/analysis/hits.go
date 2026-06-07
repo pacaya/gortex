@@ -69,7 +69,7 @@ func ComputeHITS(g graph.Store) *HITSResult {
 	if g == nil {
 		return &HITSResult{Authorities: map[string]float64{}, Hubs: map[string]float64{}}
 	}
-	nodes := g.AllNodes()
+	nodes := excludeProxyNodes(g.AllNodes())
 	n := len(nodes)
 	if n == 0 {
 		return &HITSResult{Authorities: map[string]float64{}, Hubs: map[string]float64{}}
@@ -87,6 +87,9 @@ func ComputeHITS(g graph.Store) *HITSResult {
 	inLinks := make(map[string][]weightedLink)
 	for _, e := range g.AllEdges() {
 		if e.Kind != graph.EdgeCalls && e.Kind != graph.EdgeReferences {
+			continue
+		}
+		if edgeTouchesProxy(e) {
 			continue
 		}
 		w := graph.ProvenanceWeight(e)
