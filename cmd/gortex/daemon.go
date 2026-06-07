@@ -213,6 +213,12 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 	}
 	srv.Controller = controller
 	disp := newMCPDispatcher(state.mcpServer, state.multiIndexer, logger)
+	// The local executor + the dispatcher's SetRouter are handed to the
+	// controller so ControlProxy can build/publish/tear-down the router
+	// live (gortex proxy on/off/add/remove) without a daemon restart.
+	localExec := newLocalToolExecutor(state.mcpServer, logger)
+	controller.localExecute = localExec
+	controller.publishRouter = disp.SetRouter
 	// Wire the multi-server router into the daemon dispatcher when
 	// servers.toml exists. Local-only
 	// daemons (no servers.toml) leave router=nil and dispatch flows
@@ -226,10 +232,11 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 			Servers:      scfg,
 			Rosters:      rosters,
 			LocalSlug:    daemon.LocalServerSentinel,
-			LocalExecute: newLocalToolExecutor(state.mcpServer, logger),
+			LocalExecute: localExec,
 			Logger:       logger,
 		})
 		disp.SetRouter(router)
+		controller.liveRouter = router
 		logger.Info("daemon: multi-server router wired",
 			zap.Int("servers", len(scfg.Server)), zap.String("local_slug", daemon.LocalServerSentinel))
 	} else if scfgErr != nil {

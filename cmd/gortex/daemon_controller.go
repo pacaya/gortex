@@ -43,6 +43,16 @@ type realController struct {
 	multiWatcher  *indexer.MultiWatcher
 	logger        *zap.Logger
 
+	// liveRouter is the multi-server Router currently wired into the
+	// dispatch path (nil for a local-only daemon with no roster).
+	// localExecute + publishRouter let ReloadServers build and publish
+	// a router live when the first remote is added after startup, or
+	// tear it down when the last remote is removed — all without a
+	// daemon restart. Guarded by mu.
+	liveRouter    *daemon.Router
+	localExecute  daemon.LocalExecutor
+	publishRouter func(*daemon.Router)
+
 	// onShutdown is invoked by the Shutdown method. Used by the daemon
 	// main to flush savings, close the snapshot store, etc.
 	onShutdown func() error
@@ -413,6 +423,58 @@ func (c *realController) Untrack(_ context.Context, p daemon.UntrackParams) (jso
 // Reload re-reads the global config, indexes new repos that were added
 // via direct config-file edits, and untracks any that were removed.
 // Existing, unchanged tracked repos keep their current state.
+// ReloadServers re-reads servers.toml and applies the change to the
+// running daemon's Router without a restart: an in-place atomic swap
+// when a router already exists, a fresh build-and-publish when the first
+// remote is added after a router-less startup, or a teardown when the
+// last remote is removed.
+func (c *realController) ReloadServers(_ context.Context) (json.RawMessage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	scfg, err := daemon.LoadServersConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("reload servers.toml: %w", err)
+	}
+	count := 0
+	if scfg != nil {
+		count = len(scfg.Server)
+	}
+
+	wired := false
+	switch {
+	case count == 0 && c.liveRouter != nil:
+		// Last remote removed — tear the router down so local dispatch
+		// returns to the direct in-process path.
+		c.liveRouter = nil
+		if c.publishRouter != nil {
+			c.publishRouter(nil)
+		}
+	case count == 0:
+		// No router and no remotes — nothing to wire.
+	case c.liveRouter != nil:
+		// In-place atomic swap; the stable *Router pointer keeps every
+		// dispatch site (and any in-flight call) consistent.
+		c.liveRouter.ReloadConfig(scfg, daemon.NewWorkspaceRosterCache(60*time.Second))
+		wired = true
+	default:
+		// First remote added after a router-less startup — build and
+		// publish a fresh router into the dispatch path.
+		c.liveRouter = daemon.NewRouter(daemon.RouterConfig{
+			Servers:      scfg,
+			Rosters:      daemon.NewWorkspaceRosterCache(60 * time.Second),
+			LocalSlug:    daemon.LocalServerSentinel,
+			LocalExecute: c.localExecute,
+			Logger:       c.logger,
+		})
+		if c.publishRouter != nil {
+			c.publishRouter(c.liveRouter)
+		}
+		wired = true
+	}
+	return json.Marshal(map[string]any{"servers": count, "router_wired": wired})
+}
+
 func (c *realController) Reload(ctx context.Context) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

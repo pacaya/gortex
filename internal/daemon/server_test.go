@@ -26,8 +26,9 @@ type fakeController struct {
 	mu            sync.Mutex
 	trackCalls    []TrackParams
 	untrackCalls  []UntrackParams
-	reloadCalls   int
-	statusCalls   int
+	reloadCalls        int
+	reloadServersCalls int
+	statusCalls        int
 	shutdownCalls int
 	shutdownErr   error
 	searchCalls   []SearchSymbolsParams
@@ -60,6 +61,13 @@ func (f *fakeController) Reload(_ context.Context) (json.RawMessage, error) {
 	defer f.mu.Unlock()
 	f.reloadCalls++
 	return json.RawMessage(`{"reloaded":true}`), nil
+}
+
+func (f *fakeController) ReloadServers(_ context.Context) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reloadServersCalls++
+	return json.RawMessage(`{"servers":0,"router_wired":false}`), nil
 }
 
 func (f *fakeController) Status(_ context.Context) (StatusResponse, error) {

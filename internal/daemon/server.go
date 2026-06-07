@@ -93,6 +93,12 @@ type Controller interface {
 	Track(ctx context.Context, params TrackParams) (json.RawMessage, error)
 	Untrack(ctx context.Context, params UntrackParams) (json.RawMessage, error)
 	Reload(ctx context.Context) (json.RawMessage, error)
+	// ReloadServers re-reads servers.toml and atomically swaps the
+	// daemon's multi-server Router (building or tearing it down as the
+	// roster requires), then invalidates the roster cache — applying
+	// `gortex proxy on/off/add/remove` to a running daemon without a
+	// restart. Distinct from Reload, which reconciles tracked repos.
+	ReloadServers(ctx context.Context) (json.RawMessage, error)
 	Status(ctx context.Context) (StatusResponse, error)
 	// SearchSymbols is the cheap probe path used by external clients
 	// (Claude Code's Grep-redirect hook) that need a single short answer
@@ -465,6 +471,13 @@ func (s *Server) handleControl(_ *Session, req ControlRequest) ControlResponse {
 			return controlErr(ErrInternal, err.Error())
 		}
 		result, err := s.Controller.Untrack(ctx, p)
+		if err != nil {
+			return controlErr(ErrInternal, err.Error())
+		}
+		return ControlResponse{OK: true, Result: result}
+
+	case ControlProxy:
+		result, err := s.Controller.ReloadServers(ctx)
 		if err != nil {
 			return controlErr(ErrInternal, err.Error())
 		}

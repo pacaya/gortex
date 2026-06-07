@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"go.uber.org/zap"
 
@@ -26,7 +27,10 @@ type mcpDispatcher struct {
 	srv          *gortexmcp.Server
 	multiIndexer *indexer.MultiIndexer
 	logger       *zap.Logger
-	router       *daemon.Router
+	// router is held behind an atomic.Pointer so ControlProxy can
+	// publish a freshly-built (or torn-down) router live without
+	// racing a concurrent dispatch read.
+	router atomic.Pointer[daemon.Router]
 }
 
 func newMCPDispatcher(srv *gortexmcp.Server, mi *indexer.MultiIndexer, logger *zap.Logger) *mcpDispatcher {
@@ -41,12 +45,12 @@ func newMCPDispatcher(srv *gortexmcp.Server, mi *indexer.MultiIndexer, logger *z
 // a `workspace` arg or a session cwd that resolves to a non-local
 // server are proxied; all other frames flow through the local
 // MCPServer.HandleMessage path unchanged.
-func (d *mcpDispatcher) SetRouter(r *daemon.Router) { d.router = r }
+func (d *mcpDispatcher) SetRouter(r *daemon.Router) { d.router.Store(r) }
 
 // Router returns the currently-wired router (or nil). Exposed so the
 // HTTP-side Streamable transport can share the same router instance
 // without rebuilding it from servers.toml a second time.
-func (d *mcpDispatcher) Router() *daemon.Router { return d.router }
+func (d *mcpDispatcher) Router() *daemon.Router { return d.router.Load() }
 
 // Dispatch implements daemon.MCPDispatcher. It hands the raw JSON-RPC
 // frame to MCPServer.HandleMessage and returns the response bytes.
@@ -96,8 +100,8 @@ func (d *mcpDispatcher) Dispatch(ctx context.Context, sess *daemon.Session, fram
 	// frames (initialize, tools/list, notifications) flow through
 	// the local MCPServer below; routing them across a federation
 	// would change semantics that are intentionally machine-local.
-	if d.router != nil {
-		if proxied, ok := d.tryProxyToolCall(ctx, sess, frame); ok {
+	if rtr := d.router.Load(); rtr != nil {
+		if proxied, ok := d.tryProxyToolCall(ctx, sess, rtr, frame); ok {
 			return proxied, nil
 		}
 	}
@@ -156,10 +160,11 @@ func (d *mcpDispatcher) cwdReachable(cwd string) bool {
 	if d.isCWDTracked(cwd) {
 		return true
 	}
-	if d.router == nil {
+	rtr := d.router.Load()
+	if rtr == nil {
 		return false
 	}
-	lookup := d.router.LookupForCwd(cwd, "")
+	lookup := rtr.LookupForCwd(cwd, "")
 	switch lookup.Source {
 	case "scope-override", "config-yaml", "roster":
 		return true
@@ -199,7 +204,7 @@ func (d *mcpDispatcher) isCWDTracked(cwd string) bool {
 // (local-fast path), or the proxy itself errors (we let the local
 // path handle it as a fallback so transient network blips don't
 // break the user's session).
-func (d *mcpDispatcher) tryProxyToolCall(ctx context.Context, sess *daemon.Session, frame []byte) ([]byte, bool) {
+func (d *mcpDispatcher) tryProxyToolCall(ctx context.Context, sess *daemon.Session, rtr *daemon.Router, frame []byte) ([]byte, bool) {
 	var peek struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -219,9 +224,10 @@ func (d *mcpDispatcher) tryProxyToolCall(ctx context.Context, sess *daemon.Sessi
 	if err != nil {
 		return nil, false
 	}
-	out, status, rerr := d.router.RouteToolCall(ctx, peek.Params.Name, body, daemon.RouteContext{
-		Cwd:           sess.CWD,
-		ScopeOverride: scope,
+	out, status, rerr := rtr.RouteToolCall(ctx, peek.Params.Name, body, daemon.RouteContext{
+		Cwd:            sess.CWD,
+		ScopeOverride:  scope,
+		EnabledRemotes: rtr.EffectiveEnabledRemotes(sess),
 	})
 	if rerr != nil || status == 0 {
 		// ErrRouteUnresolved or some other failure — let the local
