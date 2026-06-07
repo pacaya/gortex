@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zzet/gortex/internal/analysis"
 	"github.com/zzet/gortex/internal/graph"
@@ -101,12 +102,16 @@ func TestGenerator_Idempotent(t *testing.T) {
 	procs := analysis.DiscoverProcesses(g)
 
 	tmp := t.TempDir()
+	// Pin the generation timestamp so the front-matter generated_at is
+	// stable across the two generations; without this the test flakes
+	// whenever the two runs straddle a one-second boundary.
+	fixedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	mk := func() *Result {
 		gen := New(Inputs{
 			Graph:       g,
 			Communities: communities,
 			Processes:   procs,
-		}, Options{OutputDir: tmp, Repo: "toy", MinCommunity: 1})
+		}, Options{OutputDir: tmp, Repo: "toy", MinCommunity: 1, GeneratedAt: fixedAt})
 		r, _, err := gen.Generate(context.Background())
 		if err != nil {
 			t.Fatalf("Generate: %v", err)

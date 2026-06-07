@@ -30,6 +30,7 @@ package wiki
 
 import (
 	"context"
+	"time"
 )
 
 // Enhancer turns a section's raw markdown into a richer narrative.
@@ -107,6 +108,11 @@ type Options struct {
 	// Force suppresses any "already exists" diagnostics — the
 	// writer is idempotent regardless.
 	Force bool
+	// GeneratedAt is the timestamp stamped into the page front-matter.
+	// Captured once so a single generation is internally consistent and
+	// so callers/tests can pin it for reproducible output. Defaults to
+	// time.Now() when zero.
+	GeneratedAt time.Time
 }
 
 // withDefaults returns a copy of o with zero fields populated.
@@ -125,6 +131,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Enhancer == nil {
 		o.Enhancer = NoopEnhancer{}
+	}
+	if o.GeneratedAt.IsZero() {
+		o.GeneratedAt = time.Now()
 	}
 	return o
 }
