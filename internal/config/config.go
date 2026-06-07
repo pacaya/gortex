@@ -402,6 +402,10 @@ type Config struct {
 	Embedding EmbeddingConfig `mapstructure:"embedding" yaml:"embedding,omitempty"`
 	MCP       MCPConfig       `mapstructure:"mcp"      yaml:"mcp,omitempty"`
 	Guards    GuardsConfig    `mapstructure:"guards"   yaml:"guards,omitempty"`
+	// Federation tunes the read-only cross-daemon fan-out (Option C):
+	// per-remote deadline, global budget, circuit breaker, and the
+	// opt-in name-keyed fallback. Zero values fall back to defaults.
+	Federation FederationConfig `mapstructure:"federation" yaml:"federation,omitempty"`
 	// Architecture is the declarative layer / allow-deny DSL. Empty
 	// by default; the flat Guards list above keeps working when it is
 	// unset.
@@ -955,6 +959,16 @@ type QueryConfig struct {
 // rerank.SignalSemantic, …) and overrides the tuned defaults
 // returned by rerank.DefaultWeights(). Missing keys keep the
 // default weight; setting a key to 0 disables that signal.
+// FederationConfig is the .gortex.yaml `federation:` block. All knobs are
+// optional; an unset field uses the daemon's built-in default.
+type FederationConfig struct {
+	PerRemoteTimeoutMs int  `mapstructure:"per_remote_timeout_ms" yaml:"per_remote_timeout_ms,omitempty"`
+	BudgetMs           int  `mapstructure:"budget_ms" yaml:"budget_ms,omitempty"`
+	BreakerThreshold   int  `mapstructure:"breaker_threshold" yaml:"breaker_threshold,omitempty"`
+	BreakerCooldownMs  int  `mapstructure:"breaker_cooldown_ms" yaml:"breaker_cooldown_ms,omitempty"`
+	NameKeyedFallback  bool `mapstructure:"name_keyed_fallback" yaml:"name_keyed_fallback,omitempty"`
+}
+
 type SearchConfig struct {
 	// Weights overrides per-signal scoring weights. Canonical names:
 	// bm25, semantic, fan_in, hits, fan_out, churn, co_change,

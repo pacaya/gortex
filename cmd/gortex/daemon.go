@@ -234,6 +234,7 @@ func runDaemonStart(cmd *cobra.Command, _ []string) error {
 			LocalSlug:    daemon.LocalServerSentinel,
 			LocalExecute: localExec,
 			Logger:       logger,
+			Federation:   resolveFederationConfig(),
 		})
 		disp.SetRouter(router)
 		controller.liveRouter = router

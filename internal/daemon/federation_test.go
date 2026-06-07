@@ -368,6 +368,59 @@ func TestFederator_PerToolShapes(t *testing.T) {
 	})
 }
 
+// TestFederation_MultiRemoteConcurrent asserts the fan-out queries two
+// remotes concurrently (both handlers entered before either returns) and
+// never bulk-ingests /v1/graph.
+func TestFederation_MultiRemoteConcurrent(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	mk := func(slug string) *httptest.Server {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "indexed": true, "schema_version": localSchemaMajor, "api_version": 1})
+		})
+		mux.HandleFunc("/v1/graph", func(w http.ResponseWriter, r *http.Request) {
+			t.Error("federation must never bulk-ingest /v1/graph")
+		})
+		mux.HandleFunc("/v1/tools/", func(w http.ResponseWriter, r *http.Request) {
+			entered <- struct{}{}
+			<-release
+			_, _ = w.Write(envelope(`{"nodes":[{"id":"` + slug + `::N"}],"edges":[],"total_nodes":1,"total_edges":0}`))
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	r1, r2 := mk("r1"), mk("r2")
+	fed := NewFederator(FederationConfig{PerRemoteTimeout: 5 * time.Second, Budget: 10 * time.Second, HealthTTL: time.Millisecond},
+		func(e ServerEntry) (*ServerClient, error) { return NewServerClient(e) }, nil)
+
+	local := envelope(`{"nodes":[],"edges":[],"total_nodes":0,"total_edges":0}`)
+	done := make(chan []byte, 1)
+	go func() {
+		done <- fed.Augment(context.Background(), "find_usages", []byte(`{}`), local,
+			[]ServerEntry{{Slug: "r1", URL: r1.URL}, {Slug: "r2", URL: r2.URL}})
+	}()
+
+	// If the fan-out were serial, only one handler would enter while the
+	// other blocks — this would deadlock. Reading both proves concurrency.
+	timeout := time.After(8 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-entered:
+		case <-timeout:
+			t.Fatal("remotes were queried serially, not concurrently")
+		}
+	}
+	close(release)
+
+	m := decodeFederated(t, <-done)
+	origins, _ := m["origins"].(map[string]any)
+	if origins["r1::N"] != "remote:r1" || origins["r2::N"] != "remote:r2" {
+		t.Errorf("both remotes' nodes should be tagged by origin, got %v", origins)
+	}
+}
+
 // TestFederator_WriteToolNeverFederated asserts a mutating tool is never
 // fanned out even if (somehow) it reaches Augment.
 func TestFederator_WriteToolNeverFederated(t *testing.T) {

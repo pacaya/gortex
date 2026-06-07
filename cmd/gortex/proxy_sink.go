@@ -2,10 +2,31 @@ package main
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/zzet/gortex/internal/config"
 	"github.com/zzet/gortex/internal/daemon"
 	gortexmcp "github.com/zzet/gortex/internal/mcp"
 )
+
+// resolveFederationConfig loads the .gortex.yaml `federation:` block and
+// maps it to the daemon's FederationConfig. Unset knobs stay zero so
+// NewFederator's defaults apply. Best-effort: a config load error yields
+// the all-default config.
+func resolveFederationConfig() daemon.FederationConfig {
+	cfg, err := config.Load(cfgFile)
+	if err != nil || cfg == nil {
+		return daemon.FederationConfig{}
+	}
+	f := cfg.Federation
+	return daemon.FederationConfig{
+		PerRemoteTimeout:  time.Duration(f.PerRemoteTimeoutMs) * time.Millisecond,
+		Budget:            time.Duration(f.BudgetMs) * time.Millisecond,
+		BreakerThreshold:  f.BreakerThreshold,
+		BreakerCooldown:   time.Duration(f.BreakerCooldownMs) * time.Millisecond,
+		NameKeyedFallback: f.NameKeyedFallback,
+	}
+}
 
 // sessionRemoteOverrideSink bridges the MCP session proxy-toggle tools to
 // the daemon's per-session overrides and the live router's roster. It is

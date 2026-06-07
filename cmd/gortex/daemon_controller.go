@@ -466,6 +466,7 @@ func (c *realController) ReloadServers(_ context.Context) (json.RawMessage, erro
 			LocalSlug:    daemon.LocalServerSentinel,
 			LocalExecute: c.localExecute,
 			Logger:       c.logger,
+			Federation:   resolveFederationConfig(),
 		})
 		if c.publishRouter != nil {
 			c.publishRouter(c.liveRouter)
