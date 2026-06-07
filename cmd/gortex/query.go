@@ -5,15 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
-	"github.com/zzet/gortex/internal/config"
-	"github.com/zzet/gortex/internal/graph"
-	"github.com/zzet/gortex/internal/indexer"
-	"github.com/zzet/gortex/internal/parser"
-	"github.com/zzet/gortex/internal/parser/languages"
-	"github.com/zzet/gortex/internal/query"
+	"github.com/zzet/gortex/internal/daemon"
 )
 
 var (
@@ -29,9 +25,9 @@ var queryCmd = &cobra.Command{
 }
 
 func init() {
-	queryCmd.PersistentFlags().StringVar(&queryIndex, "index", ".", "repository path to index")
+	queryCmd.PersistentFlags().StringVar(&queryIndex, "index", ".", "repository path the daemon must track")
 	queryCmd.PersistentFlags().IntVar(&queryDepth, "depth", 3, "traversal depth")
-	queryCmd.PersistentFlags().StringVar(&queryFormat, "format", "text", "output format: text|json|dot|mermaid")
+	queryCmd.PersistentFlags().StringVar(&queryFormat, "format", "text", "output format: text|json")
 	queryCmd.PersistentFlags().IntVar(&queryLimit, "limit", 50, "max nodes in result")
 
 	queryCmd.AddCommand(querySymbolCmd)
@@ -46,105 +42,44 @@ func init() {
 	rootCmd.AddCommand(queryCmd)
 }
 
-func buildEngine() (*query.Engine, error) {
-	logger := newLogger()
-	cfg, err := config.Load(cfgFile)
-	if err != nil {
-		return nil, err
-	}
-	g := graph.New()
-	reg := parser.NewRegistry()
-	languages.RegisterAll(reg)
-	idx := indexer.New(g, reg, cfg.Index, logger)
-	if _, err := idx.Index(queryIndex); err != nil {
-		return nil, err
-	}
-	eng := query.NewEngine(g)
-	eng.SetSearch(idx.Search())
-	return eng, nil
-}
-
-func opts() query.QueryOptions {
-	return query.QueryOptions{Depth: queryDepth, Limit: queryLimit, Detail: "brief"}
-}
-
-func printResult(cmd *cobra.Command, v any) error {
-	if queryFormat == "json" {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(v)
-	}
-	if queryFormat == "dot" {
-		if sg, ok := v.(*query.SubGraph); ok {
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), sg.ToDot())
-			return nil
-		}
-		return fmt.Errorf("--format dot is only supported for graph traversal queries (deps, dependents, callers, calls, usages, cluster)")
-	}
-	if queryFormat == "mermaid" {
-		if sg, ok := v.(*query.SubGraph); ok {
-			_, _ = fmt.Fprint(cmd.OutOrStdout(), sg.ToMermaid())
-			return nil
-		}
-		return fmt.Errorf("--format mermaid is only supported for graph traversal queries (deps, dependents, callers, calls, usages, cluster)")
-	}
-	// Text format.
-	switch val := v.(type) {
-	case *query.SubGraph:
-		for _, n := range val.Nodes {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%-12s %-40s %s:%d\n", n.Kind, n.ID, n.FilePath, n.StartLine)
-		}
-		if val.Truncated {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "... truncated (%d total)\n", val.TotalNodes)
-		}
-	case []*graph.Node:
-		for _, n := range val {
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%-12s %-40s %s:%d\n", n.Kind, n.ID, n.FilePath, n.StartLine)
-		}
-	case *graph.GraphStats:
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Nodes: %d  Edges: %d\n", val.TotalNodes, val.TotalEdges)
-		if len(val.ByKind) > 0 {
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "By kind:")
-			for k, v := range val.ByKind {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-12s %d\n", k, v)
-			}
-		}
-		if len(val.ByLanguage) > 0 {
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "By language:")
-			for k, v := range val.ByLanguage {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-12s %d\n", k, v)
-			}
-		}
-	}
-	return nil
-}
-
-// tryDaemonTool runs a tool against the warm daemon when one owns the
-// repo. It returns (result, true) on a daemon-served answer; (nil, false)
-// when no daemon owns the repo or the repo is untracked — the Stage-1
-// caller then falls back to a local index; and a real error otherwise
-// (distinct from "daemon unavailable", which is never a hard error).
-func tryDaemonTool(repoPath, tool string, args map[string]any) (json.RawMessage, bool, error) {
+// requireDaemonTool runs a graph tool against the daemon that owns the
+// repo. The daemon is the single graph owner: when none is running, or it
+// does not track the repo, this returns an actionable error rather than
+// silently building a second-class in-process index.
+func requireDaemonTool(repoPath, tool string, args map[string]any) (json.RawMessage, error) {
 	exec, err := resolveExecutor(repoPath)
 	if err != nil {
 		if errors.Is(err, ErrNoExecutor) {
-			return nil, false, nil
+			return nil, daemonRequiredErr(repoPath)
 		}
-		return nil, false, err
+		return nil, err
 	}
 	defer func() { _ = exec.Close() }()
 	out, err := exec.CallTool(context.Background(), tool, args)
 	if err != nil {
 		if errors.Is(err, ErrRepoNotTracked) {
-			return nil, false, nil
+			return nil, daemonRequiredErr(repoPath)
 		}
-		return nil, false, err
+		return nil, err
 	}
-	return out, true, nil
+	return out, nil
+}
+
+// daemonRequiredErr explains how to make the daemon able to answer: start
+// it (when none runs) or track the repo (when it runs but does not own it).
+func daemonRequiredErr(repoPath string) error {
+	abs, aerr := filepath.Abs(repoPath)
+	if aerr != nil {
+		abs = repoPath
+	}
+	if !daemon.IsRunning() {
+		return fmt.Errorf("no gortex daemon is running — start it with `gortex daemon start --detach`, then track this repo with `gortex track %s`", abs)
+	}
+	return fmt.Errorf("the gortex daemon does not track %s — add it with `gortex track %s`", abs, abs)
 }
 
 // emitDaemonJSON re-indents and prints a daemon tool result for the
-// --format json path.
+// --format json path (and as the fallback for unrecognised shapes).
 func emitDaemonJSON(cmd *cobra.Command, raw json.RawMessage) error {
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -169,10 +104,45 @@ func printDaemonSearchSymbols(cmd *cobra.Command, raw json.RawMessage) error {
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
+		return emitDaemonJSON(cmd, raw)
 	}
 	for _, r := range payload.Results {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%-12s %-40s %s:%d\n", r.Kind, r.ID, r.FilePath, r.Line)
+	}
+	return nil
+}
+
+// printDaemonSubgraph renders the node-list shape shared by the graph
+// traversal tools (get_dependencies / dependents / callers / call_chain /
+// find_usages / find_implementations). Falls back to pretty JSON when the
+// payload is not the expected shape.
+func printDaemonSubgraph(cmd *cobra.Command, raw json.RawMessage) error {
+	if queryFormat == "json" {
+		return emitDaemonJSON(cmd, raw)
+	}
+	var payload struct {
+		Nodes []struct {
+			ID        string `json:"id"`
+			Kind      string `json:"kind"`
+			FilePath  string `json:"file_path"`
+			Line      int    `json:"line"`
+			StartLine int    `json:"start_line"`
+		} `json:"nodes"`
+		Truncated  bool `json:"truncated"`
+		TotalNodes int  `json:"total_nodes"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Nodes == nil {
+		return emitDaemonJSON(cmd, raw)
+	}
+	for _, n := range payload.Nodes {
+		line := n.Line
+		if line == 0 {
+			line = n.StartLine
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%-12s %-40s %s:%d\n", n.Kind, n.ID, n.FilePath, line)
+	}
+	if payload.Truncated {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "... truncated (%d total)\n", payload.TotalNodes)
 	}
 	return nil
 }
@@ -188,7 +158,7 @@ func printDaemonStats(cmd *cobra.Command, raw json.RawMessage) error {
 		ByLanguage map[string]int `json:"by_language"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
+		return emitDaemonJSON(cmd, raw)
 	}
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintf(out, "Nodes: %d  Edges: %d\n", payload.TotalNodes, payload.TotalEdges)
@@ -212,20 +182,12 @@ var querySymbolCmd = &cobra.Command{
 	Short: "Find symbols matching name",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Daemon-first: serve from the warm graph when one owns the repo.
-		if out, ok, err := tryDaemonTool(queryIndex, "search_symbols",
-			map[string]any{"query": args[0], "limit": queryLimit}); err != nil {
-			return err
-		} else if ok {
-			return printDaemonSearchSymbols(cmd, out)
-		}
-		// Fallback: local index (Stage-1 backward compatibility).
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "search_symbols",
+			map[string]any{"query": args[0], "limit": queryLimit})
 		if err != nil {
 			return err
 		}
-		nodes := eng.FindSymbols(args[0])
-		return printResult(cmd, nodes)
+		return printDaemonSearchSymbols(cmd, out)
 	},
 }
 
@@ -234,11 +196,12 @@ var queryDepsCmd = &cobra.Command{
 	Short: "Show dependencies of a symbol",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "get_dependencies",
+			map[string]any{"id": args[0], "depth": queryDepth, "limit": queryLimit})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.GetDependencies(args[0], opts()))
+		return printDaemonSubgraph(cmd, out)
 	},
 }
 
@@ -247,11 +210,12 @@ var queryDependentsCmd = &cobra.Command{
 	Short: "Show blast radius for a symbol",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "get_dependents",
+			map[string]any{"id": args[0], "depth": queryDepth, "limit": queryLimit})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.GetDependents(args[0], opts()))
+		return printDaemonSubgraph(cmd, out)
 	},
 }
 
@@ -260,11 +224,12 @@ var queryCallersCmd = &cobra.Command{
 	Short: "Show who calls a function",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "get_callers",
+			map[string]any{"id": args[0], "depth": queryDepth, "limit": queryLimit})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.GetCallers(args[0], opts()))
+		return printDaemonSubgraph(cmd, out)
 	},
 }
 
@@ -273,11 +238,12 @@ var queryCallsCmd = &cobra.Command{
 	Short: "Show what a function calls",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "get_call_chain",
+			map[string]any{"id": args[0], "depth": queryDepth, "limit": queryLimit})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.GetCallChain(args[0], opts()))
+		return printDaemonSubgraph(cmd, out)
 	},
 }
 
@@ -286,11 +252,12 @@ var queryImplementationsCmd = &cobra.Command{
 	Short: "Show implementations of an interface",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "find_implementations",
+			map[string]any{"id": args[0]})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.FindImplementations(args[0]))
+		return printDaemonSubgraph(cmd, out)
 	},
 }
 
@@ -299,27 +266,23 @@ var queryUsagesCmd = &cobra.Command{
 	Short: "Show all usages of a symbol",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		eng, err := buildEngine()
+		out, err := requireDaemonTool(queryIndex, "find_usages",
+			map[string]any{"id": args[0], "limit": queryLimit})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.FindUsages(args[0]))
+		return printDaemonSubgraph(cmd, out)
 	},
 }
 
 var queryStatsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show graph statistics",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if out, ok, err := tryDaemonTool(queryIndex, "graph_stats", map[string]any{}); err != nil {
-			return err
-		} else if ok {
-			return printDaemonStats(cmd, out)
-		}
-		eng, err := buildEngine()
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		out, err := requireDaemonTool(queryIndex, "graph_stats", map[string]any{})
 		if err != nil {
 			return err
 		}
-		return printResult(cmd, eng.Stats())
+		return printDaemonStats(cmd, out)
 	},
 }
