@@ -3939,8 +3939,13 @@ func (idx *Indexer) IncrementalReindexPaths(root string, paths []string) (*Index
 	// eviction may have dropped edges. Skipped under deferGlobalPasses
 	// so a batch caller runs one global pass at the end.
 	if !idx.deferGlobalPasses && (len(staleFiles) > 0 || len(deletedFiles) > 0) {
-		idx.resolver.InferImplements()
-		idx.resolver.InferOverrides()
+		// Scoped inference passes re-derive only the affected types/interfaces
+		// (add-parity with the full pass); fall back to whole-graph when
+		// scoping is disabled.
+		if !idx.runScopedInferencePasses(staleFiles) {
+			idx.resolver.InferImplements()
+			idx.resolver.InferOverrides()
+		}
 		// Keep capability edges (reads_env / executes_process /
 		// accesses_field) fresh on incremental reindex — same idempotent
 		// re-derive RunGlobalGraphPasses runs at full index.
@@ -4152,8 +4157,12 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 	// caller (ReconcileAll, warmup) can run a single global pass at
 	// the end instead of paying O(global) per repo.
 	if !idx.deferGlobalPasses {
-		idx.resolver.InferImplements()
-		idx.resolver.InferOverrides()
+		// Scoped inference passes re-derive only the affected types/interfaces
+		// (add-parity with the full pass); fall back to whole-graph when off.
+		if !idx.runScopedInferencePasses(staleFiles) {
+			idx.resolver.InferImplements()
+			idx.resolver.InferOverrides()
+		}
 		// Capability edges (reads_env / executes_process / accesses_field)
 		// re-derived from the freshly re-indexed files' base edges so the
 		// daemon's capability surface — what a supply-chain / least-privilege

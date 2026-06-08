@@ -532,6 +532,14 @@ type IndexConfig struct {
 	// per-repo with `.gortex.yaml::index::synthesize_speculative_dispatch:
 	// true` or the GORTEX_SYNTH_SPECULATIVE=1 environment override.
 	SynthesizeSpeculativeDispatch *bool `mapstructure:"synthesize_speculative_dispatch" yaml:"synthesize_speculative_dispatch,omitempty"`
+	// ScopedGlobalPasses scopes the global inference passes (InferImplements /
+	// InferOverrides) on incremental reindex to only the types/interfaces a
+	// change can affect, instead of re-running the whole-graph type×interface
+	// cross product on every single-file edit. Add-parity with the full pass
+	// (it re-derives exactly the edges eviction dropped). Tri-state, DEFAULT
+	// ON. Set false (or GORTEX_INDEX_SCOPED_GLOBAL_PASSES=0) to restore the
+	// whole-graph behaviour.
+	ScopedGlobalPasses *bool `mapstructure:"scoped_global_passes" yaml:"scoped_global_passes,omitempty"`
 	// Transforms are pluggable pre-ingestion content processors. Each
 	// rewrites a matching file's bytes before the parser sees them —
 	// expanding minified bundles, normalising SVG/TOON, converting a
@@ -1301,6 +1309,15 @@ func (i IndexConfig) SpeculativeDispatchEnabledOrDefault() bool {
 		return false
 	}
 	return *i.SynthesizeSpeculativeDispatch
+}
+
+// ScopedGlobalPassesEnabledOrDefault resolves the tri-state ScopedGlobalPasses
+// flag against a default-ON policy.
+func (i IndexConfig) ScopedGlobalPassesEnabledOrDefault() bool {
+	if i.ScopedGlobalPasses == nil {
+		return true
+	}
+	return *i.ScopedGlobalPasses
 }
 
 // EmbeddingProviderOrDefault returns the configured provider name,
