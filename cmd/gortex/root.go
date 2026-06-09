@@ -89,7 +89,7 @@ func assignCommandGroups() {
 		"daemon": "engine", "track": "engine", "untrack": "engine",
 		"repos": "engine", "status": "engine", "proxy": "engine", "workspace": "engine",
 		"query": "query", "context": "query", "audit": "query", "wiki": "query",
-		"docs": "query", "export": "query", "wakeup": "query",
+		"docs": "query", "export": "query", "wakeup": "query", "prs": "query",
 		"index": "index", "enrich": "index", "db": "index",
 		"init": "setup", "install": "setup", "uninstall": "setup", "agents": "setup",
 		"hook": "setup", "githook": "setup", "config": "setup",
