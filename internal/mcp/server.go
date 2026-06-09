@@ -239,6 +239,12 @@ type Server struct {
 	// non-nil after NewServer; a disabled logger is a cheap no-op.
 	queryLog *queryLogger
 
+	// prCache is a short-TTL cache of fetched forge.PR values keyed by
+	// (repo, number), shared across the PR data tools so a triage
+	// fan-out plus a follow-up impact call reuse one fetch. Always
+	// non-nil after NewServer.
+	prCache *prCache
+
 	// diagBroadcaster forwards LSP `publishDiagnostics` payloads to
 	// MCP clients as `notifications/diagnostics`. Lazy-initialised by
 	// SetLSPDiagnosticsBroadcasting; nil until then.
@@ -884,6 +890,7 @@ func NewServer(engine *query.Engine, g graph.Store, idx *indexer.Indexer, watche
 		queryLog:   newQueryLogger(),
 		pprCache:   newPPRWalkCache(),
 		packCache:  newPackDeltaCache(),
+		prCache:    newPRCache(prCacheTTL),
 	}
 	// Wire the process-wide tokenStats as the parent of every
 	// per-session counter so record() fanout aggregates daemon-wide.
@@ -1003,6 +1010,7 @@ func NewServer(engine *query.Engine, g graph.Store, idx *indexer.Indexer, watche
 	s.registerFindDeclarationTool()
 	s.registerPRRiskTool()
 	s.registerSuggestReviewersTool()
+	s.registerPRTools()
 	s.registerResources()
 	s.registerPrompts()
 

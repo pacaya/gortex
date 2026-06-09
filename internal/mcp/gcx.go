@@ -1977,3 +1977,144 @@ func encodeSuggestReviewers(result map[string]any) ([]byte, error) {
 
 	return buf.Bytes(), nil
 }
+
+// encodeListPRs encodes the list_prs payload as GCX1: a one-row summary
+// (total) plus a per-PR row section. The map shape mirrors listPRsPayload
+// so JSON and GCX share one set of field names. A degradation payload
+// (error/hint) is never routed here — those go through the JSON/TOON path.
+func encodeListPRs(result map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+
+	total, _ := result["total"].(int)
+	sumEnc := newGCX(&buf, "list_prs.summary", []string{"total"})
+	if err := sumEnc.WriteRow(total); err != nil {
+		return nil, err
+	}
+	if err := sumEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	prEnc := newGCX(&buf, "list_prs.prs",
+		[]string{"number", "title", "author", "age_days", "ci", "review", "state", "blockers"},
+	)
+	if prs, ok := result["prs"].([]map[string]any); ok {
+		for _, p := range prs {
+			number, _ := p["number"].(int)
+			title, _ := p["title"].(string)
+			author, _ := p["author"].(string)
+			ageDays, _ := p["age_days"].(int)
+			ci, _ := p["ci"].(string)
+			review, _ := p["review"].(string)
+			state, _ := p["state"].(string)
+			blockers, _ := p["blockers"].([]string)
+			if err := prEnc.WriteRow(
+				number, title, author, ageDays, ci, review, state,
+				strings.Join(blockers, ","),
+			); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := prEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// encodePRImpact encodes the get_pr_impact payload as GCX1: a one-row
+// summary, a review-priorities section, and a changed-symbols section.
+// The bulky blast map is omitted from the compact form — callers that
+// need the full blast grouping request json. The map shape mirrors
+// prImpactForNumber.
+func encodePRImpact(result map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+
+	number, _ := result["number"].(int)
+	risk, _ := result["risk"].(string)
+	score, _ := result["score"].(float64)
+	changedFiles, _ := result["changed_files"].([]string)
+	communities, _ := result["communities"].([]string)
+
+	sumEnc := newGCX(&buf, "get_pr_impact.summary",
+		[]string{"number", "risk", "score", "changed_files", "communities"},
+	)
+	if err := sumEnc.WriteRow(
+		number, risk, roundFloat(score), len(changedFiles), len(communities),
+	); err != nil {
+		return nil, err
+	}
+	if err := sumEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	prEnc := newGCX(&buf, "get_pr_impact.priorities", []string{"axis", "score", "reason"})
+	if priorities, ok := result["review_priorities"].([]map[string]any); ok {
+		for _, p := range priorities {
+			axis, _ := p["axis"].(string)
+			pscore, _ := p["score"].(float64)
+			reason, _ := p["reason"].(string)
+			if err := prEnc.WriteRow(axis, roundFloat(pscore), reason); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := prEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	symEnc := newGCX(&buf, "get_pr_impact.changed_symbols", []string{"id", "name", "kind", "file"})
+	if syms, ok := result["changed_symbols"].([]map[string]any); ok {
+		for _, sym := range syms {
+			id, _ := sym["id"].(string)
+			name, _ := sym["name"].(string)
+			kind, _ := sym["kind"].(string)
+			file, _ := sym["file"].(string)
+			if err := symEnc.WriteRow(id, name, kind, file); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := symEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+// encodeTriagePRs encodes the triage_prs payload as GCX1: a one-row
+// summary plus the score-ranked per-PR rows. The map shape mirrors the
+// triage_prs payload.
+func encodeTriagePRs(result map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+
+	total, _ := result["total"].(int)
+	sumEnc := newGCX(&buf, "triage_prs.summary", []string{"total"})
+	if err := sumEnc.WriteRow(total); err != nil {
+		return nil, err
+	}
+	if err := sumEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	rankEnc := newGCX(&buf, "triage_prs.ranked",
+		[]string{"number", "title", "author", "risk", "score"},
+	)
+	if ranked, ok := result["ranked"].([]map[string]any); ok {
+		for _, r := range ranked {
+			number, _ := r["number"].(int)
+			title, _ := r["title"].(string)
+			author, _ := r["author"].(string)
+			risk, _ := r["risk"].(string)
+			score, _ := r["score"].(float64)
+			if err := rankEnc.WriteRow(number, title, author, risk, roundFloat(score)); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := rankEnc.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
