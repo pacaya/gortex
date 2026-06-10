@@ -359,6 +359,174 @@ func printPRImpact(cmd *cobra.Command, number int, raw json.RawMessage) error {
 	return nil
 }
 
+// runPRTriage calls the daemon's triage_prs tool and renders an AI-ranked
+// review queue (highest-risk first). --use-llm passes use_llm:true so the
+// daemon re-ranks the deterministic queue with one LLM pass. --format json
+// emits the raw tool payload.
+func runPRTriage(cmd *cobra.Command, repoPath string) error {
+	args := map[string]any{}
+	if prsRepo != "" {
+		args["repo"] = prsRepo
+	}
+	if prsUseLLM {
+		args["use_llm"] = true
+	}
+
+	raw, err := prsDaemonTool(repoPath, "triage_prs", args)
+	if err != nil {
+		return err
+	}
+
+	if prsFormat == "json" {
+		return emitDaemonJSON(cmd, raw)
+	}
+	return printPRTriage(cmd, raw)
+}
+
+// runPRConflicts calls the daemon's conflicts_prs tool and renders the
+// merge-order conflict clusters: the graph communities touched by more than
+// one open PR, the colliding PRs, a suggested safe merge order, and a
+// conflict-risk score. --format json emits the raw tool payload.
+func runPRConflicts(cmd *cobra.Command, repoPath string) error {
+	args := map[string]any{}
+	if prsRepo != "" {
+		args["repo"] = prsRepo
+	}
+
+	raw, err := prsDaemonTool(repoPath, "conflicts_prs", args)
+	if err != nil {
+		return err
+	}
+
+	if prsFormat == "json" {
+		return emitDaemonJSON(cmd, raw)
+	}
+	return printPRConflicts(cmd, raw)
+}
+
+// triagePayload mirrors the triage_prs wire shape the queue table renders.
+type triagePayload struct {
+	Ranked []struct {
+		Number    int     `json:"number"`
+		Title     string  `json:"title"`
+		Author    string  `json:"author"`
+		Risk      string  `json:"risk"`
+		Score     float64 `json:"score"`
+		Rationale string  `json:"rationale"`
+	} `json:"ranked"`
+	Total   int  `json:"total"`
+	LLMUsed bool `json:"llm_used"`
+	// degradation shape
+	Error string `json:"error"`
+	Hint  string `json:"hint"`
+}
+
+// printPRTriage renders the ranked review queue: rank, PR#, risk, score, and
+// title (highest-risk first — the daemon already orders the queue). When the
+// LLM re-rank ran and annotated a PR, its rationale is printed beneath the row.
+func printPRTriage(cmd *cobra.Command, raw json.RawMessage) error {
+	out := cmd.OutOrStdout()
+	var p triagePayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return emitDaemonJSON(cmd, raw)
+	}
+	if p.Error != "" {
+		_, _ = fmt.Fprintf(out, "triage: %s", p.Error)
+		if p.Hint != "" {
+			_, _ = fmt.Fprintf(out, " — %s", p.Hint)
+		}
+		_, _ = fmt.Fprintln(out)
+		return nil
+	}
+	if len(p.Ranked) == 0 {
+		_, _ = fmt.Fprintln(out, "No open pull requests to triage.")
+		return nil
+	}
+
+	header := "Review queue (highest-risk first)"
+	if p.LLMUsed {
+		header += " — LLM-reranked"
+	}
+	_, _ = fmt.Fprintln(out, header)
+
+	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "RANK\t#\tRISK\tSCORE\tTITLE")
+	for i, r := range p.Ranked {
+		_, _ = fmt.Fprintf(tw, "%d\t%d\t%s\t%.1f\t%s\n",
+			i+1, r.Number, r.Risk, r.Score, truncate(r.Title, 50))
+	}
+	_ = tw.Flush()
+
+	// Print any LLM rationales below the table so the queue stays scannable.
+	for _, r := range p.Ranked {
+		if rat := strings.TrimSpace(r.Rationale); rat != "" {
+			_, _ = fmt.Fprintf(out, "  PR #%d: %s\n", r.Number, rat)
+		}
+	}
+	return nil
+}
+
+// conflictsPayload mirrors the conflicts_prs wire shape the cluster view renders.
+type conflictsPayload struct {
+	Conflicts []struct {
+		Community      string  `json:"community"`
+		Size           int     `json:"size"`
+		PRs            []int   `json:"prs"`
+		SuggestedOrder []int   `json:"suggested_order"`
+		Risk           float64 `json:"risk"`
+	} `json:"conflicts"`
+	Total int `json:"total"`
+	// degradation shape
+	Error string `json:"error"`
+	Hint  string `json:"hint"`
+}
+
+// printPRConflicts renders the merge-order conflict clusters: each shared
+// community, the PRs that collide there, a suggested safe merge order, and
+// the conflict-risk score (clusters are already ranked highest-risk first).
+func printPRConflicts(cmd *cobra.Command, raw json.RawMessage) error {
+	out := cmd.OutOrStdout()
+	var p conflictsPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return emitDaemonJSON(cmd, raw)
+	}
+	if p.Error != "" {
+		_, _ = fmt.Fprintf(out, "conflicts: %s", p.Error)
+		if p.Hint != "" {
+			_, _ = fmt.Fprintf(out, " — %s", p.Hint)
+		}
+		_, _ = fmt.Fprintln(out)
+		return nil
+	}
+	if len(p.Conflicts) == 0 {
+		_, _ = fmt.Fprintln(out, "No merge-order conflicts: no community is touched by more than one open PR.")
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(out, "Merge-order conflicts (%d cluster(s), highest-risk first)\n", len(p.Conflicts))
+	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "COMMUNITY\tSIZE\tRISK\tPRS\tMERGE ORDER")
+	for _, c := range p.Conflicts {
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%.2f\t%s\t%s\n",
+			c.Community, c.Size, c.Risk, joinPRNumbers(c.PRs), joinPRNumbers(c.SuggestedOrder))
+	}
+	_ = tw.Flush()
+	return nil
+}
+
+// joinPRNumbers formats a list of PR numbers as "#1, #2, #3" for the
+// conflict-cluster table.
+func joinPRNumbers(nums []int) string {
+	if len(nums) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(nums))
+	for _, n := range nums {
+		parts = append(parts, "#"+strconv.Itoa(n))
+	}
+	return strings.Join(parts, ", ")
+}
+
 // resolvePRBase resolves the default base branch used to flag BASE_MISMATCH:
 // the explicit --base flag wins, otherwise the repo's default branch.
 func resolvePRBase(repoPath string) string {

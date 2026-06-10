@@ -22,6 +22,9 @@ func resetPRsSeams(t *testing.T) {
 	repoPrev := prsRepo
 	fmtPrev := prsFormat
 	wtPrev := prsWorktrees
+	triagePrev := prsTriage
+	conflictsPrev := prsConflicts
+	useLLMPrev := prsUseLLM
 	t.Cleanup(func() {
 		forgeAvailable = availPrev
 		forgeListPRs = listPrev
@@ -31,12 +34,18 @@ func resetPRsSeams(t *testing.T) {
 		prsRepo = repoPrev
 		prsFormat = fmtPrev
 		prsWorktrees = wtPrev
+		prsTriage = triagePrev
+		prsConflicts = conflictsPrev
+		prsUseLLM = useLLMPrev
 	})
 	// Deterministic defaults for every case.
 	prsBase = ""
 	prsRepo = ""
 	prsFormat = "text"
 	prsWorktrees = false
+	prsTriage = false
+	prsConflicts = false
+	prsUseLLM = false
 }
 
 // runPRsCmd invokes the prs command with args, capturing its stdout.
