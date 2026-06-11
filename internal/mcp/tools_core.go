@@ -1872,11 +1872,22 @@ func (s *Server) handleGetFileSummary(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError("no symbols found for file: " + fp), nil
 	}
 
+	// ETag conditional fetch — checked before any savings accounting so
+	// a not_modified turnaround books nothing (a polling client would
+	// otherwise mint fake savings on every poll). Use the structural
+	// SubGraph hash — json.Marshal'ing the whole SubGraph + Meta on
+	// every call was the dominant cost on large files (~2 ms / call on
+	// a 500-symbol file).
+	etag := etagSubGraph(sg)
+	if ifNoneMatch := req.GetString("if_none_match", ""); ifNoneMatch != "" && ifNoneMatch == etag {
+		return notModifiedResult(etag), nil
+	}
+
 	// Server-side accounting only — a file summary stands in for
-	// reading the whole file. The compact rendering doubles as the
-	// payload sample for every output format, which makes the recorded
-	// `returned` an upper bound for gcx and a fair count for
-	// compact/json.
+	// reading the whole file. The payload sample tracks the format
+	// actually returned (the compact text for compact/gcx, the
+	// marshaled result for json/toon) so `returned` reflects what was
+	// shipped.
 	summaryLang := ""
 	for _, n := range sg.Nodes {
 		if n != nil && n.Language != "" {
@@ -1884,21 +1895,15 @@ func (s *Server) handleGetFileSummary(ctx context.Context, req mcp.CallToolReque
 			break
 		}
 	}
-	s.recordFileBaselineSavings(ctx, "get_file_summary", fp, summaryLang, compactSubGraph(sg))
 
 	if isCompact(req) {
-		return mcp.NewToolResultText(compactSubGraph(sg)), nil
-	}
-
-	// ETag conditional fetch. Use the structural SubGraph hash —
-	// json.Marshal'ing the whole SubGraph + Meta on every call was the
-	// dominant cost on large files (~2 ms / call on a 500-symbol file).
-	etag := etagSubGraph(sg)
-	if ifNoneMatch := req.GetString("if_none_match", ""); ifNoneMatch != "" && ifNoneMatch == etag {
-		return notModifiedResult(etag), nil
+		payload := compactSubGraph(sg)
+		s.recordFileBaselineSavings(ctx, "get_file_summary", fp, summaryLang, payload)
+		return mcp.NewToolResultText(payload), nil
 	}
 
 	if s.isGCX(ctx, req) {
+		s.recordFileBaselineSavings(ctx, "get_file_summary", fp, summaryLang, compactSubGraph(sg))
 		return s.gcxResponseWithBudget(req)(encodeFileSummary(sg, etag))
 	}
 
@@ -1910,6 +1915,9 @@ func (s *Server) handleGetFileSummary(ctx context.Context, req mcp.CallToolReque
 		"total_edges": len(sg.Edges),
 		"truncated":   sg.Truncated,
 		"etag":        etag,
+	}
+	if payload, merr := json.Marshal(result); merr == nil {
+		s.recordFileBaselineSavings(ctx, "get_file_summary", fp, summaryLang, string(payload))
 	}
 	if s.isTOON(ctx, req) {
 		return returnTOON(result)

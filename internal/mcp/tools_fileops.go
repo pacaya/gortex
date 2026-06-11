@@ -361,13 +361,34 @@ func (s *Server) fileAttributionNode(relPath, language string) *graph.Node {
 	prefix := ""
 	if s.multiIndexer != nil {
 		prefix = matchedRepoPrefix(s.multiIndexer, relPath)
-		if prefix == "" {
+		// Lone-repo attribution applies only to repo-relative paths —
+		// an absolute path that matched no prefix points outside every
+		// tracked repo and must stay unattributed rather than polluting
+		// the lone repo's buckets.
+		if prefix == "" && !filepath.IsAbs(relPath) {
 			if prefixes := s.multiIndexer.RepoPrefixes(); len(prefixes) == 1 {
 				prefix = prefixes[0]
 			}
 		}
 	}
 	return &graph.Node{RepoPrefix: prefix, Language: language, FilePath: relPath}
+}
+
+// savingsAttributionNode fills the per-repo attribution for symbol
+// nodes minted in single-repo mode (RepoPrefix="") so symbol-tool
+// events land in the same per-repo bucket the read-family tools use.
+// The graph node itself is never mutated.
+func (s *Server) savingsAttributionNode(node *graph.Node) *graph.Node {
+	if node == nil || node.RepoPrefix != "" || s.multiIndexer == nil {
+		return node
+	}
+	prefixes := s.multiIndexer.RepoPrefixes()
+	if len(prefixes) != 1 {
+		return node
+	}
+	cp := *node
+	cp.RepoPrefix = prefixes[0]
+	return &cp
 }
 
 // recordFileBaselineSavings books a savings observation for a tool whose
@@ -773,16 +794,6 @@ func (s *Server) handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
-	// Server-side accounting only — read_file is the heaviest source
-	// fetch and must show up in the savings ledger even when nothing
-	// was saved (an uncompressed read returns the whole file, so
-	// returned == baseline and only the call is counted).
-	if !isBinary {
-		returned := tokens.CachedCountInt64(string(content))
-		fullFile := int64(tokens.EstimateFromSample(originalBytes, string(content)))
-		s.tokenStatsFor(ctx).record(s.fileAttributionNode(relPath, language), "read_file", returned, fullFile)
-	}
-
 	// Record the access for frecency credit on any node defined in
 	// this file. read_file is a heavy access (full file), so we
 	// credit every defined symbol — keeps the "agent is working in
@@ -839,6 +850,22 @@ func (s *Server) handleReadFile(ctx context.Context, req mcp.CallToolRequest) (*
 		return notModifiedResult(etag), nil
 	}
 	result["etag"] = etag
+
+	// Server-side accounting only — read_file is the heaviest source
+	// fetch and must show up in the savings ledger even when nothing
+	// was saved (an uncompressed read returns the whole file, so
+	// returned == baseline and only the call is counted). Recorded
+	// after the conditional-fetch return so a not_modified turnaround
+	// books nothing and skips the tokenization entirely.
+	if !isBinary {
+		contentStr := string(content)
+		returned := tokens.CachedCountInt64(contentStr)
+		fullFile := returned
+		if bodiesElided || salienceTruncated {
+			fullFile = int64(tokens.EstimateFromSample(originalBytes, contentStr))
+		}
+		s.tokenStatsFor(ctx).record(s.fileAttributionNode(relPath, language), "read_file", returned, fullFile)
+	}
 
 	if s.isTOON(ctx, req) {
 		return returnTOON(result)
