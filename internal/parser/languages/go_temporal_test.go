@@ -405,7 +405,8 @@ import (
 
 func run(f func()) { f() }
 
-func WF(ctx workflow.Context, actName string) {
+func WF(ctx workflow.Context, picked string) {
+	actName := picked
 	run(func() {
 		actName := cmp.Or(os.Getenv("K"), "Inner")
 		_ = actName
@@ -689,4 +690,37 @@ func Start(c Client) {
 	require.Len(t, edges, 1)
 	assert.Equal(t, "workflow", edges[0].Meta["temporal_kind"])
 	assert.Equal(t, "OrderWorkflow", edges[0].Meta["temporal_name"])
+}
+
+// --- Dispatch wrapper detection (issue #80 Q2) ----------------------
+//
+// A function that forwards one of its parameters as the dispatch name is
+// a wrapper; the parameter is not a real activity name, so emitting a stub
+// for it is noise. We suppress the stub and mark the function as a wrapper
+// (temporal_wrapper_*) for a future interprocedural follower. Propagating
+// the caller's argument through the wrapper (cross-file) is not yet done.
+
+func TestGoTemporal_WrapperParamDispatchSuppressed(t *testing.T) {
+	fix := runGoExtract(t, `package wf
+
+import "go.temporal.io/sdk/workflow"
+
+func executeActivity(ctx workflow.Context, name string, args ...any) error {
+	return workflow.ExecuteActivity(ctx, name, args...).Get(ctx, nil)
+}
+`)
+	// The parameter-named dispatch must NOT emit a (never-resolvable) stub.
+	assert.Empty(t, temporalEdgesByVia(fix, "temporal.stub"),
+		"a parameter-forwarded dispatch must not emit a junk stub")
+
+	// The wrapper function is marked for a future interprocedural follower.
+	var wrapper *graph.Node
+	for _, n := range fix.nodesByKind[graph.KindFunction] {
+		if n.Name == "executeActivity" {
+			wrapper = n
+		}
+	}
+	require.NotNil(t, wrapper)
+	assert.Equal(t, "activity", wrapper.Meta["temporal_wrapper_kind"])
+	assert.Equal(t, "name", wrapper.Meta["temporal_wrapper_param"])
 }

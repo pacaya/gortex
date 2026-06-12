@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
+	"github.com/zzet/gortex/internal/parser"
 	sitter "github.com/zzet/gortex/internal/parser/tsitter"
 )
 
@@ -504,6 +505,31 @@ func applyGoTemporalSignalQueryMeta(edge *graph.Edge, c goDeferredCall) {
 	edge.Meta["via"] = via
 	edge.Meta["temporal_kind"] = c.tempOutKind
 	edge.Meta["temporal_name"] = c.tempName
+}
+
+// markGoTemporalWrapper stamps a dispatch-wrapper marker on the enclosing
+// function node: a function that calls workflow.ExecuteActivity /
+// ExecuteChildWorkflow with one of its own parameters as the dispatch
+// name. temporal_wrapper_kind records the kind (activity / workflow) and
+// temporal_wrapper_param the forwarded parameter name. The marker lets a
+// future interprocedural pass propagate a caller's literal/const argument
+// through the wrapper to the real handler; today it documents the wrapper
+// so the unresolvable parameter-named stub is suppressed rather than
+// emitted as noise.
+func markGoTemporalWrapper(result *parser.ExtractionResult, callerID, kind, param string) {
+	if result == nil || callerID == "" {
+		return
+	}
+	for _, n := range result.Nodes {
+		if n.ID == callerID {
+			if n.Meta == nil {
+				n.Meta = map[string]any{}
+			}
+			n.Meta["temporal_wrapper_kind"] = kind
+			n.Meta["temporal_wrapper_param"] = param
+			return
+		}
+	}
 }
 
 // goTemporalStartKind reports whether a method name is one of the

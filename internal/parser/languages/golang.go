@@ -295,6 +295,11 @@ func (e *GoExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRe
 	// Function parameters and method receivers shadow file-wide tenv at
 	// call resolution time so each function's locals stay sandboxed.
 	paramsByFunc := map[string]typeEnv{}
+	// paramNamesByFunc: function/method ID → set of ALL its parameter
+	// names (paramsByFunc only keeps params with non-builtin types). Used
+	// by the Temporal wrapper detector to recognise a dispatch whose name
+	// is a forwarded parameter.
+	paramNamesByFunc := map[string]map[string]bool{}
 	seenTypeName := map[string]bool{} // dedup when alias + typedef match same name
 
 	var calls []goDeferredCall
@@ -330,10 +335,10 @@ func (e *GoExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRe
 			// No-op (the package name is not currently surfaced as a node).
 
 		case m.Captures["func.def"] != nil:
-			e.emitFunction(m, filePath, fileID, src, result, paramsByFunc, imports)
+			e.emitFunction(m, filePath, fileID, src, result, paramsByFunc, paramNamesByFunc, imports)
 
 		case m.Captures["method.def"] != nil:
-			e.emitMethod(m, filePath, fileID, src, result, paramsByFunc, imports)
+			e.emitMethod(m, filePath, fileID, src, result, paramsByFunc, paramNamesByFunc, imports)
 
 		case m.Captures["typedef.def"] != nil:
 			e.emitTypeDecl(m, filePath, fileID, src, result, seenTypeName)
@@ -733,6 +738,23 @@ func (e *GoExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRe
 			// doesn't resolve onto the SDK's generic `ExecuteActivity`
 			// helper instead of the actual activity body.
 			if c.tempKind == "activity" || c.tempKind == "workflow" {
+				// Wrapper detection: when the dispatch name is a PARAMETER of
+				// the enclosing function, this function is a dispatch wrapper
+				// (e.g. executeActivity(ctx, ao, name, …) {
+				// workflow.ExecuteActivity(ctx, name, …) }). The parameter is
+				// not a real activity name, so the stub could never resolve —
+				// suppress the noise and mark the wrapper instead. Propagating
+				// a caller's literal/const argument into the dispatch
+				// (cross-file wrapper-FOLLOWING) needs call-argument flow and
+				// is a deliberate, documented blind spot for now.
+				if !c.tempEnvDefault {
+					if names, ok := paramNamesByFunc[callerID]; ok {
+						if names[c.tempName] {
+							markGoTemporalWrapper(result, callerID, c.tempKind, c.tempName)
+							continue
+						}
+					}
+				}
 				target := "unresolved::temporal::" + c.tempKind + "::" + c.tempName
 				meta := map[string]any{
 					"via":           "temporal.stub",
@@ -996,10 +1018,15 @@ func (e *GoExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRe
 
 // --- Per-match emit helpers -----------------------------------------
 
-func (e *GoExtractor) emitFunction(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, paramsByFunc map[string]typeEnv, imports map[string]string) {
+func (e *GoExtractor) emitFunction(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, paramsByFunc map[string]typeEnv, paramNamesByFunc map[string]map[string]bool, imports map[string]string) {
 	name := m.Captures["func.name"].Text
 	def := m.Captures["func.def"]
 	id := filePath + "::" + name
+	if pc, ok := m.Captures["func.params"]; ok && pc != nil {
+		if names := extractGoParamNames(pc.Node, src); len(names) > 0 {
+			paramNamesByFunc[id] = names
+		}
+	}
 	node := &graph.Node{
 		ID:        id,
 		Kind:      graph.KindFunction,
@@ -1077,13 +1104,18 @@ func ownReceiverField(receiver, recvName string) (string, bool) {
 	return rest, true
 }
 
-func (e *GoExtractor) emitMethod(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, paramsByFunc map[string]typeEnv, imports map[string]string) {
+func (e *GoExtractor) emitMethod(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, paramsByFunc map[string]typeEnv, paramNamesByFunc map[string]map[string]bool, imports map[string]string) {
 	name := m.Captures["method.name"].Text
 	def := m.Captures["method.def"]
 	receiverText := m.Captures["method.receiver"].Text
 	receiverType := extractReceiverType(receiverText)
 
 	id := filePath + "::" + receiverType + "." + name
+	if paramsCap, ok := m.Captures["method.params"]; ok && paramsCap != nil {
+		if names := extractGoParamNames(paramsCap.Node, src); len(names) > 0 {
+			paramNamesByFunc[id] = names
+		}
+	}
 	scope := typeEnv{}
 	if recvName := extractReceiverName(receiverText); recvName != "" && receiverType != "" {
 		scope[recvName] = receiverType
@@ -2084,6 +2116,37 @@ func extractReceiverName(receiver string) string {
 // parameters, blank identifiers, and types that normalizeGoTypeName
 // drops (primitives, map/chan/func) are skipped — callers only care
 // about names that point at receiver types we could resolve methods on.
+// extractGoParamNames returns the set of ALL parameter names declared in a
+// parameter_list, regardless of type (unlike extractGoParamTypes, which
+// keeps only params with a non-builtin type for receiver resolution). Used
+// by the Temporal wrapper detector to recognise a forwarded parameter.
+func extractGoParamNames(paramList *sitter.Node, src []byte) map[string]bool {
+	if paramList == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for i := 0; i < int(paramList.NamedChildCount()); i++ {
+		decl := paramList.NamedChild(i)
+		if decl == nil {
+			continue
+		}
+		if t := decl.Type(); t != "parameter_declaration" && t != "variadic_parameter_declaration" {
+			continue
+		}
+		typeNode := decl.ChildByFieldName("type")
+		for j := 0; j < int(decl.NamedChildCount()); j++ {
+			c := decl.NamedChild(j)
+			if c == nil || c == typeNode {
+				continue
+			}
+			if c.Type() == "identifier" {
+				out[c.Content(src)] = true
+			}
+		}
+	}
+	return out
+}
+
 func extractGoParamTypes(paramList *sitter.Node, src []byte) typeEnv {
 	if paramList == nil {
 		return nil
