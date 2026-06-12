@@ -209,6 +209,16 @@ func (s *Server) handleResourceSchema(_ context.Context, req mcp.ReadResourceReq
 - proto_type — protobuf: "message", "enum"
 - sql_type   — SQL: "table", "view", "index", "trigger"
 - visibility — "private" for unexported symbols
+- temporal_role — Temporal node role: activity / workflow / activity_interface / workflow_interface / signal / query / update
+
+## Edge Meta: via
+Synthesized framework-dispatch edges carry a "via" tag on the calls edge.
+Temporal (with temporal_kind + temporal_name):
+- temporal.register   — worker registration (provider; activity/workflow)
+- temporal.stub       — workflow→activity/child-workflow dispatch (resolved)
+- temporal.start      — service→workflow start, ExecuteWorkflow/SignalWithStartWorkflow (resolved)
+- temporal.handler    — workflow exposes query/signal/update handler (provider)
+- temporal.signal-send / temporal.query-call — sender→running workflow (consumer)
 `
 	return []mcp.ResourceContents{
 		mcp.TextResourceContents{
