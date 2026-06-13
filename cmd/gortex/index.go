@@ -91,6 +91,7 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		languages.RegisterCustomGrammars(reg, cfg.Index.Grammars, idxLogger)
 		languages.RegisterExtractorPlugins(reg, cfg.Index.ExtractorPlugins, idxLogger)
 		languages.RegisterFallbackChunkers(reg, cfg.Index.FallbackChunkers, idxLogger)
+		languages.ConfigureTemporalEnvHelpers(reg, config.LoadLocalTemporalEnvHelpers(path))
 		idx := indexer.New(g, reg, cfg.Index, idxLogger)
 
 		// --profile attaches a timing reporter via the progress API.
