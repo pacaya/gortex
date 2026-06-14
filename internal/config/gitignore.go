@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // loadRepoGitignore reads the `.gitignore` file at the repo root and
@@ -35,12 +36,25 @@ func loadRepoGitignore(repoPath string) []string {
 
 	var patterns []string
 	scanner := bufio.NewScanner(f)
+	// Tolerate pathologically long lines (a DLP-encrypted or otherwise
+	// non-text .gitignore) instead of aborting the whole read on the
+	// default 64 KiB scanner limit.
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		// A non-UTF-8 line is not a valid gitignore pattern — feeding it to
+		// the matcher would mis-scan. Skip it defensively so a corrupt or
+		// encrypted .gitignore can never poison exclusion.
+		if !utf8.ValidString(line) {
+			continue
+		}
 		patterns = append(patterns, line)
 	}
+	// A read error (a still-too-long line, a transient I/O fault) must not
+	// discard the patterns already read — gitignore loading is best-effort,
+	// never a hard failure.
 	return patterns
 }
