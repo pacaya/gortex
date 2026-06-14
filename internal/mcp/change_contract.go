@@ -122,6 +122,7 @@ type changeEnvelope struct {
 type prediction struct {
 	source       string
 	lens         string
+	riskGate     bool
 	changed      []changedSymbolRef
 	changedIDs   []string
 	nodes        []*graph.Node
@@ -184,6 +185,7 @@ func (s *Server) lowerChange(ctx context.Context, req mcp.CallToolRequest) (*pre
 		return nil, err
 	}
 	p.lens = strings.ToLower(strings.TrimSpace(req.GetString("lens", "")))
+	p.riskGate = riskGateEnabled(req)
 	return p, nil
 }
 
@@ -647,6 +649,14 @@ func (s *Server) assembleEnvelope(p *prediction, violations []analysis.GuardViol
 		}
 	}
 
+	// Risk gate: load-bearing symbols need a fresh impact-review ack.
+	if p.riskGate {
+		for _, r := range s.riskGateReasons(p, risk) {
+			reasons = append(reasons, r)
+			verdict = escalate(verdict, verdictForSeverity(r.Severity))
+		}
+	}
+
 	verCmd := buildVerificationCommand(p)
 	classification := classifyChange(p)
 
@@ -688,6 +698,9 @@ func (s *Server) handleChangeContract(ctx context.Context, req mcp.CallToolReque
 	p, err := s.lowerChange(ctx, req)
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if req.GetBool("ack", false) {
+		return s.handleRiskAck(ctx, req, p)
 	}
 	violations := s.evaluateChange(p)
 	env := s.assembleEnvelope(p, violations)
