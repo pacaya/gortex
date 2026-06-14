@@ -54,7 +54,11 @@ type Watcher struct {
 	fsw       fswatcher.Watcher
 	fsCancel  context.CancelFunc
 	config    config.WatchConfig
-	excludes  *excludes.Matcher
+	// degradedNoFsnotify is set when Start detected a slow mount (a WSL2
+	// 9p/drvfs Windows drive, an SMB share) and skipped the native fsnotify
+	// backend, relying on the adaptive poller + git hooks instead.
+	degradedNoFsnotify bool
+	excludes           *excludes.Matcher
 	events    chan GraphChangeEvent
 	history   []GraphChangeEvent
 	historyMu sync.Mutex
@@ -179,6 +183,27 @@ func NewWatcher(idx *Indexer, cfg config.WatchConfig, logger *zap.Logger) (*Watc
 func (w *Watcher) Start(paths []string) error {
 	if len(paths) == 0 {
 		return errors.New("watcher: no paths to watch")
+	}
+
+	// WSL2 / slow-mount degradation: on a 9p/drvfs mount (a Windows drive
+	// under WSL2, an SMB share) native fsnotify delivers events late or not
+	// at all, and confirmWatchActive would hang ~5s per path before timing
+	// out. Skip the fsnotify backend entirely and rely on the adaptive
+	// poller + git hooks, which are mount-agnostic. The downstream code
+	// already tolerates a nil fsw. GORTEX_FORCE_FSNOTIFY=1 overrides.
+	if w.config.Enabled {
+		probe := paths[0]
+		if abs, err := filepath.Abs(probe); err == nil {
+			probe = abs
+		}
+		if slowWatchMount(probe) {
+			w.degradedNoFsnotify = true
+			w.logger.Warn("watcher: slow mount detected — disabling native fsnotify, using adaptive poller fallback",
+				zap.String("path", probe))
+			w.poller = newPoller(w, w.indexer, w.logger)
+			w.poller.Start()
+			return nil
+		}
 	}
 	ready := make(chan struct{})
 	// Own the events/dropped channels so the library never closes them on
@@ -366,7 +391,11 @@ func (w *Watcher) Stop() error {
 	if w.fsw != nil {
 		w.fsw.Close()
 	}
-	<-w.stopped
+	// In slow-mount degraded mode the fsnotify loop never ran, so its
+	// stopped channel is never closed — don't block on it.
+	if !w.degradedNoFsnotify {
+		<-w.stopped
+	}
 	return nil
 }
 
