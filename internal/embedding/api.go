@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +19,48 @@ import (
 // fails and the caller aborts to text-only search.
 const maxRetryAfterWait = 60 * time.Second
 
+// maxEmbedInputBytes caps each embedding input. OpenAI's embedding models
+// reject inputs over 8192 tokens with a 400 that aborts the WHOLE batch
+// (and the vector index). A BPE tokenizer never emits more tokens than
+// input characters, and for single-byte (ASCII) source — the overwhelming
+// majority of code — characters equal bytes, so capping the head at 8000
+// bytes guarantees ≤8000 tokens, safely under the 8192 limit, regardless
+// of how token-dense the snippet is. The truncated head still carries the
+// symbol's signature and leading body — enough signal for nearest-neighbour
+// search. Head-truncation beats dropping the whole index over a few giant
+// generated symbols.
+const maxEmbedInputBytes = 8000
+
+// truncateEmbedInputs head-truncates any input over the byte cap, on a
+// UTF-8 rune boundary so the JSON payload stays valid. Returns the same
+// slice when nothing needed trimming (the common case).
+func truncateEmbedInputs(texts []string) []string {
+	var out []string
+	for i, t := range texts {
+		if len(t) <= maxEmbedInputBytes {
+			continue
+		}
+		if out == nil {
+			out = make([]string, len(texts))
+			copy(out, texts)
+		}
+		b := []byte(t[:maxEmbedInputBytes])
+		for len(b) > 0 && b[len(b)-1]&0xC0 == 0x80 { // back off mid-rune
+			b = b[:len(b)-1]
+		}
+		out[i] = string(b)
+	}
+	if out == nil {
+		return texts
+	}
+	return out
+}
+
 // APIProvider calls an external embedding API (Ollama or OpenAI-compatible).
 type APIProvider struct {
 	url    string
 	model  string
+	apiKey string
 	client *http.Client
 	dims   int
 	format apiFormat
@@ -50,9 +89,21 @@ func NewAPIProvider(url, model string) *APIProvider {
 		}
 	}
 
+	// API key for authenticated embedding backends (OpenAI, Azure, and
+	// OpenAI-compatible gateways). Ollama on localhost is keyless, so the
+	// key stays optional and an unset value just omits the header. Prefer
+	// an explicit GORTEX_EMBEDDINGS_API_KEY; fall back to OPENAI_API_KEY
+	// only when the endpoint is api.openai.com, so a stray OPENAI_API_KEY
+	// can never leak to an arbitrary third-party URL.
+	apiKey := os.Getenv("GORTEX_EMBEDDINGS_API_KEY")
+	if apiKey == "" && strings.Contains(url, "openai.com") {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+
 	return &APIProvider{
 		url:    strings.TrimRight(url, "/"),
 		model:  model,
+		apiKey: apiKey,
 		client: &http.Client{Timeout: 30 * time.Second},
 		format: format,
 	}
@@ -155,7 +206,7 @@ type ollamaResponse struct {
 func (p *APIProvider) embedOllama(ctx context.Context, texts []string) ([][]float32, error) {
 	reqBody := ollamaRequest{
 		Model: p.model,
-		Input: texts,
+		Input: truncateEmbedInputs(texts),
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -169,6 +220,9 @@ func (p *APIProvider) embedOllama(ctx context.Context, texts []string) ([][]floa
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
 
 	resp, err := p.doRequest(ctx, req, body)
 	if err != nil {
@@ -212,7 +266,7 @@ type openAIEmbedding struct {
 func (p *APIProvider) embedOpenAI(ctx context.Context, texts []string) ([][]float32, error) {
 	reqBody := openAIRequest{
 		Model: p.model,
-		Input: texts,
+		Input: truncateEmbedInputs(texts),
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -226,6 +280,9 @@ func (p *APIProvider) embedOpenAI(ctx context.Context, texts []string) ([][]floa
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
 
 	resp, err := p.doRequest(ctx, req, body)
 	if err != nil {

@@ -105,3 +105,60 @@ func TestAPIProvider_PersistentRateLimitFails(t *testing.T) {
 	assert.LessOrEqual(t, atomic.LoadInt32(&calls), int32(2),
 		"the 429 retry is bounded to a single re-attempt")
 }
+
+// TestAPIProvider_SendsAuthorizationHeader asserts that an embeddings API
+// key (GORTEX_EMBEDDINGS_API_KEY) is forwarded as an Authorization: Bearer
+// header — the fix that lets gortex use authenticated backends like OpenAI.
+func TestAPIProvider_SendsAuthorizationHeader(t *testing.T) {
+	t.Setenv("GORTEX_EMBEDDINGS_API_KEY", "test-secret")
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2],"index":0}]}`))
+	}))
+	defer srv.Close()
+
+	// A non-Ollama URL selects the OpenAI format (the /v1/embeddings path).
+	p := NewAPIProvider(srv.URL, "text-embedding-3-small")
+	_, err := p.EmbedBatch(context.Background(), []string{"hello"})
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer test-secret", gotAuth)
+}
+
+// TestAPIProvider_NoKeyOmitsAuthorizationHeader asserts that with no key
+// configured, no Authorization header is sent (keyless Ollama stays keyless
+// and a stray OPENAI_API_KEY does not leak to a non-OpenAI endpoint).
+func TestAPIProvider_NoKeyOmitsAuthorizationHeader(t *testing.T) {
+	t.Setenv("GORTEX_EMBEDDINGS_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+
+	var hadAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadAuth = r.Header["Authorization"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1],"index":0}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewAPIProvider(srv.URL, "text-embedding-3-small")
+	_, err := p.EmbedBatch(context.Background(), []string{"hi"})
+	require.NoError(t, err)
+	assert.False(t, hadAuth, "no Authorization header without a configured key")
+}
+
+// TestTruncateEmbedInputs asserts oversized inputs are head-truncated to the
+// byte cap (so OpenAI's 8192-token limit can't abort the whole vector index)
+// while normal inputs pass through untouched.
+func TestTruncateEmbedInputs(t *testing.T) {
+	short := "small symbol"
+	long := string(make([]byte, maxEmbedInputBytes+500))
+
+	out := truncateEmbedInputs([]string{short, long})
+	assert.Equal(t, short, out[0], "short input untouched")
+	assert.LessOrEqual(t, len(out[1]), maxEmbedInputBytes, "long input capped")
+
+	in := []string{"a", "b"}
+	assert.Equal(t, in, truncateEmbedInputs(in), "no oversize → same slice values")
+}

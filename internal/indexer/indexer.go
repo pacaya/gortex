@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -3557,6 +3558,15 @@ func (idx *Indexer) buildSearchIndex() {
 	embedMaxSymbols := defaultEmbedMaxSymbols
 	if idx.embedMaxSymbols > 0 {
 		embedMaxSymbols = idx.embedMaxSymbols
+	}
+	// Env override wins over both the default and the config-wired cap —
+	// a reliable knob independent of the config plumbing. Lets an operator
+	// lift the vector-index size guard for a large repo without editing
+	// (or debugging) the layered config.
+	if env := os.Getenv("GORTEX_EMBEDDINGS_MAX_SYMBOLS"); env != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(env)); err == nil && n > 0 {
+			embedMaxSymbols = n
+		}
 	}
 	if len(texts) > embedMaxSymbols {
 		idx.logger.Warn("vector index disabled — embedding text count exceeds threshold",
