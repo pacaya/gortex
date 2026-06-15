@@ -136,8 +136,8 @@ func TestLSP_Provider_EnrichesNodeMetaFromHover(t *testing.T) {
 
 	server := newFakeLSPServer()
 	server.handle("textDocument/hover", func(params json.RawMessage) (any, *jsonRPCError) {
-		return HoverResult{
-			Contents: MarkupContent{Kind: "plaintext", Value: "func F() string"},
+		return map[string]any{
+			"contents": map[string]any{"kind": "plaintext", "value": "func F() string"},
 		}, nil
 	})
 
@@ -489,7 +489,7 @@ func TestLSP_Provider_EnrichSurvivesHoverFailures(t *testing.T) {
 		if hoverCalls == 1 {
 			return nil, &jsonRPCError{Code: -32603, Message: "internal error"}
 		}
-		return HoverResult{Contents: MarkupContent{Kind: "plaintext", Value: "func G()"}}, nil
+		return map[string]any{"contents": map[string]any{"kind": "plaintext", "value": "func G()"}}, nil
 	})
 
 	p, cleanup := providerWithFakeServer(t, server, []string{"go"})
