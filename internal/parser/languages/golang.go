@@ -1186,6 +1186,12 @@ func (e *GoExtractor) emitFunction(m parser.QueryResult, filePath, fileID string
 	}
 	scanGoPragmas(src, def.StartLine, node)
 	result.Nodes = append(result.Nodes, node)
+	// Record func-returning-literal into ConstValues sidecar for const-deref dispatch.
+	if v, ok := goFuncSingleReturnLiteral(def.Node, src); ok {
+		result.ConstValues = append(result.ConstValues, parser.ConstValue{
+			NodeID: id, FilePath: filePath, Value: v,
+		})
+	}
 	result.Edges = append(result.Edges, &graph.Edge{
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: def.StartLine + 1,
 	})
@@ -1287,6 +1293,12 @@ func (e *GoExtractor) emitMethod(m parser.QueryResult, filePath, fileID string, 
 	}
 	scanGoPragmas(src, def.StartLine, node)
 	result.Nodes = append(result.Nodes, node)
+	// Record method-returning-literal into ConstValues sidecar for const-deref dispatch.
+	if v, ok := goFuncSingleReturnLiteral(def.Node, src); ok {
+		result.ConstValues = append(result.ConstValues, parser.ConstValue{
+			NodeID: id, FilePath: filePath, Value: v,
+		})
+	}
 	result.Edges = append(result.Edges, &graph.Edge{
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: def.StartLine + 1,
 	})
@@ -1908,6 +1920,74 @@ func (e *GoExtractor) emitConst(m parser.QueryResult, filePath, fileID string, s
 			})
 		}
 	}
+}
+
+// PURPOSE — reports the string literal a function body returns when the body
+// is exactly one `return "<literal>"` statement. Used by the const-value
+// sidecar to record func-returning-constant nodes for Temporal dispatch
+// resolution without adding a new resolver pass.
+// RATIONALE — mirrors goConstLiteralValue for the function case.
+// KEYWORDS — temporal, const-deref, single-return-literal
+func goFuncSingleReturnLiteral(declNode *sitter.Node, src []byte) (string, bool) {
+	if declNode == nil {
+		return "", false
+	}
+	body := declNode.ChildByFieldName("body")
+	if body == nil || body.Type() != "block" {
+		return "", false
+	}
+	// The Go grammar wraps a block's statements in a `statement_list` node;
+	// descend into it when present so the single-statement scan sees the
+	// real statements rather than the wrapper.
+	stmtParent := body
+	if body.NamedChildCount() == 1 {
+		if only := body.NamedChild(0); only != nil && only.Type() == "statement_list" {
+			stmtParent = only
+		}
+	}
+	var ret *sitter.Node
+	stmts := 0
+	for i := 0; i < int(stmtParent.NamedChildCount()); i++ {
+		c := stmtParent.NamedChild(i)
+		if c == nil || c.Type() == "comment" {
+			continue
+		}
+		stmts++
+		if c.Type() == "return_statement" {
+			ret = c
+		}
+	}
+	if stmts != 1 || ret == nil {
+		return "", false
+	}
+	// return_statement -> expression_list -> single string literal
+	var expr *sitter.Node
+	for i := 0; i < int(ret.NamedChildCount()); i++ {
+		n := ret.NamedChild(i)
+		if n == nil {
+			continue
+		}
+		if n.Type() == "expression_list" {
+			if n.NamedChildCount() != 1 {
+				return "", false
+			}
+			expr = n.NamedChild(0)
+		} else {
+			expr = n
+		}
+	}
+	if expr == nil {
+		return "", false
+	}
+	switch expr.Type() {
+	case "interpreted_string_literal", "raw_string_literal":
+		t := expr.Content(src)
+		if len(t) >= 2 && (t[0] == '"' || t[0] == '`') {
+			return t[1 : len(t)-1], true
+		}
+		return t, true
+	}
+	return "", false
 }
 
 // goConstLiteralValue extracts the literal value of a single-spec

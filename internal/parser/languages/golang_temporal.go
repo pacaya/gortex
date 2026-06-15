@@ -662,6 +662,14 @@ func goTemporalNameFromExpr(node *sitter.Node, src []byte) string {
 		if op := node.ChildByFieldName("operand"); op != nil {
 			return goTemporalNameFromExpr(op, src)
 		}
+	case "call_expression":
+		// `GetX()` / `pkg.GetX()` — the dispatch name is the called func's
+		// trailing identifier; the resolver derefs it to the func's return
+		// literal via the const-deref map. Recurse into the `function`
+		// child: a selector resolves to "GetX", a bare identifier to "GetX".
+		if fn := node.ChildByFieldName("function"); fn != nil {
+			return goTemporalNameFromExpr(fn, src)
+		}
 	}
 	return ""
 }

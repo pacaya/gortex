@@ -640,3 +640,71 @@ func setup(w Worker) {
 	assert.Equal(t, activity[0].ID, stubCall.To,
 		"executor-field dispatch must resolve to ChargeCard")
 }
+
+// TestTemporalE2E_GoFuncReturningConstantDispatch exercises the full pipeline
+// for G2: a func that returns a string literal used as Temporal dispatch arg.
+//
+//	func GetChargeActivityName() string { return "ChargeActivity" }
+//	workflow.ExecuteActivity(ctx, constants.GetChargeActivityName())
+//
+// After indexing, the stub edge must point at the real ChargeActivity node.
+func TestTemporalE2E_GoFuncReturningConstantDispatch(t *testing.T) {
+	dir := t.TempDir()
+
+	writeFile(t, filepath.Join(dir, "constants.go"), `package wf
+
+func GetChargeActivityName() string { return "ChargeActivity" }
+`)
+	writeFile(t, filepath.Join(dir, "workflow.go"), `package wf
+
+import "go.temporal.io/sdk/workflow"
+
+func OrderWorkflow(ctx workflow.Context) error {
+	return workflow.ExecuteActivity(ctx, GetChargeActivityName()).Get(ctx, nil)
+}
+`)
+	writeFile(t, filepath.Join(dir, "activity.go"), `package wf
+
+import "context"
+
+func ChargeActivity(ctx context.Context) error {
+	return nil
+}
+`)
+	writeFile(t, filepath.Join(dir, "main.go"), `package wf
+
+func setupWorker(w Worker) {
+	w.RegisterWorkflow(OrderWorkflow)
+	w.RegisterActivity(ChargeActivity)
+}
+`)
+
+	g := graph.New()
+	idx := newTestIndexer(g)
+	_, err := idx.Index(dir)
+	require.NoError(t, err)
+
+	// ChargeActivity must be stamped as a registered activity
+	actNodes := g.FindNodesByName("ChargeActivity")
+	require.Len(t, actNodes, 1)
+	activity := actNodes[0]
+	assert.Equal(t, "activity", activity.Meta["temporal_role"])
+	assert.Equal(t, "ChargeActivity", activity.Meta["temporal_name"])
+
+	// OrderWorkflow must have its stub edge resolved to ChargeActivity
+	wfNodes := g.FindNodesByName("OrderWorkflow")
+	require.Len(t, wfNodes, 1)
+	wf := wfNodes[0]
+
+	var stubCall *graph.Edge
+	for _, e := range g.GetOutEdges(wf.ID) {
+		if e != nil && e.Meta != nil && e.Meta["via"] == "temporal.stub" {
+			stubCall = e
+			break
+		}
+	}
+	require.NotNil(t, stubCall, "OrderWorkflow must have an outbound temporal.stub edge")
+	assert.Equal(t, activity.ID, stubCall.To,
+		"func-returning-constant dispatch must resolve to ChargeActivity")
+	assert.Equal(t, graph.OriginASTResolved, stubCall.Origin)
+}

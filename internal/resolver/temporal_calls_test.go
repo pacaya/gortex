@@ -663,3 +663,43 @@ func TestResolveTemporalCalls_ExecutorFieldDispatch(t *testing.T) {
 	assert.Equal(t, activity.ID, methodStub.To,
 		"the method stub must be rewritten to the registered activity")
 }
+
+func TestResolveTemporalCalls_FuncReturningConstantDeref(t *testing.T) {
+	// PURPOSE — a stub edge with temporal_name="GetChargeActivityName" must
+	// resolve to the ChargeActivity handler when the func node has a sidecar
+	// value "ChargeActivity" in the const-deref map.
+	b := newTemporalTestGraph()
+
+	// The workflow function that dispatches via GetChargeActivityName()
+	b.addGoFunc("wf/workflow.go::OrderWorkflow", "OrderWorkflow", "wf/workflow.go", "svc")
+	call := b.addStubCall("wf/workflow.go::OrderWorkflow", "activity", "GetChargeActivityName", "wf/workflow.go")
+
+	// The func-returning-literal: GetChargeActivityName is a KindFunction node
+	// whose ConstValue sidecar says "ChargeActivity"
+	getNameFunc := &graph.Node{
+		ID:       "wf/constants.go::GetChargeActivityName",
+		Kind:     graph.KindFunction,
+		Name:     "GetChargeActivityName",
+		FilePath: "wf/constants.go",
+		Language: "go",
+	}
+	b.g.AddNode(getNameFunc)
+
+	// Inject its sidecar value via BulkSetConstantValues
+	writer, ok := b.g.(graph.ConstantValueWriter)
+	require.True(t, ok, "graph.New() must implement ConstantValueWriter")
+	require.NoError(t, writer.BulkSetConstantValues("svc", []graph.ConstantValueRow{
+		{NodeID: getNameFunc.ID, FilePath: getNameFunc.FilePath, Value: "ChargeActivity"},
+	}))
+
+	// The registered ChargeActivity handler
+	activity := b.addGoFunc("wf/activity.go::ChargeActivity", "ChargeActivity", "wf/activity.go", "svc")
+	b.addGoFunc("wf/main.go::setup", "setup", "wf/main.go", "svc")
+	b.addGoRegister("wf/main.go::setup", "activity", "ChargeActivity", "wf/main.go")
+
+	resolved := ResolveTemporalCalls(b.g)
+	assert.Equal(t, 1, resolved)
+	assert.Equal(t, activity.ID, call.To,
+		"func-returning-constant dispatch must land on the registered ChargeActivity")
+	assert.Equal(t, graph.OriginASTResolved, call.Origin)
+}

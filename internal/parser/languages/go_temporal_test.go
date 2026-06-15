@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/zzet/gortex/internal/graph"
+	"github.com/zzet/gortex/internal/parser"
 )
 
 // temporalEdgesByVia returns every EdgeCalls edge tagged with the given
@@ -817,4 +818,75 @@ func setup() {
 	assert.Equal(t, "ActivityExecutor", m.Meta["executor_type"])
 	assert.Equal(t, "ActivityName", m.Meta["executor_field"])
 	assert.Equal(t, "ChargeCard", m.Meta["executor_value"])
+}
+
+func TestGoTemporal_FuncReturningConstant_EmitsConstValue(t *testing.T) {
+	// PURPOSE — a func that returns a single string literal must emit a
+	// ConstValue entry (not just a KindFunction node) so the resolver's
+	// const-deref map can map the func name to its literal value.
+	ext := NewGoExtractor()
+	result, err := ext.Extract("pkg/foo.go", []byte(`package foo
+
+func GetChargeActivityName() string { return "ChargeActivity" }
+`))
+	require.NoError(t, err)
+
+	// Find the function node
+	var funcNode *graph.Node
+	for _, n := range result.Nodes {
+		if n.Kind == graph.KindFunction && n.Name == "GetChargeActivityName" {
+			funcNode = n
+			break
+		}
+	}
+	require.NotNil(t, funcNode, "KindFunction node GetChargeActivityName must exist")
+
+	// Find the ConstValue for it
+	var cv *parser.ConstValue
+	for i := range result.ConstValues {
+		if result.ConstValues[i].NodeID == funcNode.ID {
+			cv = &result.ConstValues[i]
+			break
+		}
+	}
+	require.NotNil(t, cv, "ConstValue for GetChargeActivityName must be emitted")
+	assert.Equal(t, "ChargeActivity", cv.Value)
+	assert.Equal(t, "pkg/foo.go", cv.FilePath)
+}
+
+func TestGoTemporal_ExecuteActivity_CallExprName(t *testing.T) {
+	// PURPOSE — workflow.ExecuteActivity(ctx, GetX()) must emit a temporal.stub
+	// edge with temporal_name == "GetX" so the resolver can deref the func name
+	// to its return literal via the const-deref map.
+	fix := runGoExtract(t, `package wf
+
+import "go.temporal.io/sdk/workflow"
+
+func WF(ctx workflow.Context) {
+	workflow.ExecuteActivity(ctx, GetX())
+}
+`)
+	edges := temporalEdgesByVia(fix, "temporal.stub")
+	require.Len(t, edges, 1)
+	e := edges[0]
+	assert.Equal(t, "GetX", e.Meta["temporal_name"])
+	assert.Equal(t, "activity", e.Meta["temporal_kind"])
+	assert.Equal(t, "unresolved::temporal::activity::GetX", e.To)
+}
+
+func TestGoTemporal_ExecuteActivity_PackageCallExprName(t *testing.T) {
+	fix := runGoExtract(t, `package wf
+
+import (
+	"go.temporal.io/sdk/workflow"
+	"example.com/constants"
+)
+
+func WF(ctx workflow.Context) {
+	workflow.ExecuteActivity(ctx, constants.GetChargeActivityName())
+}
+`)
+	edges := temporalEdgesByVia(fix, "temporal.stub")
+	require.Len(t, edges, 1)
+	assert.Equal(t, "GetChargeActivityName", edges[0].Meta["temporal_name"])
 }

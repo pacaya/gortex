@@ -1104,7 +1104,7 @@ func buildConstDerefMap(g graph.Store, names []string) map[string]string {
 	var constIDs []string
 	for name, cands := range candByName {
 		for _, n := range cands {
-			if n == nil || n.Kind != graph.KindConstant {
+			if n == nil || (n.Kind != graph.KindConstant && n.Kind != graph.KindFunction && n.Kind != graph.KindMethod) {
 				continue
 			}
 			constIDs = append(constIDs, n.ID)
