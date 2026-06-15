@@ -110,16 +110,43 @@ func (p *FileSourceProvider) fileBody(rel string) (string, bool) {
 	if b, ok := p.cache[rel]; ok {
 		return b, b != ""
 	}
-	raw, err := os.ReadFile(filepath.Join(p.root, rel))
+	abs, ok := p.resolveWithinRoot(rel)
+	if !ok {
+		p.cache[rel] = ""
+		return "", false
+	}
+	raw, err := os.ReadFile(abs)
 	if err != nil {
-		// Fall back to treating the recorded path as already-absolute.
-		if raw, err = os.ReadFile(rel); err != nil {
-			p.cache[rel] = ""
-			return "", false
-		}
+		p.cache[rel] = ""
+		return "", false
 	}
 	p.cache[rel] = string(raw)
 	return string(raw), true
+}
+
+// resolveWithinRoot resolves rel — relative to p.root, or absolute — and
+// confirms the result stays inside p.root. A node FilePath that escapes the
+// indexed tree (via "..", or an absolute path elsewhere) is refused, so a
+// crafted graph node can't make the verifier read arbitrary files off disk and
+// ship them to the LLM. An empty root refuses everything (nothing to bound to).
+func (p *FileSourceProvider) resolveWithinRoot(rel string) (string, bool) {
+	if p.root == "" || rel == "" {
+		return "", false
+	}
+	rootAbs, err := filepath.Abs(p.root)
+	if err != nil {
+		return "", false
+	}
+	cand := rel
+	if !filepath.IsAbs(cand) {
+		cand = filepath.Join(rootAbs, cand)
+	}
+	cand = filepath.Clean(cand)
+	relToRoot, err := filepath.Rel(rootAbs, cand)
+	if err != nil || relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return cand, true
 }
 
 // --- LLM verifier ----------------------------------------------------------

@@ -40,9 +40,9 @@ func TestParseTemporalVerdict(t *testing.T) {
 		{`{"verdict":"rejected","reason":"wrong target"}`, resolver.TemporalVerdictRejected},
 		{`{"verdict":"uncertain"}`, resolver.TemporalVerdictUncertain},
 		{`CONFIRMED is my answer: {"verdict":"CONFIRMED"}`, resolver.TemporalVerdictConfirmed}, // prose-wrapped + case
-		{"```json\n{\"verdict\":\"rejected\"}\n```", resolver.TemporalVerdictRejected},          // fenced
-		{`not json at all`, resolver.TemporalVerdictUncertain},                                  // unparseable → uncertain
-		{`{"verdict":"banana"}`, resolver.TemporalVerdictUncertain},                             // unknown → uncertain
+		{"```json\n{\"verdict\":\"rejected\"}\n```", resolver.TemporalVerdictRejected},         // fenced
+		{`not json at all`, resolver.TemporalVerdictUncertain},                                 // unparseable → uncertain
+		{`{"verdict":"banana"}`, resolver.TemporalVerdictUncertain},                            // unknown → uncertain
 	}
 	for _, c := range cases {
 		got := parseTemporalVerdict(c.raw)
@@ -108,4 +108,27 @@ func TestCachingVerifier_HitsCacheAndPersists(t *testing.T) {
 	r3, _ := c2.Verify(context.Background(), req)
 	assert.Equal(t, resolver.TemporalVerdictConfirmed, r3.Verdict, "loaded from disk, not the new delegate")
 	assert.Equal(t, 0, inner2.calls)
+}
+
+func TestFileSourceProvider_RefusesPathEscape(t *testing.T) {
+	dir := t.TempDir()
+	// A secret file OUTSIDE the indexed root.
+	outside := filepath.Join(filepath.Dir(dir), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("TOPSECRET"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	p := NewFileSourceProvider(dir)
+
+	// Relative traversal via "..".
+	_, ok := p.NodeSource(&graph.Node{FilePath: "../secret.txt", StartLine: 1, EndLine: 1})
+	assert.False(t, ok, "must refuse a ../ escape out of the indexed root")
+
+	// Absolute path outside the root.
+	_, ok = p.NodeSource(&graph.Node{FilePath: outside, StartLine: 1, EndLine: 1})
+	assert.False(t, ok, "must refuse an absolute path outside the indexed root")
+
+	// A legit relative path inside the root still resolves.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "in.go"), []byte("package p"), 0o644))
+	_, ok = p.NodeSource(&graph.Node{FilePath: "in.go", StartLine: 1, EndLine: 1})
+	assert.True(t, ok, "a path inside the root must still resolve")
 }
