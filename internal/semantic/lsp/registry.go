@@ -3,6 +3,7 @@ package lsp
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -132,6 +133,71 @@ type ServerAlt struct {
 // Adding a new server: add the entry here and add its file extensions
 // to extToSpec at init time. The default config picks it up
 // automatically; users override priority / command via .gortex.yaml.
+// JdtlsTrustBuildEnv, when set to a truthy value ("1" / "true"), opts jdtls
+// into build-backed resolution (Maven/Gradle import + autobuild) for the
+// indexed repository. OFF by default: import and autobuild RUN the indexed
+// project's own build — Gradle build scripts execute during import, autobuild
+// compiles the sources — which is code execution from the indexed repo. Only
+// enable it for repositories you trust.
+const JdtlsTrustBuildEnv = "GORTEX_LSP_JDTLS_TRUST_BUILD"
+
+// jdtlsSafeInitOptions keeps jdtls in a no-build mode: JRE-only classpath, with
+// Maven/Gradle import and autobuild DISABLED. Resolution is more limited (jdtls
+// falls back to an "invisible project"), but indexing an untrusted Java repo
+// never executes its build. The default; opt into the build variant via
+// JdtlsTrustBuildEnv.
+const jdtlsSafeInitOptions = `{
+	"settings": {
+		"java": {
+			"import": {
+				"maven": {"enabled": false},
+				"gradle": {"enabled": false}
+			},
+			"autobuild": {"enabled": false}
+		}
+	},
+	"bundles": [],
+	"workspaceFolders": "auto"
+}`
+
+// jdtlsBuildInitOptions enables Maven/Gradle import + autobuild so jdtls
+// resolves real project dependencies. WARNING: import and autobuild execute the
+// indexed project's build (arbitrary code for Gradle). Sent only when the
+// operator has explicitly trusted the indexed repo via JdtlsTrustBuildEnv.
+const jdtlsBuildInitOptions = `{
+	"settings": {
+		"java": {
+			"import": {
+				"maven": {"enabled": true},
+				"gradle": {"enabled": true}
+			},
+			"autobuild": {"enabled": true}
+		}
+	},
+	"bundles": [],
+	"workspaceFolders": "auto"
+}`
+
+// effectiveInitializationOptions returns the InitializationOptions to send for
+// spec. jdtls is upgraded from its safe (no-build) defaults to build-backed
+// options ONLY when the operator opted in via JdtlsTrustBuildEnv; every other
+// server gets its spec options unchanged.
+func effectiveInitializationOptions(spec *ServerSpec) json.RawMessage {
+	if spec == nil {
+		return nil
+	}
+	if spec.Command == "jdtls" && envTruthy(JdtlsTrustBuildEnv) {
+		return json.RawMessage(jdtlsBuildInitOptions)
+	}
+	return spec.InitializationOptions
+}
+
+// envTruthy reports whether environment variable name is set to "1" or "true".
+func envTruthy(name string) bool {
+	v := strings.TrimSpace(os.Getenv(name))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 var Servers = []ServerSpec{
 	{
 		Name:        "gopls",
@@ -288,23 +354,12 @@ var Servers = []ServerSpec{
 		Priority:    6, // jdtls is heavyweight; lower priority than scip-java.
 		Daemon:      true,
 		MaxParallel: 6,
-		// InitializationOptions for jdtls: enable Maven/Gradle import
-		// so jdtls resolves project dependencies instead of falling
-		// back to an "invisible project" with only JRE on classpath.
-		// Without this, hover/codeSelect returns empty for all symbols.
-		InitializationOptions: json.RawMessage(`{
-			"settings": {
-				"java": {
-					"import": {
-						"maven": {"enabled": true},
-						"gradle": {"enabled": true}
-					},
-					"autobuild": {"enabled": true}
-				}
-			},
-			"bundles": [],
-			"workspaceFolders": "auto"
-		}`),
+		// InitializationOptions for jdtls. SAFE BY DEFAULT (jdtlsSafeInitOptions):
+		// no Maven/Gradle import and no autobuild, so indexing an UNTRUSTED Java
+		// repo never runs its build. Build-backed resolution — which EXECUTES the
+		// repo's own build (Gradle scripts run on import; autobuild compiles) — is
+		// opt-in via GORTEX_LSP_JDTLS_TRUST_BUILD; see effectiveInitializationOptions.
+		InitializationOptions: json.RawMessage(jdtlsSafeInitOptions),
 	},
 	{
 		Name:       "kotlin-language-server",

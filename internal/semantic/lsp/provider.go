@@ -169,17 +169,17 @@ func NewProviderFromSpec(spec *ServerSpec, logger *zap.Logger) *Provider {
 		maxParallel = 10
 	}
 	p := &Provider{
-		command:     cmd,
-		args:        args,
-		env:         spec.Env,
-		languages:   spec.Languages,
-		daemon:      spec.Daemon,
-		maxParallel: maxParallel,
-		logger:      logger,
-		spec:        spec,
-		docVersions: map[string]int{},
-		openDocs:    map[string]bool{},
-		lastDiag:    map[string][]Diagnostic{},
+		command:          cmd,
+		args:             args,
+		env:              spec.Env,
+		languages:        spec.Languages,
+		daemon:           spec.Daemon,
+		maxParallel:      maxParallel,
+		logger:           logger,
+		spec:             spec,
+		docVersions:      map[string]int{},
+		openDocs:         map[string]bool{},
+		lastDiag:         map[string][]Diagnostic{},
 		diagWaiters:      map[string][]chan []Diagnostic{},
 		dynamicCaps:      map[string]Registration{},
 		connect:          spec.Connect,
@@ -876,8 +876,8 @@ func (p *Provider) ensureClient(workspaceRoot string) error {
 	}
 	// Pass server-specific InitializationOptions (e.g. Maven/Gradle import
 	// settings for jdtls) when the provider was built from a ServerSpec.
-	if p.spec != nil && len(p.spec.InitializationOptions) > 0 {
-		initParams.InitializationOptions = p.spec.InitializationOptions
+	if opts := effectiveInitializationOptions(p.spec); len(opts) > 0 {
+		initParams.InitializationOptions = opts
 	}
 
 	var initResult InitializeResult
