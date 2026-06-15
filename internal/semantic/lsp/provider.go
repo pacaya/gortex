@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -91,6 +92,29 @@ type Provider struct {
 	// attempts. Doubles on each failure (capped at maxDialBackoff)
 	// and resets to dialBackoffStart on the first success.
 	dialBackoff time.Duration
+
+	// dialBackoffStart / maxDialBackoff are the per-instance bounds for
+	// the reconnect-with-backoff loop (Enrich hover recovery). They
+	// default to the package consts of the same name; tests pin them to
+	// tiny values to keep recovery fast. dialOrSpawn keeps using the
+	// package consts directly — only the mid-flight reconnect path reads
+	// these fields.
+	dialBackoffStart time.Duration
+	maxDialBackoff   time.Duration
+
+	// reconnectMu serialises mid-flight reconnection attempts so that
+	// when many enrichment goroutines observe "LSP server exited" at the
+	// same instant, exactly one of them rebuilds the client while the
+	// others wait and then retry their hover against the fresh session.
+	reconnectMu sync.Mutex
+	// reconnectAttempts counts how many reconnect *cycles* ran across the
+	// whole Enrich pass. Surfaced in the final metrics log.
+	reconnectAttempts atomic.Int64
+
+	// connectOnce establishes a fresh client connection (one attempt, no
+	// backoff). Defaults to ensureClient. Injected in tests to swap in an
+	// in-memory piped client instead of spawning a subprocess.
+	connectOnce func(absRoot string) error
 }
 
 // Dial-retry constants for passive-attach reconnect. The window
@@ -108,17 +132,19 @@ func NewProvider(command string, args []string, languages []string, daemon bool,
 		maxParallel = 10
 	}
 	return &Provider{
-		command:     command,
-		args:        args,
-		languages:   languages,
-		daemon:      daemon,
-		maxParallel: maxParallel,
-		logger:      logger,
-		docVersions: map[string]int{},
-		openDocs:    map[string]bool{},
-		lastDiag:    map[string][]Diagnostic{},
-		diagWaiters: map[string][]chan []Diagnostic{},
-		dynamicCaps: map[string]Registration{},
+		command:          command,
+		args:             args,
+		languages:        languages,
+		daemon:           daemon,
+		maxParallel:      maxParallel,
+		logger:           logger,
+		docVersions:      map[string]int{},
+		openDocs:         map[string]bool{},
+		lastDiag:         map[string][]Diagnostic{},
+		diagWaiters:      map[string][]chan []Diagnostic{},
+		dynamicCaps:      map[string]Registration{},
+		dialBackoffStart: dialBackoffStart,
+		maxDialBackoff:   maxDialBackoff,
 	}
 }
 
@@ -154,10 +180,12 @@ func NewProviderFromSpec(spec *ServerSpec, logger *zap.Logger) *Provider {
 		docVersions: map[string]int{},
 		openDocs:    map[string]bool{},
 		lastDiag:    map[string][]Diagnostic{},
-		diagWaiters: map[string][]chan []Diagnostic{},
-		dynamicCaps: map[string]Registration{},
-		connect:     spec.Connect,
-		dialBackoff: dialBackoffStart,
+		diagWaiters:      map[string][]chan []Diagnostic{},
+		dynamicCaps:      map[string]Registration{},
+		connect:          spec.Connect,
+		dialBackoff:      dialBackoffStart,
+		dialBackoffStart: dialBackoffStart,
+		maxDialBackoff:   maxDialBackoff,
 	}
 	return p
 }
@@ -189,6 +217,15 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 	if err := p.ensureClient(absRoot); err != nil {
 		return nil, fmt.Errorf("start LSP server: %w", err)
 	}
+
+	// Default the reconnect seam to the real ensureClient unless a test
+	// injected its own (in-memory piped client). Set once per pass.
+	if p.connectOnce == nil {
+		p.connectOnce = p.ensureClient
+	}
+	// Reset the cross-pass reconnect counter so the metrics log reflects
+	// only this Enrich invocation.
+	p.reconnectAttempts.Store(0)
 
 	result := &semantic.EnrichResult{
 		Provider: p.Name(),
@@ -235,38 +272,15 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 		}
 	}
 
-	// Open documents for files that have targets. Track absolute
-	// paths so the matching closeDocument calls below release the
-	// LSP server's per-file state — without the cleanup, every
-	// Enrich pass on a large repo grows the server's didOpen set
-	// monotonically until the subprocess is restarted.
-	openedFiles := make(map[string]bool)
-	openedAbs := make(map[string]bool)
-	for _, t := range targets {
-		if !openedFiles[t.node.FilePath] {
-			if err := p.openDocument(absRoot, t.node.FilePath); err != nil {
-				p.logger.Debug("LSP: failed to open document",
-					zap.String("file", t.node.FilePath),
-					zap.Error(err),
-				)
-				continue
-			}
-			openedFiles[t.node.FilePath] = true
-			openedAbs[filepath.Join(absRoot, t.node.FilePath)] = true
-		}
-	}
-	defer func() {
-		for abs := range openedAbs {
-			if err := p.closeDocument(abs); err != nil {
-				p.logger.Debug("LSP: failed to close document",
-					zap.String("file", abs),
-					zap.Error(err),
-				)
-			}
-		}
-	}()
-
-	// Query hover info for nodes to enrich metadata.
+	// Per-goroutine document lifecycle + bounded concurrency (spec
+	// docs/spec-lsp-enrichment-hardening.md, Issues 1 & 2). The previous
+	// implementation bulk-opened every target file up front and closed
+	// them all in one deferred sweep after a fully sequential hover loop —
+	// at peak that pinned tens of thousands of documents open in the
+	// language server and OOM-killed it. Now each node is handled by its
+	// own goroutine that opens its file, hovers, and closes it
+	// immediately; a semaphore caps both the goroutine count and the
+	// simultaneously-open documents at maxParallel.
 	enrichedNodes := make(map[string]bool)
 	// EnrichNodeMeta mutates Node.Meta in place; on disk backends n is a
 	// per-call AllNodes reconstruction, so collect stamped nodes and
@@ -274,14 +288,92 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 	// stamp is discarded on the disk backend. See semantic.EnrichNodeMeta.
 	var stampedNodes []*graph.Node
 
-	// DIAGNOSTIC counters for debugging enrichment=0
-	var diagTotalNodes, diagHoverErr, diagHoverNil, diagTypeEmpty, diagEnriched int
-	var diagFirstHoverValue string
-	var diagFirstHoverError string
-	var diagFirstNodeName string
-	var diagFirstNodeFile string
+	// Race-safe metric counters for the concurrent hover phase.
+	var diagTotalNodes, diagHoverOK, diagHoverErr, diagHoverNil, diagTypeEmpty, diagEnriched atomic.Int64
+
+	// mu guards the cross-goroutine aggregation: stampedNodes,
+	// enrichedNodes, the EnrichResult counters, and the best-effort
+	// first-sample diagnostics below.
+	var mu sync.Mutex
+	var diagFirstHoverValue, diagFirstHoverError, diagFirstNodeName, diagFirstNodeFile string
+
+	// activeClient is the client the hover goroutines currently target.
+	// reconnectWithBackoff swaps it (under reconnectMu) when the server
+	// dies mid-flight; goroutines load it atomically so the swap never
+	// races an in-flight hover.
+	var activeClient atomic.Pointer[Client]
+	activeClient.Store(p.client)
+
+	// Abort coordination: if reconnection fails permanently, the first
+	// goroutine to learn it records the error and flips aborted; the rest
+	// stop early and Enrich returns that error.
+	var aborted atomic.Bool
+	var abortErr error
+	var abortOnce sync.Once
+
+	// reconnect serialises mid-flight recovery so that when a burst of
+	// goroutines observe the same dead client only the first rebuilds it;
+	// the others wait on reconnectMu and then reuse the fresh client.
+	reconnect := func(stale *Client) (*Client, error) {
+		p.reconnectMu.Lock()
+		defer p.reconnectMu.Unlock()
+		if aborted.Load() {
+			return nil, abortErr
+		}
+		if cur := activeClient.Load(); cur != stale {
+			return cur, nil // someone else already reconnected
+		}
+		newC, err := p.reconnectWithBackoff(absRoot)
+		if err != nil {
+			abortOnce.Do(func() {
+				abortErr = err
+				aborted.Store(true)
+			})
+			return nil, err
+		}
+		activeClient.Store(newC)
+		return newC, nil
+	}
+
+	// Open-document reference counting: several nodes can live in one
+	// file, but the server must still see exactly one didOpen / didClose
+	// per file (TestLSP_Provider_OpensEachFileOnce). The first node into a
+	// file opens it; the last one out closes it. Peak open files therefore
+	// stays bounded by the number of distinct files in flight, itself
+	// bounded by the semaphore at maxParallel.
+	openRefs := map[string]int{}
+	var openMu sync.Mutex
+	acquireDoc := func(c *Client, absPath string, content []byte) error {
+		openMu.Lock()
+		defer openMu.Unlock()
+		if openRefs[absPath] == 0 {
+			if err := p.enrichOpenDoc(c, absPath, content); err != nil {
+				return err
+			}
+		}
+		openRefs[absPath]++
+		return nil
+	}
+	releaseDoc := func(c *Client, absPath string) {
+		openMu.Lock()
+		openRefs[absPath]--
+		last := openRefs[absPath] <= 0
+		if last {
+			delete(openRefs, absPath)
+		}
+		openMu.Unlock()
+		if last {
+			_ = p.enrichCloseDoc(c, absPath)
+		}
+	}
+
+	sem := make(chan struct{}, p.maxParallel)
+	var wg sync.WaitGroup
 
 	for _, n := range g.AllNodes() {
+		if aborted.Load() {
+			break
+		}
 		if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
 			continue
 		}
@@ -296,70 +388,113 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 			continue
 		}
 
-		diagTotalNodes++
+		diagTotalNodes.Add(1)
+		wg.Add(1)
+		sem <- struct{}{} // acquire — bounds concurrency AND open docs
+		go func(n *graph.Node) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+			if aborted.Load() {
+				return
+			}
 
-		if !openedFiles[n.FilePath] {
-			if err := p.openDocument(absRoot, n.FilePath); err != nil {
-				if diagTotalNodes <= 5 {
-					p.logger.Debug("ENRICH-DBG: openDocument failed",
-						zap.String("file", n.FilePath),
-						zap.Error(err),
-					)
+			absPath := filepath.Join(absRoot, n.FilePath)
+			content, err := os.ReadFile(absPath)
+			if err != nil {
+				p.logger.Debug("LSP enrich: read source failed",
+					zap.String("file", n.FilePath), zap.Error(err))
+				return
+			}
+
+			c := activeClient.Load()
+			if err := acquireDoc(c, absPath, content); err != nil {
+				p.logger.Debug("LSP enrich: didOpen failed",
+					zap.String("file", n.FilePath), zap.Error(err))
+				return
+			}
+			// Release (and close on the last node out) always, even on
+			// hover error (acceptance criterion 2). Use the current client
+			// so a post-reconnect close lands on the live session.
+			defer releaseDoc(activeClient.Load(), absPath)
+
+			col := identifierColumn(content, n.StartLine, n.Name)
+			hoverResult, err := p.hoverWith(c, absRoot, n.FilePath, n.StartLine-1, col)
+			if err != nil && isServerExitError(err) {
+				// Server died mid-flight — recover once and retry this
+				// node's hover against the fresh session.
+				newC, rerr := reconnect(c)
+				if rerr != nil {
+					return // aborted; wg.Wait + abort check below handles it
 				}
-				continue
+				c = newC
+				hoverResult, err = p.hoverWith(c, absRoot, n.FilePath, n.StartLine-1, col)
 			}
-			openedFiles[n.FilePath] = true
-			openedAbs[filepath.Join(absRoot, n.FilePath)] = true
-		}
+			if err != nil {
+				diagHoverErr.Add(1)
+				mu.Lock()
+				if diagFirstHoverError == "" {
+					diagFirstHoverError = err.Error()
+					diagFirstNodeName = n.Name
+					diagFirstNodeFile = n.FilePath
+				}
+				mu.Unlock()
+				return
+			}
+			if hoverResult == nil {
+				diagHoverNil.Add(1)
+				return
+			}
+			diagHoverOK.Add(1)
 
-		col := identifierColumn(p.getSource(absRoot, n.FilePath), n.StartLine, n.Name)
-		hoverResult, err := p.hover(absRoot, n.FilePath, n.StartLine-1, col)
-		if err != nil {
-			diagHoverErr++
-			if diagFirstHoverError == "" {
-				diagFirstHoverError = err.Error()
-				diagFirstNodeName = n.Name
-				diagFirstNodeFile = n.FilePath
+			typeInfo := extractTypeFromHover(hoverResult.Contents.Value)
+			mu.Lock()
+			if diagFirstHoverValue == "" {
+				diagFirstHoverValue = hoverResult.Contents.Value
+				if len(diagFirstHoverValue) > 200 {
+					diagFirstHoverValue = diagFirstHoverValue[:200]
+				}
 			}
-			continue
-		}
-		if hoverResult == nil {
-			diagHoverNil++
-			continue
-		}
+			mu.Unlock()
+			if typeInfo == "" {
+				diagTypeEmpty.Add(1)
+				return
+			}
 
-		typeInfo := extractTypeFromHover(hoverResult.Contents.Value)
-		if diagFirstHoverValue == "" {
-			diagFirstHoverValue = hoverResult.Contents.Value
-			if len(diagFirstHoverValue) > 200 {
-				diagFirstHoverValue = diagFirstHoverValue[:200]
-			}
-		}
-		if typeInfo != "" {
 			semantic.EnrichNodeMeta(n, "semantic_type", typeInfo, p.Name())
+			diagEnriched.Add(1)
+			mu.Lock()
 			stampedNodes = append(stampedNodes, n)
 			if !enrichedNodes[n.ID] {
 				result.NodesEnriched++
 				result.SymbolsCovered++
 				enrichedNodes[n.ID] = true
 			}
-			diagEnriched++
-		} else {
-			diagTypeEmpty++
-		}
+			mu.Unlock()
+		}(n)
 	}
-	// DIAGNOSTIC: log enrichment counters
-	p.logger.Info("ENRICH-DBG: hover loop complete",
-		zap.Int("total_nodes", diagTotalNodes),
-		zap.Int("hover_err", diagHoverErr),
-		zap.Int("hover_nil", diagHoverNil),
-		zap.Int("type_empty", diagTypeEmpty),
-		zap.Int("enriched", diagEnriched),
+	wg.Wait()
+
+	// Enrichment metrics (acceptance criterion 6).
+	p.logger.Info("LSP enrich: hover phase complete",
+		zap.Int64("total_nodes", diagTotalNodes.Load()),
+		zap.Int64("hover_ok", diagHoverOK.Load()),
+		zap.Int64("hover_err", diagHoverErr.Load()),
+		zap.Int64("hover_nil", diagHoverNil.Load()),
+		zap.Int64("type_empty", diagTypeEmpty.Load()),
+		zap.Int64("enriched", diagEnriched.Load()),
+		zap.Int64("reconnect_attempts", p.reconnectAttempts.Load()),
 		zap.String("first_hover_value", diagFirstHoverValue),
 		zap.String("first_hover_error", diagFirstHoverError),
 		zap.String("first_node_name", diagFirstNodeName),
 		zap.String("first_node_file", diagFirstNodeFile),
 	)
+
+	if aborted.Load() {
+		return result, fmt.Errorf("LSP enrichment aborted: %w", abortErr)
+	}
+
 	if len(stampedNodes) > 0 {
 		g.AddBatch(stampedNodes, nil)
 	}
@@ -380,8 +515,14 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 			continue
 		}
 
+		// Per-item doc lifecycle (no bulk pre-open): open this interface's
+		// file, query, close immediately so memory stays bounded.
+		if err := p.openDocument(absRoot, n.FilePath); err != nil {
+			continue
+		}
 		col := identifierColumn(p.getSource(absRoot, n.FilePath), n.StartLine, n.Name)
 		impls, err := p.findImplementations(absRoot, n.FilePath, n.StartLine-1, col)
+		_ = p.closeDocument(filepath.Join(absRoot, n.FilePath))
 		if err != nil || len(impls) == 0 {
 			continue
 		}
@@ -430,8 +571,14 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 			continue
 		}
 
+		// Per-item doc lifecycle (no bulk pre-open): open the referent's
+		// file, query, close immediately so memory stays bounded.
+		if err := p.openDocument(absRoot, toNode.FilePath); err != nil {
+			continue
+		}
 		col := identifierColumn(p.getSource(absRoot, toNode.FilePath), toNode.StartLine, toNode.Name)
 		refs, err := p.findReferences(absRoot, toNode.FilePath, toNode.StartLine-1, col)
+		_ = p.closeDocument(filepath.Join(absRoot, toNode.FilePath))
 		if err != nil || len(refs) == 0 {
 			continue
 		}
@@ -997,6 +1144,16 @@ func (p *Provider) getSource(repoRoot, relPath string) []byte {
 
 // hover queries hover info for a position.
 func (p *Provider) hover(repoRoot, relPath string, line, col int) (*HoverResult, error) {
+	return p.hoverWith(p.client, repoRoot, relPath, line, col)
+}
+
+// hoverWith issues textDocument/hover against an explicit client.
+// PURPOSE — race-free per-goroutine hover during concurrent enrichment.
+// RATIONALE — enrichment goroutines pass the client they captured
+// atomically, so a concurrent reconnect that swaps p.client never races
+// an in-flight hover (the goroutine holds its own pointer value).
+// KEYWORDS — lsp, hover, concurrency, reconnect
+func (p *Provider) hoverWith(c *Client, repoRoot, relPath string, line, col int) (*HoverResult, error) {
 	absPath := filepath.Join(repoRoot, relPath)
 	params := HoverParams{
 		TextDocumentPositionParams: TextDocumentPositionParams{
@@ -1006,13 +1163,113 @@ func (p *Provider) hover(repoRoot, relPath string, line, col int) (*HoverResult,
 	}
 
 	var result HoverResult
-	if err := p.client.Call("textDocument/hover", params, &result); err != nil {
+	if err := c.Call("textDocument/hover", params, &result); err != nil {
 		return nil, err
 	}
 	if result.Contents.Value == "" {
 		return nil, nil
 	}
 	return &result, nil
+}
+
+// enrichOpenDoc sends a bare textDocument/didOpen against an explicit
+// client without touching the shared openDocs / sourceCache tables.
+// PURPOSE — per-goroutine document open for the concurrent hover phase.
+// RATIONALE — each enrichment goroutine owns its document's lifecycle, so
+// it must not contend on the provider-wide doc maps; the matching close
+// is enrichCloseDoc, always deferred.
+// KEYWORDS — lsp, didOpen, enrichment, per-goroutine
+func (p *Provider) enrichOpenDoc(c *Client, absPath string, content []byte) error {
+	return c.Notify("textDocument/didOpen", DidOpenTextDocumentParams{
+		TextDocument: TextDocumentItem{
+			URI:        pathToURI(absPath),
+			LanguageID: p.languageIDFor(absPath),
+			Version:    1,
+			Text:       string(content),
+		},
+	})
+}
+
+// enrichCloseDoc sends a bare textDocument/didClose against an explicit
+// client — the counterpart to enrichOpenDoc.
+// PURPOSE — release the server's per-document state immediately after a
+// node's hover so simultaneously-open docs stay capped at maxParallel.
+// RATIONALE — bulk-holding documents open was the enrichment OOM root
+// cause; closing eagerly per goroutine bounds heap pressure.
+// KEYWORDS — lsp, didClose, enrichment, lifecycle
+func (p *Provider) enrichCloseDoc(c *Client, absPath string) error {
+	return c.Notify("textDocument/didClose", DidCloseTextDocumentParams{
+		TextDocument: TextDocumentIdentifier{URI: pathToURI(absPath)},
+	})
+}
+
+// isServerExitError reports whether err signals that the language server
+// process / transport is gone, so the enrichment loop should reconnect
+// rather than keep hammering a dead session.
+// PURPOSE — classify hover errors into "server died" vs "ordinary".
+// RATIONALE — only transport/exit failures warrant a reconnect; protocol
+// errors (e.g. an internal-error JSON-RPC reply) must not.
+// KEYWORDS — lsp, reconnect, server-exit, error-classification
+func isServerExitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range []string{
+		"LSP server exited",
+		"client is closed",
+		"broken pipe",
+		"connection reset",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconnectWithBackoff rebuilds the LSP client after the server exits
+// mid-enrichment. It retries connectOnce with exponential backoff
+// (dialBackoffStart → maxDialBackoff) up to maxReconnectAttempts and
+// returns the fresh client, or an error if every attempt failed.
+// PURPOSE — automatic recovery so one mid-flight crash doesn't fail every
+// remaining hover.
+// RATIONALE — callers hold reconnectMu, so exactly one reconnection runs
+// at a time; backoff prevents a tight retry loop against a persistently
+// dead server.
+// KEYWORDS — lsp, reconnect, backoff, recovery
+func (p *Provider) reconnectWithBackoff(absRoot string) (*Client, error) {
+	const maxReconnectAttempts = 5
+	backoff := p.dialBackoffStart
+	if backoff <= 0 {
+		backoff = dialBackoffStart
+	}
+	maxBackoff := p.maxDialBackoff
+	if maxBackoff <= 0 {
+		maxBackoff = maxDialBackoff
+	}
+	var lastErr error
+	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
+		p.reconnectAttempts.Add(1)
+		p.logger.Warn("LSP enrich: reconnecting after server exit",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", maxReconnectAttempts),
+		)
+		if err := p.connectOnce(absRoot); err != nil {
+			lastErr = err
+			p.logger.Warn("LSP enrich: reconnect attempt failed",
+				zap.Int("attempt", attempt), zap.Error(err))
+			time.Sleep(backoff)
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
+		}
+		p.logger.Info("LSP enrich: reconnected", zap.Int("attempt", attempt))
+		return p.client, nil
+	}
+	return nil, fmt.Errorf("LSP reconnect failed after %d attempts: %w", maxReconnectAttempts, lastErr)
 }
 
 // findImplementations queries textDocument/implementation.
