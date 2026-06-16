@@ -641,8 +641,15 @@ func priorMtimesFromStore(g graph.Store, cm *config.ConfigManager, entry config.
 	// a worktree instance persists its mtimes under `<base>@<workspace>`,
 	// not the bare basename, so a plain ResolvePrefix would load the
 	// canonical checkout's mtimes and force a full re-index every restart.
-	prefix := strings.TrimPrefix(indexer.EffectiveRepoPrefix(cm, entry), "/")
-	if prefix == "" {
+	effective := strings.TrimPrefix(indexer.EffectiveRepoPrefix(cm, entry), "/")
+	repoCount := 1
+	if cm != nil {
+		if g := cm.Global(); g != nil {
+			repoCount = len(g.Repos)
+		}
+	}
+	prefix, ok := warmMtimePrefix(effective, repoCount)
+	if !ok {
 		if logger != nil {
 			logger.Info("daemon: priorMtimesFromStore: empty prefix",
 				zap.String("entry_path", entry.Path),
@@ -654,9 +661,39 @@ func priorMtimesFromStore(g graph.Store, cm *config.ConfigManager, entry config.
 	if logger != nil {
 		logger.Info("daemon: priorMtimesFromStore loaded",
 			zap.String("prefix", prefix),
+			zap.Bool("single_repo", repoCount < 2),
 			zap.Int("count", len(mtimes)))
 	}
 	return mtimes
+}
+
+// warmMtimePrefix picks the repo_prefix to look up persisted file mtimes
+// (and, by extension, to decide whether the warm-restart reconcile can run)
+// for a repo whose EffectiveRepoPrefix is `effective` in a daemon tracking
+// `repoCount` repos total.
+//
+// PURPOSE: single-repo daemons index WITHOUT a prefix — MultiIndexer.
+// indexSingleRepo / ReconcileRepoCtx only switch on a repo prefix once a
+// SECOND repo joins (the willBeMultiRepo gate). So a lone repo's nodes and
+// file_mtimes rows are persisted under "", while EffectiveRepoPrefix returns
+// the path basename (e.g. "drools"). Looking mtimes up under the basename
+// finds zero rows and forces a full cold re-index — and, with an API
+// embedder, a full (paid) re-embed — on every restart.
+//
+// RATIONALE: mirror the indexer's own single-vs-multi decision here so the
+// warm path keys mtimes exactly where they were written. In multi-repo mode
+// an empty effective prefix is untrustworthy (it would collide across repos),
+// so report ok=false and let the caller fall back to a cold index.
+//
+// KEYWORDS: warm-restart, repo-prefix, single-repo, file_mtimes, re-embed
+func warmMtimePrefix(effective string, repoCount int) (prefix string, ok bool) {
+	if repoCount < 2 {
+		return "", true
+	}
+	if effective == "" {
+		return "", false
+	}
+	return effective, true
 }
 
 // storeNeedsRebuild reports whether the backend signalled, via the optional

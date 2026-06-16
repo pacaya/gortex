@@ -73,3 +73,33 @@ func TestLSPDisabledSet_Empty(t *testing.T) {
 		t.Fatalf("expected empty map, got %v", got)
 	}
 }
+
+// TestWarmMtimePrefix covers the single- vs multi-repo prefix decision the
+// warm-restart mtime lookup hangs on. The bug it guards: a lone repo indexes
+// unprefixed (rows under ""), but EffectiveRepoPrefix returns the basename, so
+// looking up the basename finds nothing and forces a paid cold re-index every
+// restart.
+func TestWarmMtimePrefix(t *testing.T) {
+	cases := []struct {
+		name       string
+		effective  string
+		repoCount  int
+		wantPrefix string
+		wantOK     bool
+	}{
+		{"single repo uses empty prefix (the bug)", "drools", 1, "", true},
+		{"single repo, zero configured still unprefixed", "drools", 0, "", true},
+		{"multi-repo keeps its derived prefix", "drools", 2, "drools", true},
+		{"multi-repo with no prefix is untrustworthy", "", 3, "", false},
+		{"single repo already empty prefix", "", 1, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPrefix, gotOK := warmMtimePrefix(tc.effective, tc.repoCount)
+			if gotPrefix != tc.wantPrefix || gotOK != tc.wantOK {
+				t.Fatalf("warmMtimePrefix(%q, %d) = (%q, %v), want (%q, %v)",
+					tc.effective, tc.repoCount, gotPrefix, gotOK, tc.wantPrefix, tc.wantOK)
+			}
+		})
+	}
+}

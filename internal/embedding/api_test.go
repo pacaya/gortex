@@ -148,6 +148,28 @@ func TestAPIProvider_NoKeyOmitsAuthorizationHeader(t *testing.T) {
 	assert.False(t, hadAuth, "no Authorization header without a configured key")
 }
 
+// TestAPIProvider_AccumulatesTokenUsage asserts the provider reads the
+// OpenAI `usage.total_tokens` field off each embedding response and
+// accumulates it across calls — the signal the indexer logs so the paid
+// embedding pass reports its actual token spend (it otherwise vanishes).
+func TestAPIProvider_AccumulatesTokenUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.1,0.2],"index":0}],"usage":{"prompt_tokens":7,"total_tokens":7}}`))
+	}))
+	defer srv.Close()
+
+	p := NewAPIProvider(srv.URL, "text-embedding-3-small")
+	assert.Equal(t, int64(0), p.TokensUsed(), "no tokens before any call")
+
+	_, err := p.EmbedBatch(context.Background(), []string{"hello"})
+	require.NoError(t, err)
+	_, err = p.EmbedBatch(context.Background(), []string{"world"})
+	require.NoError(t, err)
+
+	assert.Equal(t, int64(14), p.TokensUsed(), "usage accumulates across batches")
+}
+
 // TestTruncateEmbedInputs asserts oversized inputs are head-truncated to the
 // byte cap (so OpenAI's 8192-token limit can't abort the whole vector index)
 // while normal inputs pass through untouched.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -64,7 +65,19 @@ type APIProvider struct {
 	client *http.Client
 	dims   int
 	format apiFormat
+
+	// tokensUsed accumulates the `usage.total_tokens` reported by the
+	// embedding backend across every request, so the indexer can log the
+	// actual token spend of a paid embedding pass (otherwise invisible).
+	// Touched from several goroutines under the concurrent embedding pool,
+	// hence atomic.
+	tokensUsed int64
 }
+
+// TokensUsed reports the total embedding tokens this provider has been
+// billed for so far, summed from each response's usage.total_tokens.
+// Returns 0 for backends that don't report usage (e.g. Ollama).
+func (p *APIProvider) TokensUsed() int64 { return atomic.LoadInt64(&p.tokensUsed) }
 
 type apiFormat int
 
@@ -255,7 +268,15 @@ type openAIRequest struct {
 }
 
 type openAIResponse struct {
-	Data []openAIEmbedding `json:"data"`
+	Data  []openAIEmbedding `json:"data"`
+	Usage openAIUsage       `json:"usage"`
+}
+
+// openAIUsage carries the token accounting OpenAI returns alongside every
+// embeddings response. total_tokens is what the request is billed on.
+type openAIUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 type openAIEmbedding struct {
@@ -298,6 +319,10 @@ func (p *APIProvider) embedOpenAI(ctx context.Context, texts []string) ([][]floa
 	var result openAIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	if result.Usage.TotalTokens > 0 {
+		atomic.AddInt64(&p.tokensUsed, int64(result.Usage.TotalTokens))
 	}
 
 	vecs := make([][]float32, len(result.Data))
