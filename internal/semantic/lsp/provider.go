@@ -272,15 +272,22 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 		}
 	}
 
-	// Per-goroutine document lifecycle + bounded concurrency (spec
-	// docs/spec-lsp-enrichment-hardening.md, Issues 1 & 2). The previous
+	// Per-file document lifecycle + bounded concurrency. The original
 	// implementation bulk-opened every target file up front and closed
 	// them all in one deferred sweep after a fully sequential hover loop —
 	// at peak that pinned tens of thousands of documents open in the
-	// language server and OOM-killed it. Now each node is handled by its
-	// own goroutine that opens its file, hovers, and closes it
-	// immediately; a semaphore caps both the goroutine count and the
-	// simultaneously-open documents at maxParallel.
+	// language server and OOM-killed it. The fix bounds the open set, but
+	// must keep a file open for the whole span of its symbols' hovers: a
+	// per-node open/close re-opened the file once per symbol whenever a
+	// file's per-node goroutines did not overlap in time (common on a
+	// loaded CI runner), so didOpen was no longer sent exactly once per
+	// file (TestLSP_Provider_OpensEachFileOnce). Enrichment is therefore
+	// grouped by file — one goroutine per file opens it exactly once, fans
+	// its symbols out across a shared hover budget, then closes it exactly
+	// once. fileSem caps the simultaneously-open documents at maxParallel
+	// (the original OOM trigger); hoverSem caps concurrent hovers at
+	// maxParallel independently, so a single many-symbol file still hovers
+	// in parallel.
 	enrichedNodes := make(map[string]bool)
 	// EnrichNodeMeta mutates Node.Meta in place; on disk backends n is a
 	// per-call AllNodes reconstruction, so collect stamped nodes and
@@ -335,54 +342,16 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 		return newC, nil
 	}
 
-	// Open-document reference counting, keyed by (client, file): several
-	// nodes can live in one file, but each client must see exactly one
-	// didOpen / didClose per file (TestLSP_Provider_OpensEachFileOnce).
-	// Keying by client is what makes reconnection strict — a reconnect's
-	// fresh client starts with an empty open-set, so the first node to
-	// touch a file after recovery re-opens it on the new session instead
-	// of hovering against a document the dead session held. Peak open
-	// files stays bounded by the distinct files in flight, itself bounded
-	// by the semaphore at maxParallel.
-	type enrichDocKey struct {
-		c    *Client
-		path string
+	// Group enrichment targets by file so each file's open/close lifecycle
+	// spans all of its symbols. Files keep encounter order; symbols keep
+	// their order within a file.
+	type fileTargets struct {
+		rel   string
+		nodes []*graph.Node
 	}
-	openRefs := map[enrichDocKey]int{}
-	var openMu sync.Mutex
-	acquireDoc := func(c *Client, absPath string, content []byte) error {
-		key := enrichDocKey{c: c, path: absPath}
-		openMu.Lock()
-		defer openMu.Unlock()
-		if openRefs[key] == 0 {
-			if err := p.enrichOpenDoc(c, absPath, content); err != nil {
-				return err
-			}
-		}
-		openRefs[key]++
-		return nil
-	}
-	releaseDoc := func(c *Client, absPath string) {
-		key := enrichDocKey{c: c, path: absPath}
-		openMu.Lock()
-		openRefs[key]--
-		last := openRefs[key] <= 0
-		if last {
-			delete(openRefs, key)
-		}
-		openMu.Unlock()
-		if last {
-			_ = p.enrichCloseDoc(c, absPath)
-		}
-	}
-
-	sem := make(chan struct{}, p.maxParallel)
-	var wg sync.WaitGroup
-
+	var fileList []*fileTargets
+	fileIndex := map[string]*fileTargets{}
 	for _, n := range g.AllNodes() {
-		if aborted.Load() {
-			break
-		}
 		if n.Kind == graph.KindFile || n.Kind == graph.KindImport {
 			continue
 		}
@@ -396,101 +365,177 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 		if !langMatch {
 			continue
 		}
+		ft := fileIndex[n.FilePath]
+		if ft == nil {
+			ft = &fileTargets{rel: n.FilePath}
+			fileIndex[n.FilePath] = ft
+			fileList = append(fileList, ft)
+		}
+		ft.nodes = append(ft.nodes, n)
+	}
 
-		diagTotalNodes.Add(1)
+	// fileSem bounds the number of simultaneously-open documents; hoverSem
+	// bounds concurrent hovers across all open files. Both at maxParallel:
+	// holding a file open never consumes a hover slot, so one file with
+	// many symbols still hovers maxParallel-wide, while many single-symbol
+	// files keep at most maxParallel documents open at once.
+	fileSem := make(chan struct{}, p.maxParallel)
+	hoverSem := make(chan struct{}, p.maxParallel)
+	var wg sync.WaitGroup
+
+	for _, ft := range fileList {
+		if aborted.Load() {
+			break
+		}
 		wg.Add(1)
-		sem <- struct{}{} // acquire — bounds concurrency AND open docs
-		go func(n *graph.Node) {
+		fileSem <- struct{}{} // acquire — bounds simultaneously-open docs
+		go func(ft *fileTargets) {
 			defer func() {
-				<-sem
+				<-fileSem
 				wg.Done()
 			}()
 			if aborted.Load() {
 				return
 			}
 
-			absPath := filepath.Join(absRoot, n.FilePath)
+			absPath := filepath.Join(absRoot, ft.rel)
 			content, err := os.ReadFile(absPath)
 			if err != nil {
 				p.logger.Debug("LSP enrich: read source failed",
-					zap.String("file", n.FilePath), zap.Error(err))
+					zap.String("file", ft.rel), zap.Error(err))
 				return
 			}
 
-			c := activeClient.Load()
-			if err := acquireDoc(c, absPath, content); err != nil {
+			// ensureOpen opens the file on client c at most once per client.
+			// Tracking per client makes reconnection strict: the fresh client
+			// from a mid-flight reconnect starts with an empty open-set, so the
+			// file is re-opened on the new session (once, under openStateMu)
+			// rather than hovered against a document the dead session held.
+			// Every client we opened on is closed exactly once when the file
+			// is done, so didOpen / didClose stay paired on every session.
+			var openStateMu sync.Mutex
+			openedClients := map[*Client]bool{}
+			ensureOpen := func(c *Client) error {
+				openStateMu.Lock()
+				defer openStateMu.Unlock()
+				if openedClients[c] {
+					return nil
+				}
+				if err := p.enrichOpenDoc(c, absPath, content); err != nil {
+					return err
+				}
+				openedClients[c] = true
+				return nil
+			}
+			defer func() {
+				openStateMu.Lock()
+				clients := make([]*Client, 0, len(openedClients))
+				for c := range openedClients {
+					clients = append(clients, c)
+				}
+				openStateMu.Unlock()
+				for _, c := range clients {
+					_ = p.enrichCloseDoc(c, absPath)
+				}
+			}()
+
+			// Open once up front so the file is held open for the whole hover
+			// fan-out below — exactly one didOpen per file on the happy path.
+			if err := ensureOpen(activeClient.Load()); err != nil {
 				p.logger.Debug("LSP enrich: didOpen failed",
-					zap.String("file", n.FilePath), zap.Error(err))
-				return
-			}
-			// Release (and close on the last node out) always, even on
-			// hover error (acceptance criterion 2). Bound to the client we
-			// opened on — args are captured here, so a later reconnect that
-			// reassigns c does not redirect this close to the wrong session.
-			defer releaseDoc(c, absPath)
-
-			col := identifierColumn(content, n.StartLine, n.Name)
-			hoverResult, err := p.hoverWith(c, absRoot, n.FilePath, n.StartLine-1, col)
-			if err != nil && isServerExitError(err) {
-				// Server died mid-flight — recover once and retry this
-				// node's hover against the fresh session. The new client
-				// has no record of our document, so re-open it there (and
-				// close it on the way out) before retrying.
-				newC, rerr := reconnect(c)
-				if rerr != nil {
-					return // aborted; wg.Wait + abort check below handles it
-				}
-				c = newC
-				if err := acquireDoc(c, absPath, content); err != nil {
-					p.logger.Debug("LSP enrich: reopen after reconnect failed",
-						zap.String("file", n.FilePath), zap.Error(err))
-					return
-				}
-				defer releaseDoc(c, absPath)
-				hoverResult, err = p.hoverWith(c, absRoot, n.FilePath, n.StartLine-1, col)
-			}
-			if err != nil {
-				diagHoverErr.Add(1)
-				mu.Lock()
-				if diagFirstHoverError == "" {
-					diagFirstHoverError = err.Error()
-					diagFirstNodeName = n.Name
-					diagFirstNodeFile = n.FilePath
-				}
-				mu.Unlock()
-				return
-			}
-			if hoverResult == nil {
-				diagHoverNil.Add(1)
-				return
-			}
-			diagHoverOK.Add(1)
-
-			typeInfo := extractTypeFromHover(hoverResult.Contents.Value)
-			mu.Lock()
-			if diagFirstHoverValue == "" {
-				diagFirstHoverValue = hoverResult.Contents.Value
-				if len(diagFirstHoverValue) > 200 {
-					diagFirstHoverValue = diagFirstHoverValue[:200]
-				}
-			}
-			mu.Unlock()
-			if typeInfo == "" {
-				diagTypeEmpty.Add(1)
+					zap.String("file", ft.rel), zap.Error(err))
 				return
 			}
 
-			semantic.EnrichNodeMeta(n, "semantic_type", typeInfo, p.Name())
-			diagEnriched.Add(1)
-			mu.Lock()
-			stampedNodes = append(stampedNodes, n)
-			if !enrichedNodes[n.ID] {
-				result.NodesEnriched++
-				result.SymbolsCovered++
-				enrichedNodes[n.ID] = true
+			var nodeWg sync.WaitGroup
+			for _, n := range ft.nodes {
+				if aborted.Load() {
+					break
+				}
+				diagTotalNodes.Add(1)
+				nodeWg.Add(1)
+				hoverSem <- struct{}{} // acquire — bounds concurrent hovers
+				go func(n *graph.Node) {
+					defer func() {
+						<-hoverSem
+						nodeWg.Done()
+					}()
+					if aborted.Load() {
+						return
+					}
+
+					c := activeClient.Load()
+					if err := ensureOpen(c); err != nil {
+						p.logger.Debug("LSP enrich: didOpen failed",
+							zap.String("file", n.FilePath), zap.Error(err))
+						return
+					}
+
+					col := identifierColumn(content, n.StartLine, n.Name)
+					hoverResult, err := p.hoverWith(c, absRoot, n.FilePath, n.StartLine-1, col)
+					if err != nil && isServerExitError(err) {
+						// Server died mid-flight — recover once and retry this
+						// node's hover against the fresh session. The new client
+						// has no record of our document, so re-open it there
+						// (ensureOpen dedupes the re-open across this file's
+						// goroutines) before retrying.
+						newC, rerr := reconnect(c)
+						if rerr != nil {
+							return // aborted; wg.Wait + abort check below handles it
+						}
+						c = newC
+						if err := ensureOpen(c); err != nil {
+							p.logger.Debug("LSP enrich: reopen after reconnect failed",
+								zap.String("file", n.FilePath), zap.Error(err))
+							return
+						}
+						hoverResult, err = p.hoverWith(c, absRoot, n.FilePath, n.StartLine-1, col)
+					}
+					if err != nil {
+						diagHoverErr.Add(1)
+						mu.Lock()
+						if diagFirstHoverError == "" {
+							diagFirstHoverError = err.Error()
+							diagFirstNodeName = n.Name
+							diagFirstNodeFile = n.FilePath
+						}
+						mu.Unlock()
+						return
+					}
+					if hoverResult == nil {
+						diagHoverNil.Add(1)
+						return
+					}
+					diagHoverOK.Add(1)
+
+					typeInfo := extractTypeFromHover(hoverResult.Contents.Value)
+					mu.Lock()
+					if diagFirstHoverValue == "" {
+						diagFirstHoverValue = hoverResult.Contents.Value
+						if len(diagFirstHoverValue) > 200 {
+							diagFirstHoverValue = diagFirstHoverValue[:200]
+						}
+					}
+					mu.Unlock()
+					if typeInfo == "" {
+						diagTypeEmpty.Add(1)
+						return
+					}
+
+					semantic.EnrichNodeMeta(n, "semantic_type", typeInfo, p.Name())
+					diagEnriched.Add(1)
+					mu.Lock()
+					stampedNodes = append(stampedNodes, n)
+					if !enrichedNodes[n.ID] {
+						result.NodesEnriched++
+						result.SymbolsCovered++
+						enrichedNodes[n.ID] = true
+					}
+					mu.Unlock()
+				}(n)
 			}
-			mu.Unlock()
-		}(n)
+			nodeWg.Wait()
+		}(ft)
 	}
 	wg.Wait()
 
