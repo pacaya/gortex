@@ -62,6 +62,8 @@ func (e *ScalaExtractor) extractAll(
 			e.extractClass(node, src, filePath, fileNode, result, seen, annotationSeen)
 		case "object_definition":
 			e.extractObject(node, src, filePath, fileNode, result, seen, annotationSeen)
+		case "enum_definition":
+			e.extractEnum(node, src, filePath, fileNode, result, seen)
 		case "import_declaration":
 			e.extractImport(node, src, filePath, fileNode, result)
 		case "function_definition", "function_declaration":
@@ -274,6 +276,50 @@ func (e *ScalaExtractor) extractMembersFromBody(
 			emitScalaAnnotationEdges(member, mID, filePath, src, result, annotationSeen)
 		}
 	}
+}
+
+// extractEnum extracts a Scala 3 enum as a type with kind "enum" and emits each
+// of its cases (simple or full) as an enum-member of it.
+func (e *ScalaExtractor) extractEnum(node *sitter.Node, src []byte, filePath string, fileNode *graph.Node, result *parser.ExtractionResult, seen map[string]bool) {
+	name := scalaFindChildIdentifier(node, src)
+	if name == "" {
+		return
+	}
+	id := filePath + "::" + name
+	if seen[id] {
+		return
+	}
+	seen[id] = true
+	startLine := int(node.StartPoint().Row) + 1
+	result.Nodes = append(result.Nodes, &graph.Node{
+		ID: id, Kind: graph.KindType, Name: name,
+		FilePath: filePath, StartLine: startLine, EndLine: int(node.EndPoint().Row) + 1,
+		Language: "scala", Meta: map[string]any{"kind": "enum"},
+	})
+	result.Edges = append(result.Edges, &graph.Edge{From: fileNode.ID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: startLine})
+
+	walkNodes(node, func(n *sitter.Node) {
+		if n.Type() != "simple_enum_case" && n.Type() != "full_enum_case" {
+			return
+		}
+		caseName := scalaFindChildIdentifier(n, src)
+		if caseName == "" {
+			return
+		}
+		caseID := id + "." + caseName
+		if seen[caseID] {
+			return
+		}
+		seen[caseID] = true
+		cl := int(n.StartPoint().Row) + 1
+		result.Nodes = append(result.Nodes, &graph.Node{
+			ID: caseID, Kind: graph.KindEnumMember, Name: caseName,
+			FilePath: filePath, StartLine: cl, EndLine: int(n.EndPoint().Row) + 1,
+			Language: "scala", Meta: map[string]any{"receiver": name},
+		})
+		result.Edges = append(result.Edges, &graph.Edge{From: fileNode.ID, To: caseID, Kind: graph.EdgeDefines, FilePath: filePath, Line: cl})
+		result.Edges = append(result.Edges, &graph.Edge{From: caseID, To: id, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: cl})
+	})
 }
 
 // emitScalaField emits a val/var member as a field of its enclosing type, with a
