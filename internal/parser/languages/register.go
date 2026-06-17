@@ -27,6 +27,9 @@ func RegisterAll(reg *parser.Registry) {
 	// Razor / Blazor — carve @code blocks to C# + directive type refs.
 	// Registered before registerForestLanguages so it claims .razor / .cshtml.
 	reg.Register(NewRazorExtractor())
+	// Delphi / FireMonkey form definitions (.dfm/.fmx) — object tree + component
+	// type and event-handler references.
+	reg.Register(NewDFMExtractor())
 	reg.Register(NewCSSExtractor())
 	reg.Register(NewSQLExtractor())
 	reg.Register(NewKotlinExtractor())
