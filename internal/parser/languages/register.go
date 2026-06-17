@@ -24,6 +24,9 @@ func RegisterAll(reg *parser.Registry) {
 	// over the generic forest grammars.
 	reg.Register(NewSvelteExtractor())
 	reg.Register(NewAstroExtractor())
+	// Razor / Blazor — carve @code blocks to C# + directive type refs.
+	// Registered before registerForestLanguages so it claims .razor / .cshtml.
+	reg.Register(NewRazorExtractor())
 	reg.Register(NewCSSExtractor())
 	reg.Register(NewSQLExtractor())
 	reg.Register(NewKotlinExtractor())
