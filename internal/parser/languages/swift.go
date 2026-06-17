@@ -1,6 +1,7 @@
 package languages
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -96,6 +97,10 @@ func (e *SwiftExtractor) Extract(filePath string, src []byte) (*parser.Extractio
 	annotationSeen := make(map[string]bool)
 	protoMethods := make(map[string][]string) // protocol name → declared method names
 	var typeRanges []swiftTypeRange
+	// Extensions aren't captured by qSwiftAll (their name is a user_type, not a
+	// type_identifier), so seed their ranges first; members inside an
+	// `extension Foo { ... }` then attribute to Foo like any other type member.
+	typeRanges = append(typeRanges, swiftExtensionRanges(src)...)
 	var calls []swiftDeferredCall
 
 	parser.EachMatch(e.qAll, root, src, func(m parser.QueryResult) {
@@ -440,6 +445,55 @@ func swiftStampFuncMeta(meta map[string]any, returnType string, isAsync, isStati
 	if isStatic {
 		meta["is_static"] = true
 	}
+}
+
+var swiftExtensionRe = regexp.MustCompile(`(?m)^[ \t]*(?:(?:public|private|internal|fileprivate|open|final)[ \t]+)*extension[ \t]+([A-Za-z_][\w.]*)`)
+
+// swiftExtensionRanges returns a type-range per `extension Foo { ... }` block in
+// src (Foo collapsed to its last dotted segment), found by a brace-matched text
+// scan since the tree-sitter query does not capture extension declarations.
+func swiftExtensionRanges(src []byte) []swiftTypeRange {
+	s := string(src)
+	var ranges []swiftTypeRange
+	for _, loc := range swiftExtensionRe.FindAllStringSubmatchIndex(s, -1) {
+		typeName := s[loc[2]:loc[3]]
+		if i := strings.LastIndexByte(typeName, '.'); i >= 0 {
+			typeName = typeName[i+1:]
+		}
+		rel := strings.IndexByte(s[loc[1]:], '{')
+		if rel < 0 {
+			continue
+		}
+		open := loc[1] + rel
+		end := swiftMatchBrace(s, open)
+		if end < 0 {
+			continue
+		}
+		ranges = append(ranges, swiftTypeRange{
+			name:      typeName,
+			startLine: strings.Count(s[:open], "\n"),
+			endLine:   strings.Count(s[:end], "\n"),
+		})
+	}
+	return ranges
+}
+
+// swiftMatchBrace returns the index of the '}' that closes the '{' at open, or
+// -1 when unbalanced.
+func swiftMatchBrace(s string, open int) int {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // swiftVisibility scans a declaration's leading modifier children for
