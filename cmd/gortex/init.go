@@ -417,6 +417,11 @@ func ensureProjectMarker(root string, w io.Writer) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// Keep the project's local index state out of git — write (or heal) a
+	// self-scoping .gitignore inside the marker dir so a user never commits it.
+	if _, err := workspace.EnsureIndexDirGitignore(dir); err != nil {
+		return err
+	}
 	if !existed {
 		_, _ = fmt.Fprintf(w, "[gortex init] created %s/ to hold this project's Gortex config\n", workspace.IndexDir)
 	}
