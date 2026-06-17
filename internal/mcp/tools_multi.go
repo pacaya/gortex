@@ -22,6 +22,7 @@ func (s *Server) registerMultiRepoTools() {
 			mcp.WithString("path", mcp.Required(), mcp.Description("Absolute path to repository")),
 			mcp.WithString("name", mcp.Description("Optional repo prefix override")),
 			mcp.WithBoolean("as_worktree", mcp.Description("Track a linked git worktree as an independent instance (derived `<base>@<workspace>` prefix) even when its repo is already tracked elsewhere. Auto-detected when the worktree's .gortex.yaml declares a different workspace; set this to force it.")),
+			mcp.WithBoolean("force", mcp.Description("Track even when the path is the home directory or filesystem root (refused by default to avoid an unbounded crawl).")),
 		),
 		s.handleTrackRepository,
 	)
@@ -93,6 +94,9 @@ func (s *Server) handleTrackRepository(ctx context.Context, req mcp.CallToolRequ
 	}
 	if asWT, ok := req.GetArguments()["as_worktree"].(bool); ok {
 		entry.AsWorktree = asWT
+	}
+	if force, ok := req.GetArguments()["force"].(bool); ok {
+		entry.Force = force
 	}
 
 	result, trackErr := s.multiIndexer.TrackRepoCtx(s.progressCtx(ctx, req), entry)

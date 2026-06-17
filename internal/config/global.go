@@ -48,6 +48,10 @@ type RepoEntry struct {
 	// canonical checkout. The decision is recorded by persisting the
 	// derived prefix into Name, so this flag does not need to round-trip.
 	AsWorktree bool `mapstructure:"-" yaml:"-"`
+	// Force is a transient track-time directive (never persisted): when set it
+	// overrides the home / filesystem-root safety guard so a deliberately
+	// chosen root location is tracked anyway.
+	Force bool `mapstructure:"-" yaml:"-"`
 }
 
 // ProjectConfig defines a named project grouping repos.

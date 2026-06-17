@@ -32,6 +32,19 @@ func UnsafeIndexRootReason(path string) string {
 	}
 }
 
+// unsafeRootBlocked reports the refusal reason for indexing or tracking path,
+// or ("", false) when the path is safe or the caller explicitly forced the
+// operation. It is the shared gate behind the index and track entry points.
+func unsafeRootBlocked(path string, force bool) (reason string, blocked bool) {
+	if force {
+		return "", false
+	}
+	if r := UnsafeIndexRootReason(path); r != "" {
+		return r, true
+	}
+	return "", false
+}
+
 // isFilesystemRoot reports whether abs is the POSIX filesystem root.
 func isFilesystemRoot(abs string) bool {
 	return abs == "/" || abs == string(filepath.Separator)

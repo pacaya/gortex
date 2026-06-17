@@ -1192,6 +1192,10 @@ func (mi *MultiIndexer) TrackRepoCtx(ctx context.Context, entry config.RepoEntry
 		return nil, fmt.Errorf("path is not a directory: %s", absPath)
 	}
 
+	if reason, blocked := unsafeRootBlocked(absPath, entry.Force); blocked {
+		return nil, fmt.Errorf("%s; pass force to track it anyway", reason)
+	}
+
 	identity, err := DetectIdentity(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("detecting identity for %s: %w", absPath, err)

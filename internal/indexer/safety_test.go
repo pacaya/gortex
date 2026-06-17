@@ -38,3 +38,19 @@ func TestUnsafeIndexRootReason(t *testing.T) {
 		t.Errorf("a home subdirectory was flagged unsafe: %q", r)
 	}
 }
+
+func TestTrackUnsafeRootGate(t *testing.T) {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		// The home root is blocked unless the caller forces it.
+		if reason, blocked := unsafeRootBlocked(home, false); !blocked || reason == "" {
+			t.Errorf("home should be blocked without force: reason=%q blocked=%v", reason, blocked)
+		}
+		if _, blocked := unsafeRootBlocked(home, true); blocked {
+			t.Error("force should override the unsafe-root block")
+		}
+	}
+	// A safe directory is never blocked.
+	if _, blocked := unsafeRootBlocked(t.TempDir(), false); blocked {
+		t.Error("a safe temp dir should not be blocked")
+	}
+}
