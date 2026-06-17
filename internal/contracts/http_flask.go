@@ -94,6 +94,81 @@ func (h *HTTPExtractor) extractFlaskRestfulRoutes(filePath, text string, lines [
 	return out
 }
 
+// flaskRouteDecoratorRE matches a Flask @bp.route('/path', methods=[...])
+// decorator: group 1 the receiver variable, group 2 the path, group 3 the
+// remainder of the call (scanned for methods=).
+var flaskRouteDecoratorRE = regexp.MustCompile(`@(\w+)\.route\(\s*["']([^"']+)["'](.*)`)
+
+// flaskDefRE matches the Python function definition the decorator wraps.
+var flaskDefRE = regexp.MustCompile(`^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)`)
+
+// extractFlaskDecoratorRoutes handles @bp.route('/path', methods=[...]),
+// expanding one contract per HTTP method (Flask defaults to GET) and resolving
+// the wrapped view function. It supersedes the per-line provider table for
+// @route so the methods= list is honoured rather than collapsed to ANY.
+func (h *HTTPExtractor) extractFlaskDecoratorRoutes(filePath, text string, lines []string, fileNodes []*graph.Node, lang string, tree *parser.ParseTree) []Contract {
+	var out []Contract
+	for i, line := range lines {
+		m := flaskRouteDecoratorRE.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		receiver, path, rest := m[1], m[2], m[3]
+		lineNum := i + 1
+
+		methods := flaskMethodsKwarg(rest)
+		if len(methods) == 0 {
+			methods = []string{"GET"}
+		}
+
+		// The view is the next `def` below the decorator stack.
+		handlerID := ""
+		for j := i + 1; j < len(lines); j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			if trimmed == "" || strings.HasPrefix(trimmed, "@") {
+				continue
+			}
+			if dm := flaskDefRE.FindStringSubmatch(lines[j]); dm != nil {
+				handlerID = findFunctionByName(fileNodes, dm[1])
+			}
+			break
+		}
+
+		for _, method := range methods {
+			out = append(out, h.buildFlaskDecoratorContract(filePath, method, path, handlerID, receiver, lineNum, lines, fileNodes, lang, tree))
+		}
+	}
+	return out
+}
+
+// buildFlaskDecoratorContract assembles one provider contract for a @route
+// method. The route receiver is recorded so the Blueprint url_prefix join can
+// recover it without re-parsing.
+func (h *HTTPExtractor) buildFlaskDecoratorContract(filePath, method, path, symbolID, receiver string, lineNum int, lines []string, fileNodes []*graph.Node, lang string, tree *parser.ParseTree) Contract {
+	normPath, origNames := NormalizeHTTPPathWithParams(path)
+	meta := map[string]any{
+		"method":         method,
+		"path":           normPath,
+		"framework":      "flask",
+		"route_receiver": receiver,
+	}
+	if len(origNames) > 0 {
+		meta["path_param_names"] = origNames
+	}
+	c := Contract{
+		ID:         fmt.Sprintf("http::%s::%s", method, normPath),
+		Type:       ContractHTTP,
+		Role:       RoleProvider,
+		SymbolID:   symbolID,
+		FilePath:   filePath,
+		Line:       lineNum,
+		Meta:       meta,
+		Confidence: 0.9,
+	}
+	EnrichHTTPContractWithTree(&c, lines, fileNodes, lang, tree)
+	return c
+}
+
 // extractFlaskAddURLRule handles app.add_url_rule('/p', view_func=fn, methods=[...]).
 func (h *HTTPExtractor) extractFlaskAddURLRule(filePath, text string, lines []string, fileNodes []*graph.Node, lang string, tree *parser.ParseTree) []Contract {
 	var out []Contract

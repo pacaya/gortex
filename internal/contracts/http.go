@@ -145,15 +145,9 @@ var httpPatterns = []httpPattern{
 		confidence: 0.9,
 		languages:  []string{"python"},
 	},
-	{
-		re:         regexp.MustCompile(`@\w+\.route\(\s*["']([^"']+)["']`),
-		role:       RoleProvider,
-		method:     "ANY",
-		pathGrp:    1,
-		framework:  "flask",
-		confidence: 0.9,
-		languages:  []string{"python"},
-	},
+	// Flask @route is handled by the node-aware extractFlaskDecoratorRoutes
+	// pass (it expands methods=[...] and resolves the view), not the
+	// per-line table.
 	// Django path/re_path/url routing is handled by the node-aware
 	// extractDjangoRoutes pass (it resolves the view handler), not the
 	// per-line table.
@@ -809,6 +803,11 @@ func (h *HTTPExtractor) extract(
 		// DRF router.register(prefix, ViewSet) expands to per-action routes.
 		if strings.Contains(text, ".register(") {
 			out = append(out, h.extractDRFRoutes(filePath, text, lines, fileNodes, lang, tree)...)
+		}
+		// Flask @route decorators expand methods=[...] per HTTP verb; the
+		// per-line table cannot, so it runs as a dedicated pass.
+		if strings.Contains(text, ".route(") {
+			out = append(out, h.extractFlaskDecoratorRoutes(filePath, text, lines, fileNodes, lang, tree)...)
 		}
 	}
 

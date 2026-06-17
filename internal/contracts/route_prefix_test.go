@@ -318,3 +318,57 @@ func keysOfBool(m map[string]bool) []string {
 	}
 	return out
 }
+
+// TestJoinRouterPrefixes_Flask_Blueprint joins a Blueprint url_prefix onto a
+// @bp.route declared on that blueprint.
+func TestJoinRouterPrefixes_Flask_Blueprint(t *testing.T) {
+	files := srcMap{
+		"api.py": `
+from flask import Blueprint
+bp = Blueprint('api', __name__, url_prefix='/api')
+
+@bp.route('/users')
+def list_users():
+    return []
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected flask-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}
+
+// TestJoinRouterPrefixes_Flask_RegisterBlueprint joins a url_prefix supplied at
+// register_blueprint() time across files.
+func TestJoinRouterPrefixes_Flask_RegisterBlueprint(t *testing.T) {
+	files := srcMap{
+		"admin.py": `
+from flask import Blueprint
+admin = Blueprint('admin', __name__)
+
+@admin.route('/dashboard')
+def dashboard():
+    return 'ok'
+`,
+		"app.py": `
+from flask import Flask
+from admin import admin
+app = Flask(__name__)
+app.register_blueprint(admin, url_prefix='/admin')
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+
+	ids := idSet(reg)
+	if !ids["http::GET::/admin/dashboard"] {
+		t.Errorf("expected flask-joined http::GET::/admin/dashboard; got %v", keysOfBool(ids))
+	}
+}

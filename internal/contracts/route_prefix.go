@@ -51,6 +51,7 @@ const routePrefixJoinedMeta = "route_prefix_joined"
 // extractor stamps Meta["framework"] with these values.
 var routePrefixFrameworks = map[string]bool{
 	"fastapi/flask": true, // FastAPI APIRouter / include_router
+	"flask":         true, // Flask Blueprint url_prefix
 	"express":       true, // Express app.use mounts
 	"nestjs":        true, // NestJS @Controller class prefix
 }
@@ -72,6 +73,24 @@ var pyIncludeRouterRE = regexp.MustCompile(`\binclude_router\(\s*([\w.]+)\s*((?:
 
 // prefixKwargRE pulls prefix="..." out of a keyword-argument list.
 var prefixKwargRE = regexp.MustCompile(`prefix\s*=\s*["']([^"']*)["']`)
+
+// urlPrefixKwargRE pulls Flask's url_prefix="..." out of a Blueprint
+// definition or register_blueprint call.
+var urlPrefixKwargRE = regexp.MustCompile(`url_prefix\s*=\s*["']([^"']*)["']`)
+
+// pyBlueprintDefRE matches a Flask Blueprint bound to a variable, e.g.
+// `bp = Blueprint('api', __name__, url_prefix='/api')`. Group 1 is the
+// variable, group 2 the argument list (scanned for url_prefix=).
+var pyBlueprintDefRE = regexp.MustCompile(`(\w+)\s*=\s*Blueprint\(([^)]*)\)`)
+
+// pyRegisterBlueprintRE matches a mount site, e.g.
+// `app.register_blueprint(bp, url_prefix='/admin')`. Group 1 is the
+// mounted blueprint reference, group 2 the argument list.
+var pyRegisterBlueprintRE = regexp.MustCompile(`register_blueprint\(\s*([\w.]+)\s*((?:,[^)]*)?)\)`)
+
+// flaskRouteReceiverRE recovers the blueprint/app variable from a Flask
+// route line, e.g. `@bp.route("/users")` → "bp".
+var flaskRouteReceiverRE = regexp.MustCompile(`@(\w+)\.route\(`)
 
 // pyRouteReceiverRE recovers the decorator receiver variable from a
 // FastAPI route line, e.g. `@router.get("/{id}")` → "router". Anchored
@@ -182,6 +201,28 @@ func JoinRouterPrefixes(reg *Registry, scanFiles []string, srcFor func(filePath 
 			}
 		}
 
+		// Flask: bp = Blueprint('api', __name__, url_prefix='/api')
+		for _, m := range pyBlueprintDefRE.FindAllStringSubmatch(text, -1) {
+			varName := m[1]
+			if pm := urlPrefixKwargRE.FindStringSubmatch(m[2]); pm != nil {
+				f.selfPrefix[varName] = cleanPrefix(pm[1])
+			} else if _, ok := f.selfPrefix[varName]; !ok {
+				f.selfPrefix[varName] = ""
+			}
+		}
+
+		// Flask: app.register_blueprint(bp, url_prefix='/admin')
+		for _, m := range pyRegisterBlueprintRE.FindAllStringSubmatch(text, -1) {
+			child := lastAttr(m[1])
+			prefix := ""
+			if pm := urlPrefixKwargRE.FindStringSubmatch(m[2]); pm != nil {
+				prefix = cleanPrefix(pm[1])
+			}
+			if _, ok := f.mountPrefix[child]; !ok {
+				f.mountPrefix[child] = prefix
+			}
+		}
+
 		// Express: app.use('/api', router)
 		for _, m := range jsUseMountRE.FindAllStringSubmatch(text, -1) {
 			parent, prefix, child := m[1], cleanPrefix(m[2]), m[3]
@@ -201,11 +242,11 @@ func JoinRouterPrefixes(reg *Registry, scanFiles []string, srcFor func(filePath 
 	// best-effort within a workspace: when exactly one file declares a
 	// self-prefix or mount for a var, use it. This favours the common
 	// monorepo / single-service layout the feature targets.
-	globalSelf := map[string]string{}    // var -> self prefix (FastAPI)
-	globalMount := map[string]string{}   // var -> mount prefix
-	globalParent := map[string]string{}  // var -> parent router var
-	selfConflict := map[string]bool{}    // var seen with >1 distinct self prefix
-	mountConflict := map[string]bool{}   // var seen with >1 distinct mount prefix
+	globalSelf := map[string]string{}   // var -> self prefix (FastAPI)
+	globalMount := map[string]string{}  // var -> mount prefix
+	globalParent := map[string]string{} // var -> parent router var
+	selfConflict := map[string]bool{}   // var seen with >1 distinct self prefix
+	mountConflict := map[string]bool{}  // var seen with >1 distinct mount prefix
 
 	// First pass: parse every scan file plus every route-contract file
 	// (union) and merge router facts. Mount files (a FastAPI main.py
@@ -395,14 +436,14 @@ func prefixForRoute(
 	chainPrefix func(string, map[string]bool) string,
 ) string {
 	switch framework {
-	case "fastapi/flask", "express":
+	case "fastapi/flask", "flask", "express":
 		varName := routeReceiver(c, framework, srcFor)
 		if varName == "" {
 			return ""
 		}
 		mount := chainPrefix(varName, map[string]bool{})
 		self := ""
-		if framework == "fastapi/flask" {
+		if framework == "fastapi/flask" || framework == "flask" {
 			if ps, ok := globalSelf[varName]; ok && !selfConflict[varName] {
 				self = ps
 			}
@@ -428,6 +469,10 @@ func routeReceiver(c Contract, framework string, srcFor func(filePath string) []
 	switch framework {
 	case "fastapi/flask":
 		if m := pyRouteReceiverRE.FindStringSubmatch(line); m != nil {
+			return m[1]
+		}
+	case "flask":
+		if m := flaskRouteReceiverRE.FindStringSubmatch(line); m != nil {
 			return m[1]
 		}
 	case "express":

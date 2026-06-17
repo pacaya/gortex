@@ -203,3 +203,46 @@ func contractPaths(cs []Contract) []string {
 	}
 	return out
 }
+
+func TestFlaskRouteDecorator_MethodsExpansion(t *testing.T) {
+	src := []byte(`from flask import Flask
+app = Flask(__name__)
+
+@app.route('/users', methods=['GET', 'POST'])
+def users():
+    return []
+
+@app.route('/health')
+def health():
+    return 'ok'
+`)
+	nodes := []*graph.Node{
+		flaskNode("app.py::users", "users", graph.KindFunction, 5),
+		flaskNode("app.py::health", "health", graph.KindFunction, 9),
+	}
+	cs := (&HTTPExtractor{}).Extract("app.py", src, nodes, nil)
+
+	get := flaskFind(cs, "GET", "/users")
+	post := flaskFind(cs, "POST", "/users")
+	if get == nil || post == nil {
+		t.Fatalf("expected GET+POST on /users from methods=[...], got %+v", contractPaths(cs))
+	}
+	if get.Meta["framework"] != "flask" {
+		t.Errorf("framework = %v, want flask", get.Meta["framework"])
+	}
+	if get.SymbolID != "app.py::users" {
+		t.Errorf("GET handler = %q, want the wrapped view", get.SymbolID)
+	}
+
+	// @route with no methods defaults to GET only.
+	h := flaskFind(cs, "GET", "/health")
+	if h == nil {
+		t.Fatalf("expected GET /health, got %+v", contractPaths(cs))
+	}
+	if h.SymbolID != "app.py::health" {
+		t.Errorf("health handler = %q", h.SymbolID)
+	}
+	if flaskFind(cs, "POST", "/health") != nil {
+		t.Errorf("@route with no methods must not expose POST")
+	}
+}
