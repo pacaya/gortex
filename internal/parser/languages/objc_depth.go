@@ -100,6 +100,31 @@ func objcMessageSends(src []byte) []objcMsgSend {
 	return sends
 }
 
+// objcReturnType extracts the method return type from the text between the
+// +/- sign and the selector (e.g. "- (nullable NSArray<User *> *)") — the type
+// inside the parentheses with nullability/ARC qualifiers, pointer stars, and
+// generic arguments stripped.
+func objcReturnType(prefix []byte) string {
+	s := string(prefix)
+	open := strings.IndexByte(s, '(')
+	if open < 0 {
+		return ""
+	}
+	rel := strings.IndexByte(s[open:], ')')
+	if rel < 0 {
+		return ""
+	}
+	rt := s[open+1 : open+rel]
+	for _, q := range []string{"nullable", "_Nonnull", "_Nullable", "__kindof", "const", "oneway", "bycopy", "byref"} {
+		rt = strings.ReplaceAll(rt, q, " ")
+	}
+	rt = strings.ReplaceAll(rt, "*", " ")
+	if i := strings.IndexByte(rt, '<'); i >= 0 {
+		rt = rt[:i]
+	}
+	return strings.TrimSpace(strings.Join(strings.Fields(rt), " "))
+}
+
 // objcMatchBracket returns the index of the ']' that closes the '[' at open.
 func objcMatchBracket(s string, open int) int {
 	depth := 0

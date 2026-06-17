@@ -78,7 +78,8 @@ func (e *ObjCExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 		add(name, graph.KindType, line, findKeywordBlockEnd(lines, line, "@end"))
 	}
 
-	// Methods: build a selector name from the parts after the return type.
+	// Methods: build a selector name and capture the +/- class-vs-instance
+	// marker and the return type.
 	for _, m := range objcMethodRe.FindAllSubmatchIndex(src, -1) {
 		if m[4] < 0 {
 			continue
@@ -87,8 +88,31 @@ func (e *ObjCExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 		if sel == "" {
 			continue
 		}
+		id := filePath + "::" + sel
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		line := lineAt(src, m[0])
-		add(sel, graph.KindMethod, line, findBlockEnd(lines, line))
+		meta := map[string]any{}
+		if string(src[m[2]:m[3]]) == "+" {
+			meta["is_static"] = true // class method
+		}
+		if rt := objcReturnType(src[m[0]:m[4]]); rt != "" {
+			meta["return_type"] = rt
+		}
+		node := &graph.Node{
+			ID: id, Kind: graph.KindMethod, Name: sel,
+			FilePath: filePath, StartLine: line, EndLine: findBlockEnd(lines, line),
+			Language: "objc",
+		}
+		if len(meta) > 0 {
+			node.Meta = meta
+		}
+		result.Nodes = append(result.Nodes, node)
+		result.Edges = append(result.Edges, &graph.Edge{
+			From: fileNode.ID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: line,
+		})
 	}
 
 	// C-style function definitions.
