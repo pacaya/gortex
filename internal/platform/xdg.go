@@ -90,3 +90,9 @@ func ModelsDir() string { return filepath.Join(DataDir(), "models") }
 // MemoriesDir is where cross-session development memories persist:
 // <DataDir>/memories (~/.gortex/memories by default).
 func MemoriesDir() string { return filepath.Join(DataDir(), "memories") }
+
+// TelemetryDir is where opt-in anonymous usage telemetry buffers its daily
+// rollups and stores the install id: <DataDir>/telemetry (~/.gortex/telemetry
+// by default). Under DataDir (durable) rather than CacheDir so a cache wipe
+// doesn't silently reset the stable install id or drop unsent completed days.
+func TelemetryDir() string { return filepath.Join(DataDir(), "telemetry") }

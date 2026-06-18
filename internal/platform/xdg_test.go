@@ -78,6 +78,23 @@ func TestDataDir_UnsetFallback(t *testing.T) {
 	}
 }
 
+// TestTelemetryDir verifies the telemetry buffer lives under DataDir, both for
+// the unified default and an absolute $XDG_DATA_HOME relocation.
+func TestTelemetryDir(t *testing.T) {
+	clearXDG(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, want := TelemetryDir(), filepath.Join(home, ".gortex", "telemetry"); got != want {
+		t.Errorf("TelemetryDir() = %s, want %s (unified default)", got, want)
+	}
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+	if got, want := TelemetryDir(), filepath.Join(xdg, "gortex", "telemetry"); got != want {
+		t.Errorf("TelemetryDir() = %s, want %s (XDG)", got, want)
+	}
+}
+
 // TestCacheDir_HonorsXDGCacheHome verifies an absolute $XDG_CACHE_HOME
 // relocates cache to the standard XDG location.
 func TestCacheDir_HonorsXDGCacheHome(t *testing.T) {
