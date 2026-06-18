@@ -80,6 +80,25 @@ type cDeferredVar struct {
 	name    string
 	line    int
 	endLine int
+	isConst bool
+}
+
+// cDeclIsConst reports whether a C declaration carries a leading `const` type
+// qualifier — a file-scope `const int MAX = 10;` is a genuine named constant,
+// not a mutable global. The capturing query only matches plain-identifier
+// declarators, so pointer-to-const (`const char *p`, where the pointer itself
+// stays mutable) never reaches here; a direct-child qualifier scan is exact.
+func cDeclIsConst(decl *sitter.Node, src []byte) bool {
+	if decl == nil {
+		return false
+	}
+	for i := 0; i < int(decl.ChildCount()); i++ {
+		ch := decl.Child(i)
+		if ch != nil && ch.Type() == "type_qualifier" && ch.Content(src) == "const" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *CExtractor) Extract(filePath string, src []byte) (*parser.ExtractionResult, error) {
@@ -144,6 +163,7 @@ func (e *CExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRes
 				name:    m.Captures["var.name"].Text,
 				line:    def.StartLine + 1,
 				endLine: def.EndLine + 1,
+				isConst: cDeclIsConst(def.Node, src),
 			})
 		}
 	})
@@ -161,8 +181,14 @@ func (e *CExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRes
 			continue
 		}
 		seen[id] = true
+		kind := graph.KindVariable
+		if v.isConst {
+			// A file-scope const is a named constant — joins the value-ref
+			// impact surface alongside #define macros, not the mutable-global set.
+			kind = graph.KindConstant
+		}
 		result.Nodes = append(result.Nodes, &graph.Node{
-			ID: id, Kind: graph.KindVariable, Name: v.name,
+			ID: id, Kind: kind, Name: v.name,
 			FilePath: filePath, StartLine: v.line, EndLine: v.endLine,
 			Language: "c",
 		})

@@ -108,3 +108,43 @@ func TestRClassSystemsAndDispatch(t *testing.T) {
 	assert.True(t, s3Dispatch, "the S3 generic print should dispatch to print.Circle")
 	assert.True(t, inherit, "setClass contains= should produce an inheritance edge")
 }
+
+// TestRPkgFnDispatchPreserved proves the namespace + extract-dispatch recall
+// the tag pass dropped: a `pkg::fn(...)` call preserves its package qualifier
+// in the edge target (so `dplyr::filter` stays distinct from a base-R
+// `filter`), and an `obj$method(...)` extract-dispatch — which the tag pass
+// records as nothing — gets its own receiver-tagged call edge.
+func TestRPkgFnDispatchPreserved(t *testing.T) {
+	src := []byte("result <- dplyr::filter(df, x > 1)\nobj$method(a)\nval <- base::sum(v)\nplain(z)\n")
+	res, err := NewRExtractor().Extract("a.R", src)
+	require.NoError(t, err)
+
+	namespace := map[string]string{} // call target -> package
+	var dollar *graph.Edge
+	for _, e := range res.Edges {
+		if e.Kind != graph.EdgeCalls {
+			continue
+		}
+		if ns, _ := e.Meta["r_namespace"].(string); ns != "" {
+			namespace[e.To] = ns
+		}
+		if via, _ := e.Meta["via"].(string); via == "dollar_dispatch" {
+			dollar = e
+		}
+	}
+
+	// Package qualifier preserved, in-place (no bare duplicate).
+	assert.Equal(t, "dplyr", namespace["unresolved::dplyr::filter"], "dplyr::filter must carry its package")
+	assert.Equal(t, "base", namespace["unresolved::base::sum"], "base::sum must carry its package")
+	for _, e := range res.Edges {
+		if e.Kind == graph.EdgeCalls && (e.To == "unresolved::filter" || e.To == "unresolved::sum") {
+			t.Errorf("namespace call left a stripped bare edge %q (should be rewritten)", e.To)
+		}
+	}
+
+	// $-dispatch edge exists and preserves the receiver.
+	require.NotNil(t, dollar, "obj$method() must emit a dollar_dispatch call edge")
+	assert.Equal(t, "unresolved::method", dollar.To)
+	r, _ := dollar.Meta["r_receiver"].(string)
+	assert.Equal(t, "obj", r, "dollar dispatch must preserve the receiver")
+}

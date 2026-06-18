@@ -86,7 +86,10 @@ func NewJavaScriptExtractor() *JavaScriptExtractor {
 
 func (e *JavaScriptExtractor) Language() string { return "javascript" }
 func (e *JavaScriptExtractor) Extensions() []string {
-	return []string{".js", ".jsx", ".mjs", ".cjs"}
+	// .xsjs / .xsjslib are SAP HANA XS server-side JavaScript — plain JS by
+	// grammar, so the JS extractor's tree-sitter query mines their (typically
+	// IIFE/AMD-wrapped) inner functions the same as any .js module.
+	return []string{".js", ".jsx", ".mjs", ".cjs", ".xsjs", ".xsjslib"}
 }
 
 // --- Deferred match buffers ----------------------------------------

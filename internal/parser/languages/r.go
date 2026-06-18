@@ -68,6 +68,10 @@ func (e *RExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRes
 	// class, not a plain variable.
 	e.extractRClassSystems(src, filePath, res, seen)
 
+	// Namespace-qualified (`dplyr::filter`) and `$`-dispatch (`obj$method`)
+	// calls: preserve the package qualifier / receiver the tag pass strips.
+	e.extractRNamespaceCalls(src, filePath, res)
+
 	// Idiom imports: library(X) / require(X) / source("X.R").
 	for _, re := range []*regexp.Regexp{rLibraryRe, rRequireRe} {
 		for _, m := range re.FindAllSubmatchIndex(src, -1) {
@@ -246,6 +250,96 @@ func (e *RExtractor) extractRClassSystems(src []byte, filePath string, res *pars
 		}
 	}
 	walk(tree.RootNode())
+}
+
+// extractRNamespaceCalls upgrades the calls the tag pass records with a
+// stripped, bare callee. A `pkg::fn(...)` namespace call is rewritten from the
+// bare `unresolved::fn` to `unresolved::pkg::fn` (carrying r_namespace) so the
+// package qualifier is preserved — a `dplyr::filter` call stays distinguishable
+// from a base-R `filter`. An `obj$method(...)` extract-dispatch call, which the
+// tag pass drops entirely, gets its own edge carrying the receiver. This is the
+// call provenance a tags.scm-only path discards.
+func (e *RExtractor) extractRNamespaceCalls(src []byte, filePath string, res *parser.ExtractionResult) {
+	tree, err := parser.ParseFile(src, e.lang)
+	if err != nil {
+		return
+	}
+	defer tree.Close()
+
+	// Index the tag pass's bare call edges by (callee, line) so a namespace
+	// call can claim and rewrite the matching edge in place rather than
+	// emitting a duplicate.
+	type callKey struct {
+		name string
+		line int
+	}
+	bare := map[callKey]*graph.Edge{}
+	for _, ed := range res.Edges {
+		if ed.Kind == graph.EdgeCalls && strings.HasPrefix(ed.To, "unresolved::") {
+			name := strings.TrimPrefix(ed.To, "unresolved::")
+			bare[callKey{name, ed.Line}] = ed
+		}
+	}
+
+	var walk func(n *sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n.Type() == "call" {
+			fn := n.ChildByFieldName("function")
+			if fn == nil && n.ChildCount() > 0 {
+				fn = n.Child(0)
+			}
+			line := int(n.StartPoint().Row) + 1
+			if fn != nil {
+				switch fn.Type() {
+				case "namespace_operator":
+					if pkg, name := rNamespaceParts(fn, src); pkg != "" && name != "" {
+						qualified := "unresolved::" + pkg + "::" + name
+						if ed := bare[callKey{name, line}]; ed != nil {
+							ed.To = qualified
+							if ed.Meta == nil {
+								ed.Meta = map[string]any{}
+							}
+							ed.Meta["r_namespace"] = pkg
+						} else {
+							res.Edges = append(res.Edges, &graph.Edge{
+								From: filePath, To: qualified, Kind: graph.EdgeCalls,
+								FilePath: filePath, Line: line, Origin: graph.OriginASTResolved,
+								Meta: map[string]any{"r_namespace": pkg},
+							})
+						}
+					}
+				case "extract_operator":
+					if recv, name := rNamespaceParts(fn, src); name != "" {
+						res.Edges = append(res.Edges, &graph.Edge{
+							From: filePath, To: "unresolved::" + name, Kind: graph.EdgeCalls,
+							FilePath: filePath, Line: line, Origin: graph.OriginASTInferred,
+							Meta: map[string]any{"via": "dollar_dispatch", "r_receiver": recv},
+						})
+					}
+				}
+			}
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
+	}
+	walk(tree.RootNode())
+}
+
+// rNamespaceParts returns the (lhs, rhs) identifier text of an R
+// namespace_operator (`pkg::fn`, `pkg:::fn`) or extract_operator (`obj$field`)
+// node — the package + function, or the receiver + member.
+func rNamespaceParts(op *sitter.Node, src []byte) (string, string) {
+	var ids []string
+	for i := 0; i < int(op.ChildCount()); i++ {
+		if c := op.Child(i); c != nil && c.Type() == "identifier" {
+			ids = append(ids, c.Content(src))
+		}
+	}
+	if len(ids) >= 2 {
+		return ids[0], ids[1]
+	}
+	return "", ""
 }
 
 // rCallee returns the function name of an R call (its leading identifier).

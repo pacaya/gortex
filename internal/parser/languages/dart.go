@@ -39,6 +39,16 @@ func (e *DartExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 	}
 	result.Nodes = append(result.Nodes, fileNode)
 
+	if dartIsGenerated(filePath) {
+		// Generated Dart (build_runner .g.dart, freezed, protobuf .pb.dart, …)
+		// is machine-emitted boilerplate that mirrors hand-written declarations.
+		// Keep the file node so incremental tracking sees the file, but skip
+		// symbol extraction so duplicate generated symbols never pollute
+		// search / find_usages. The marker lets callers tell it apart.
+		fileNode.Meta = map[string]any{"generated": true}
+		return result, nil
+	}
+
 	seen := make(map[string]bool)
 
 	// Classes, enums, mixins, extensions — walk the tree to distinguish types.
@@ -272,6 +282,27 @@ func (e *DartExtractor) extractMethods(
 			})
 		}
 	})
+}
+
+// dartGeneratedSuffixes are the conventional code-generator output suffixes in
+// the Dart ecosystem (build_runner, freezed, protobuf, json_serializable,
+// auto_route, injectable). Files ending in one are machine-emitted boilerplate.
+var dartGeneratedSuffixes = []string{
+	".g.dart", ".freezed.dart", ".pb.dart", ".pbenum.dart",
+	".pbjson.dart", ".pbserver.dart", ".config.dart", ".gr.dart",
+}
+
+// dartIsGenerated reports whether a Dart file path is a code-generator output.
+// Such files mirror hand-written declarations and only add duplicate,
+// machine-managed symbols, so they are indexed as a bare (generated-marked)
+// file node without their symbols.
+func dartIsGenerated(filePath string) bool {
+	for _, suf := range dartGeneratedSuffixes {
+		if strings.HasSuffix(filePath, suf) {
+			return true
+		}
+	}
+	return false
 }
 
 // dartMethodReturnType returns a Dart method's declared return type — the type
