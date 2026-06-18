@@ -726,7 +726,7 @@ func (h *HTTPExtractor) extract(
 			//      that resolves to a function in this file. That's
 			//      the innermost handler — what "trace a request"
 			//      actually wants to land on.
-			var handlerIdent, handlerTrail string
+			var handlerIdent, handlerTrail, handlerClass string
 			if pat.handlerGrp > 0 && pat.role == RoleProvider {
 				gStart := m[pat.handlerGrp*2]
 				gEnd := m[pat.handlerGrp*2+1]
@@ -753,6 +753,22 @@ func (h *HTTPExtractor) extract(
 				}
 			}
 
+			// Backend frameworks (Laravel / Rails / Spring / JAX-RS / ASP.NET)
+			// bind the controller action the route dispatches to: same-file for
+			// annotation-preceded handlers, and a stamped identifier that the
+			// indexer's module-wide pass resolves cross-file for route files
+			// wiring controllers in sibling files. Receiver-aware, so the bound
+			// action is the named controller's, not a same-named one elsewhere.
+			if pat.role == RoleProvider && isBackendHandlerFramework(pat.framework) {
+				if sid, hIdent, hClass := bindBackendHandler(pat.framework, lines[lineNum-1], lineNum-1, lines, fileNodes); hIdent != "" {
+					if sid != "" {
+						symbolID = sid
+					}
+					handlerIdent = hIdent
+					handlerClass = hClass
+				}
+			}
+
 			meta := map[string]any{
 				"method":    method,
 				"path":      normPath,
@@ -775,6 +791,11 @@ func (h *HTTPExtractor) extract(
 			// across repos.
 			if handlerIdent != "" {
 				meta["handler_ident"] = handlerIdent
+			}
+			if handlerClass != "" {
+				// The declaring controller — lets the module-wide pass pick the
+				// receiver-correct action when several controllers share a verb.
+				meta["handler_class"] = handlerClass
 			}
 			if handlerTrail != "" {
 				meta["handler_trail"] = handlerTrail
@@ -835,6 +856,12 @@ func (h *HTTPExtractor) extract(
 		if strings.Contains(text, ".route(") {
 			out = append(out, h.extractFlaskDecoratorRoutes(filePath, text, lines, fileNodes, lang, tree)...)
 		}
+	}
+
+	// Rails `resources :x` / `resource :x` expand to the canonical RESTful
+	// route set — implicit routes the per-line provider table cannot see.
+	if lang == "ruby" && strings.Contains(text, "resource") {
+		out = append(out, h.extractRailsResourceRoutes(filePath, text, lines, fileNodes, lang, tree)...)
 	}
 
 	// Configurable HTTP-client wrapper aliases. Calls to a
