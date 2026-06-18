@@ -137,7 +137,42 @@ func (e *DartExtractor) extractTypes(
 		result.Edges = append(result.Edges, &graph.Edge{
 			From: fileNode.ID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: startLine,
 		})
+		if node.Type() == "class_definition" {
+			e.emitDartMixinEdges(node, src, id, filePath, result)
+		}
 	})
+}
+
+// emitDartMixinEdges emits an EdgeExtends edge (Meta via="mixin") from a class
+// to each type named in its `with` clause, so a Dart mixin application is a
+// first-class subtype relationship in the graph and the mixed-in members are
+// reachable through the class — codegraph does not model mixins at all. The
+// grammar nests them as class_definition → superclass → mixins → type_identifier.
+func (e *DartExtractor) emitDartMixinEdges(classNode *sitter.Node, src []byte, classID, filePath string, result *parser.ExtractionResult) {
+	for i := 0; i < int(classNode.ChildCount()); i++ {
+		sup := classNode.Child(i)
+		if sup.Type() != "superclass" {
+			continue
+		}
+		for j := 0; j < int(sup.ChildCount()); j++ {
+			mixins := sup.Child(j)
+			if mixins.Type() != "mixins" {
+				continue
+			}
+			for k := 0; k < int(mixins.ChildCount()); k++ {
+				m := mixins.Child(k)
+				if m.Type() != "type_identifier" {
+					continue
+				}
+				name := m.Content(src)
+				result.Edges = append(result.Edges, &graph.Edge{
+					From: classID, To: "unresolved::" + name,
+					Kind: graph.EdgeExtends, FilePath: filePath, Line: int(m.StartPoint().Row) + 1,
+					Meta: map[string]any{"via": "mixin"},
+				})
+			}
+		}
+	}
 }
 
 // extractMethods finds method_signature nodes inside class_body, extension_body, enum_body.
@@ -173,6 +208,15 @@ func (e *DartExtractor) extractMethods(
 		startLine := int(node.StartPoint().Row)
 		if tn, ok := e.findEnclosingType(typeBodyRanges, startLine); ok {
 			typeName = tn
+		}
+
+		// An unnamed constructor (`Foo()` inside class Foo) is matched as a
+		// method whose name equals the enclosing type. Emitting a Foo.Foo
+		// method creates a phantom that hijacks resolution of `Foo(...)` —
+		// which constructs the class, not calls a method. Skip it; extractCalls
+		// emits an EdgeInstantiates to the class node instead.
+		if typeName != "" && name == typeName {
+			return
 		}
 
 		methodID := filePath + "::" + typeName + "." + name
@@ -430,6 +474,16 @@ func (e *DartExtractor) extractCalls(
 ) {
 	funcRanges := buildFuncRanges(result)
 
+	// Local type names — a bare call to one is a construction, not a function
+	// call. Populated from the types extractTypes already emitted (it runs
+	// before extractCalls).
+	localTypes := map[string]bool{}
+	for _, n := range result.Nodes {
+		if n != nil && (n.Kind == graph.KindType || n.Kind == graph.KindInterface) {
+			localTypes[n.Name] = true
+		}
+	}
+
 	walkNodes(root, func(node *sitter.Node) {
 		if node.Type() != "identifier" {
 			return
@@ -480,6 +534,20 @@ func (e *DartExtractor) extractCalls(
 		leadingReceiver := ""
 		if len(methodChain) > 1 {
 			leadingReceiver = methodChain[0]
+		}
+
+		// Instantiation: a bare call to a known local type name (`Widget()`,
+		// also `new`/`const` Widget()) constructs the class. Emit a typed
+		// EdgeInstantiates to the class node rather than a flat unresolved call
+		// — impact/trace then see the construction and the resolver binds it to
+		// the real type. (codegraph emits only a flat call edge here.)
+		if len(methodChain) == 1 && localTypes[callName] {
+			result.Edges = append(result.Edges, &graph.Edge{
+				From: callerID, To: filePath + "::" + callName,
+				Kind: graph.EdgeInstantiates, FilePath: filePath, Line: line,
+				Origin: graph.OriginASTResolved,
+			})
+			return
 		}
 
 		target := "unresolved::*." + callName

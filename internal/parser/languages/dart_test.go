@@ -375,3 +375,56 @@ void _internal() {}
 		t.Fatalf("_internal.vis = %q", internalFn.Meta["visibility"])
 	}
 }
+
+// TestUnnamedCtorNotEmittedAndInstantiationEdge is the B2 named test: an
+// unnamed Dart constructor must not be emitted as a phantom Foo.Foo method, and
+// `Foo()` must produce a typed EdgeInstantiates to the class. A `with` clause
+// produces a mixin EdgeExtends edge.
+func TestUnnamedCtorNotEmittedAndInstantiationEdge(t *testing.T) {
+	src := []byte(`mixin Logger {}
+
+class Widget with Logger {
+  Widget();
+  void build() {}
+}
+
+class App {
+  void run() {
+    var w = Widget();
+  }
+}
+`)
+	res, err := NewDartExtractor().Extract("w.dart", []byte(src))
+	require.NoError(t, err)
+
+	// No phantom unnamed-constructor method node.
+	for _, n := range res.Nodes {
+		if n.Kind == graph.KindMethod && n.ID == "w.dart::Widget.Widget" {
+			t.Fatalf("unnamed constructor was emitted as a phantom method node %q", n.ID)
+		}
+	}
+
+	// `var w = Widget()` is a construction, not a call.
+	var sawInstantiate, sawMixin bool
+	for _, e := range res.Edges {
+		if e.Kind == graph.EdgeInstantiates && e.From == "w.dart::App.run" && e.To == "w.dart::Widget" {
+			sawInstantiate = true
+		}
+		if e.Kind == graph.EdgeExtends && e.From == "w.dart::Widget" && e.To == "unresolved::Logger" {
+			if v, _ := e.Meta["via"].(string); v == "mixin" {
+				sawMixin = true
+			}
+		}
+	}
+	assert.True(t, sawInstantiate, "expected an EdgeInstantiates from App.run to Widget; edges=%v", res.Edges)
+	assert.True(t, sawMixin, "expected a mixin EdgeExtends from Widget to Logger; edges=%v", res.Edges)
+
+	// The real method still resolves.
+	var sawBuild bool
+	for _, n := range res.Nodes {
+		if n.Kind == graph.KindMethod && n.Name == "build" {
+			sawBuild = true
+		}
+	}
+	assert.True(t, sawBuild, "the real method build should still be emitted")
+}
