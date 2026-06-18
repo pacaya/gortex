@@ -41,6 +41,16 @@ type SidecarStore struct {
 	writeMu sync.Mutex
 }
 
+// sidecarSchema is the idempotent base shape of the side-store. OpenSidecar
+// runs it on every open, before runMigrations, and it is never gated on a
+// schema version — it guarantees every table and original-shape index
+// exists, which the column-only migrations in sidecar_migrate.go build on.
+//
+// Invariant: an index declared here may reference only columns present in its
+// table's ORIGINAL create shape. Any column added later, and any index that
+// depends on it, belongs in a migration (after that column's ALTER) — never
+// here, or it will abort the whole batch with "no such column" on a database
+// created before the column existed.
 const sidecarSchema = `
 CREATE TABLE IF NOT EXISTS notes (
 	id            TEXT NOT NULL,
@@ -152,8 +162,12 @@ CREATE TABLE IF NOT EXISTS savings_events (
 );
 CREATE INDEX IF NOT EXISTS idx_savings_events_ts     ON savings_events (ts);
 CREATE INDEX IF NOT EXISTS idx_savings_events_tool   ON savings_events (tool, ts);
-CREATE INDEX IF NOT EXISTS idx_savings_events_model  ON savings_events (model, ts);
-CREATE INDEX IF NOT EXISTS idx_savings_events_client ON savings_events (client, ts);
+-- idx_savings_events_model / idx_savings_events_client index the model and
+-- client columns, which were added to savings_events after its original
+-- shape. They are created by a schema migration (sidecar_migrate.go), not
+-- here: a pre-existing table won't gain those columns from CREATE TABLE IF
+-- NOT EXISTS, so an index referencing them here would abort the whole
+-- schema batch with "no such column" on an older database.
 
 CREATE TABLE IF NOT EXISTS savings_totals (
 	bucket   TEXT NOT NULL PRIMARY KEY,
@@ -191,15 +205,6 @@ var (
 	sidecarCache = map[string]*SidecarStore{}
 )
 
-// addColumnIfMissing runs ALTER TABLE ... ADD COLUMN, swallowing the
-// "duplicate column name" error a table that already has the column
-// returns. Best-effort: it lets a sidecar created before a column
-// existed gain it without a versioned-migration framework, and a fresh
-// database (which already has the column via the schema) is unaffected.
-func addColumnIfMissing(db *sql.DB, table, column, decl string) {
-	_, _ = db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + decl)
-}
-
 // OpenSidecar opens (or creates) the sidecar DB at path, reusing an
 // already-open handle for the same absolute path. An empty path yields
 // (nil, nil): callers treat a nil store as "in-memory only, no disk"
@@ -231,7 +236,19 @@ func OpenSidecar(path string) (*SidecarStore, error) {
 	// journal_size_limit caps the -wal high-water mark so it can't ratchet
 	// up unbounded under steady writes with ever-present readers (same WAL
 	// growth class the graph store guards against).
-	dsn := abs + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=journal_size_limit(67108864)"
+	//
+	// _txlock=immediate makes db.Begin() emit BEGIN IMMEDIATE so a write
+	// transaction takes the reserved lock at BEGIN. runMigrations depends on
+	// this: it reads PRAGMA user_version inside the transaction, and a plain
+	// DEFERRED begin would not hold the write lock at that point — two
+	// processes opening a stale DB at once could both pass the version gate,
+	// and the loser would hit an un-retryable SQLITE_BUSY on lock upgrade
+	// (busy_timeout does not retry a deferred-to-write promotion). With
+	// IMMEDIATE the loser blocks on busy_timeout at BEGIN, then re-reads the
+	// bumped version and skips cleanly. Harmless for the savings write
+	// transactions (already serialised in-process by writeMu); only changes
+	// when their write lock is taken, not whether.
+	dsn := abs + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=journal_size_limit(67108864)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("persistence: open sidecar: %w", err)
@@ -240,13 +257,14 @@ func OpenSidecar(path string) (*SidecarStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("persistence: sidecar schema: %w", err)
 	}
-	// Idempotent column additions for sidecar databases created before
-	// these columns existed. CREATE TABLE IF NOT EXISTS won't alter an
-	// existing table, so ALTER the columns in and tolerate the
-	// "duplicate column" error that fresh databases (which already have
-	// them) return.
-	addColumnIfMissing(db, "savings_events", "model", "TEXT NOT NULL DEFAULT ''")
-	addColumnIfMissing(db, "savings_events", "client", "TEXT NOT NULL DEFAULT ''")
+	// Bring databases created by older builds forward in place: add columns
+	// and column-dependent indexes that CREATE TABLE IF NOT EXISTS cannot add
+	// to a pre-existing table. Forward-only, additive, and safe when several
+	// gortex processes open the same file at once (see runMigrations).
+	if err := runMigrations(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	st := &SidecarStore{db: db}
 	sidecarCache[abs] = st
