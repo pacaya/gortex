@@ -222,3 +222,48 @@ func TestSmartContextConfidence(t *testing.T) {
 		t.Errorf("GCX missing confidence section:\n%s", out)
 	}
 }
+
+func TestSmartCtxInPackBudget(t *testing.T) {
+	// Five buckets, all caps non-decreasing with repo size.
+	sizes := []int{1_000, 5_000, 20_000, 80_000, 500_000}
+	var prev InPackBudget
+	for i, n := range sizes {
+		b := inPackBudgetForNodeCount(n)
+		if b.MaxCallPaths < 1 || b.FlowDepth < 1 || b.MaxBoundaries < 1 {
+			t.Errorf("nodes=%d: degenerate budget %+v", n, b)
+		}
+		if i > 0 {
+			if b.MaxCallPaths < prev.MaxCallPaths || b.FlowDepth < prev.FlowDepth || b.MaxBoundaries < prev.MaxBoundaries {
+				t.Errorf("nodes=%d: budget %+v should not shrink vs %+v", n, b, prev)
+			}
+		}
+		prev = b
+	}
+	// Smallest bucket is tighter than the largest.
+	small, large := inPackBudgetForNodeCount(100), inPackBudgetForNodeCount(1_000_000)
+	if small.MaxCallPaths >= large.MaxCallPaths || small.FlowDepth >= large.FlowDepth {
+		t.Errorf("small budget %+v should be tighter than large %+v", small, large)
+	}
+}
+
+func TestSmartContextAdaptive(t *testing.T) {
+	// A small graph (NodeCount < 2000) → MaxCallPaths 3, so six reachable roots
+	// truncate to three.
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "focus", Kind: graph.KindFunction, Name: "focus", FilePath: "x.go"})
+	roots := []*graph.Node{{ID: "focus"}}
+	for _, r := range []string{"r1", "r2", "r3", "r4", "r5", "r6"} {
+		g.AddNode(&graph.Node{ID: r, Kind: graph.KindFunction, Name: r, FilePath: "x.go"})
+		g.AddEdge(&graph.Edge{From: r, To: "focus", Kind: graph.EdgeCalls, Origin: graph.OriginASTResolved})
+		roots = append(roots, &graph.Node{ID: r})
+	}
+	s := &Server{graph: g}
+	if got := s.inPackBudget().MaxCallPaths; got != 3 {
+		t.Fatalf("small-repo MaxCallPaths = %d, want 3", got)
+	}
+
+	cps := s.inPackCallPaths(roots)
+	if len(cps) != 3 {
+		t.Errorf("call_paths should be capped to 3 by the small-repo budget, got %d", len(cps))
+	}
+}

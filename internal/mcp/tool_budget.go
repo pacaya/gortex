@@ -69,6 +69,44 @@ func smartContextSeedCount(nodes int) int {
 	}
 }
 
+// InPackBudget caps each smart_context in-pack enrichment section so a large
+// repo doesn't bloat the pack and a small one stays lean.
+type InPackBudget struct {
+	MaxCallPaths  int // anchored call-path rows kept
+	FlowDepth     int // forward flow-spine walk depth
+	MaxBoundaries int // dynamic-boundary rows kept
+}
+
+// inPackBudgetForNodeCount maps repo size (graph node count) to the in-pack
+// enrichment caps. A tiny repo has few genuinely relevant neighbours, so tight
+// caps keep the pack focused; a large monorepo has more worth showing, so the
+// caps widen. The five buckets mirror budgetForNodeCount so the budgets scale
+// together.
+func inPackBudgetForNodeCount(nodes int) InPackBudget {
+	switch {
+	case nodes < 2_000:
+		return InPackBudget{MaxCallPaths: 3, FlowDepth: 4, MaxBoundaries: 4}
+	case nodes < 10_000:
+		return InPackBudget{MaxCallPaths: 4, FlowDepth: 6, MaxBoundaries: 6}
+	case nodes < 40_000:
+		return InPackBudget{MaxCallPaths: 5, FlowDepth: 8, MaxBoundaries: 8}
+	case nodes < 120_000:
+		return InPackBudget{MaxCallPaths: 6, FlowDepth: 10, MaxBoundaries: 10}
+	default:
+		return InPackBudget{MaxCallPaths: 8, FlowDepth: 12, MaxBoundaries: 12}
+	}
+}
+
+// inPackBudget returns the in-pack enrichment caps for the server's current
+// graph size.
+func (s *Server) inPackBudget() InPackBudget {
+	nodes := 0
+	if s.graph != nil {
+		nodes = s.graph.NodeCount()
+	}
+	return inPackBudgetForNodeCount(nodes)
+}
+
 // manifestBudgetForNodeCount maps repo size (graph node count) to the
 // default graded-manifest token budget when the caller does not name a
 // token_budget. A small repo packs fewer relevant symbols, so a tighter

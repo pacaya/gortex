@@ -64,7 +64,11 @@ func (s *Server) inPackFlows(symbols []*graph.Node) map[string]any {
 	if s.graph == nil || len(symbols) == 0 || symbols[0] == nil {
 		return nil
 	}
-	spine, boundaries := s.flowSpine(symbols[0].ID, 8)
+	budget := s.inPackBudget()
+	spine, boundaries := s.flowSpine(symbols[0].ID, budget.FlowDepth)
+	if len(boundaries) > budget.MaxBoundaries {
+		boundaries = boundaries[:budget.MaxBoundaries]
+	}
 	out := map[string]any{}
 	if len(spine) >= 2 {
 		out["spine"] = spine
@@ -205,6 +209,9 @@ func (s *Server) inPackCallPaths(symbols []*graph.Node) []map[string]any {
 	anchored := callpath.New(s.graph).PathsToAnchor(roots, anchor, callpath.Options{MaxDepth: 8})
 	if len(anchored) == 0 {
 		return nil
+	}
+	if limit := s.inPackBudget().MaxCallPaths; len(anchored) > limit {
+		anchored = anchored[:limit]
 	}
 	out := make([]map[string]any, 0, len(anchored))
 	for _, ap := range anchored {
