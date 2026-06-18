@@ -59,6 +59,7 @@ const (
 	SynthSwiftObjC       = "swift-objc-bridge"
 	SynthReactNative     = "react-native-bridge"
 	SynthReactNativePair = "react-native-native-pair"
+	SynthObserverChannel = "observer-channel"
 	SynthExpoModules     = "expo-modules-bridge"
 	SynthFabric          = "fabric-codegen"
 	SynthMyBatis         = "mybatis"
@@ -120,6 +121,7 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		synthFunc{name: SynthSwiftObjC, fn: ResolveSwiftObjCBridge},
 		synthFunc{name: SynthReactNative, fn: ResolveReactNativeBridge},
 		synthFunc{name: SynthReactNativePair, fn: ResolveReactNativeNativePairing},
+		synthFunc{name: SynthObserverChannel, fn: ResolveObserverChannelCalls},
 		synthFunc{name: SynthExpoModules, fn: ResolveExpoModuleBridge},
 		synthFunc{name: SynthFabric, fn: ResolveFabricComponents},
 		synthFunc{name: SynthMyBatis, fn: ResolveMyBatisCalls},
