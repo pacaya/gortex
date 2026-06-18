@@ -372,3 +372,100 @@ app.register_blueprint(admin, url_prefix='/admin')
 		t.Errorf("expected flask-joined http::GET::/admin/dashboard; got %v", keysOfBool(ids))
 	}
 }
+
+func TestJoinRouterPrefixes_Gin(t *testing.T) {
+	files := srcMap{
+		"main.go": `package main
+func setup(r *gin.Engine) {
+	v1 := r.Group("/api/v1")
+	v1.GET("/users", listUsers)
+	admin := v1.Group("/admin")
+	admin.POST("/ban", banUser)
+}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/v1/users"] {
+		t.Errorf("expected gin-joined http::GET::/api/v1/users; got %v", keysOfBool(ids))
+	}
+	if !ids["http::POST::/api/v1/admin/ban"] {
+		t.Errorf("expected nested gin-joined http::POST::/api/v1/admin/ban; got %v", keysOfBool(ids))
+	}
+}
+
+func TestJoinRouterPrefixes_Spring(t *testing.T) {
+	files := srcMap{
+		"UserController.java": `
+@RestController
+@RequestMapping("/api")
+public class UserController {
+	@GetMapping("/users")
+	public List<User> list() { return null; }
+}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected spring-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}
+
+func TestJoinRouterPrefixes_Rails(t *testing.T) {
+	files := srcMap{
+		"routes.rb": `
+Rails.application.routes.draw do
+  namespace :admin do
+    get '/users', to: 'users#index'
+  end
+end
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/admin/users"] {
+		t.Errorf("expected rails-joined http::GET::/admin/users; got %v", keysOfBool(ids))
+	}
+}
+
+func TestJoinRouterPrefixes_Laravel(t *testing.T) {
+	files := srcMap{
+		"routes.php": `<?php
+Route::prefix('admin')->group(function () {
+    Route::get('/users', [UserController::class, 'index']);
+});
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/admin/users"] {
+		t.Errorf("expected laravel-joined http::GET::/admin/users; got %v", keysOfBool(ids))
+	}
+}
+
+func TestJoinRouterPrefixes_Axum(t *testing.T) {
+	files := srcMap{
+		"main.rs": `
+fn app() -> Router {
+    let api = Router::new().route("/users", get(list_users));
+    Router::new().nest("/api", api)
+}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected axum-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}

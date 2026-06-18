@@ -54,6 +54,12 @@ var routePrefixFrameworks = map[string]bool{
 	"flask":         true, // Flask Blueprint url_prefix
 	"express":       true, // Express app.use mounts
 	"nestjs":        true, // NestJS @Controller class prefix
+	"gin/echo/chi":  true, // gin RouterGroup .Group chains
+	"spring":        true, // Spring class-level @RequestMapping
+	"rails":         true, // Rails namespace blocks
+	"laravel":       true, // Laravel Route::prefix(...)->group
+	"axum":          true, // axum Router .nest mounts
+	"fiber":         true, // gin/echo uppercase verbs label as fiber; same .Group model
 }
 
 // --- FastAPI / Python -------------------------------------------------------
@@ -116,6 +122,40 @@ var jsRouteReceiverRE = regexp.MustCompile(`\b(app|router)\.(?:get|post|put|dele
 // `@Controller("/cats")` decorator. Group 1 is the class prefix. An
 // argument-less `@Controller()` carries no prefix (no-op).
 var nestControllerRE = regexp.MustCompile(`@Controller\(\s*["'` + "`" + `]([^"'` + "`" + `]*)["'` + "`" + `]\s*\)`)
+
+// --- gin / Go --------------------------------------------------------------
+
+// ginGroupRE matches a gin RouterGroup binding, e.g.
+// `v1 := r.Group("/api/v1")`. Group 1 is the child var, group 2 the parent
+// router, group 3 the group prefix.
+var ginGroupRE = regexp.MustCompile(`(\w+)\s*:?=\s*(\w+)\.Group\(\s*"([^"]+)"`)
+
+// ginRouteReceiverRE recovers the router-group variable a gin/echo/chi/fiber
+// route is registered on, e.g. `v1.GET("/users", h)` → "v1". The verb is
+// matched case-insensitively to cover gin/echo's uppercase `.GET` and
+// chi's title-case `.Get`.
+var ginRouteReceiverRE = regexp.MustCompile(`(\w+)\.(?i:get|post|put|delete|patch|head|options|any|handle)\(`)
+
+// --- axum / Rust -----------------------------------------------------------
+
+// axumNestRE matches `.nest("/api", api_router)`. Group 1 is the mount
+// prefix, group 2 the nested router variable.
+var axumNestRE = regexp.MustCompile(`\.nest\(\s*"([^"]+)"\s*,\s*(\w+)\s*\)`)
+
+// axumLetBindingRE recovers the router variable a route chain is bound to,
+// e.g. `let api = Router::new().route("/users", get(list));` → "api".
+var axumLetBindingRE = regexp.MustCompile(`let\s+(\w+)\s*=`)
+
+// --- Spring / Rails / Laravel block-scoped prefixes ------------------------
+
+// springClassMappingRE matches a class-level @RequestMapping("/api").
+var springClassMappingRE = regexp.MustCompile(`@RequestMapping\(\s*(?:value\s*=\s*)?["']([^"']*)["']`)
+
+// railsNamespaceRE matches a Rails `namespace :admin do` block opener.
+var railsNamespaceRE = regexp.MustCompile(`\bnamespace\s+:(\w+)\s+do\b`)
+
+// laravelPrefixRE matches a Laravel `Route::prefix('admin')` clause.
+var laravelPrefixRE = regexp.MustCompile(`Route::prefix\(\s*["']([^"']+)["']\s*\)`)
 
 // JoinRouterPrefixes rewrites HTTP provider/consumer contract paths and
 // IDs to include the prefix at their router's mount site.
@@ -218,6 +258,23 @@ func JoinRouterPrefixes(reg *Registry, scanFiles []string, srcFor func(filePath 
 			if pm := urlPrefixKwargRE.FindStringSubmatch(m[2]); pm != nil {
 				prefix = cleanPrefix(pm[1])
 			}
+			if _, ok := f.mountPrefix[child]; !ok {
+				f.mountPrefix[child] = prefix
+			}
+		}
+
+		// gin: v1 := r.Group("/api/v1"); admin := v1.Group("/admin")
+		for _, m := range ginGroupRE.FindAllStringSubmatch(text, -1) {
+			child, parent, prefix := m[1], m[2], cleanPrefix(m[3])
+			f.selfPrefix[child] = prefix
+			if parent != "" && parent != child {
+				f.mountParent[child] = parent
+			}
+		}
+
+		// axum: app.nest("/api", api_router)
+		for _, m := range axumNestRE.FindAllStringSubmatch(text, -1) {
+			prefix, child := cleanPrefix(m[1]), m[2]
 			if _, ok := f.mountPrefix[child]; !ok {
 				f.mountPrefix[child] = prefix
 			}
@@ -449,11 +506,37 @@ func prefixForRoute(
 			}
 		}
 		return joinPaths(mount, self)
+	case "gin/echo/chi", "fiber":
+		// gin RouterGroup chain: the route's group var carries its own
+		// .Group prefix, parents contribute theirs via the mount chain.
+		varName := routeReceiver(c, framework, srcFor)
+		if varName == "" {
+			return ""
+		}
+		mount := chainPrefix(varName, map[string]bool{})
+		self := ""
+		if ps, ok := globalSelf[varName]; ok && !selfConflict[varName] {
+			self = ps
+		}
+		return joinPaths(mount, self)
+	case "axum":
+		// axum: the route's router var is mounted under a .nest prefix.
+		varName := routeReceiver(c, framework, srcFor)
+		if varName == "" {
+			return ""
+		}
+		return chainPrefix(varName, map[string]bool{})
 	case "nestjs":
 		// Class-level @Controller('cats') prefix, found by scanning
 		// upward from the route line for the nearest preceding
 		// decorator in the same file.
 		return nestControllerPrefix(c, srcFor)
+	case "spring":
+		return springClassPrefix(c, srcFor)
+	case "rails":
+		return railsNamespacePrefix(c, srcFor)
+	case "laravel":
+		return laravelGroupPrefix(c, srcFor)
 	}
 	return ""
 }
@@ -479,8 +562,123 @@ func routeReceiver(c Contract, framework string, srcFor func(filePath string) []
 		if m := jsRouteReceiverRE.FindStringSubmatch(line); m != nil {
 			return m[1]
 		}
+	case "gin/echo/chi", "fiber":
+		if m := ginRouteReceiverRE.FindStringSubmatch(line); m != nil {
+			return m[1]
+		}
+	case "axum":
+		if m := axumLetBindingRE.FindStringSubmatch(line); m != nil {
+			return m[1]
+		}
 	}
 	return ""
+}
+
+// springClassPrefix scans upward from a Spring route line for the
+// class-level @RequestMapping("/api") prefix (skipping the route's own
+// decorator line), or "" when the controller declares none.
+func springClassPrefix(c Contract, srcFor func(filePath string) []byte) string {
+	src := srcFor(c.FilePath)
+	if src == nil {
+		return ""
+	}
+	lines := strings.Split(string(src), "\n")
+	idx := c.Line - 1
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	for i := idx - 1; i >= 0; i-- {
+		if m := springClassMappingRE.FindStringSubmatch(lines[i]); m != nil {
+			return cleanPrefix(m[1])
+		}
+	}
+	return ""
+}
+
+// railsNamespacePrefix walks upward from a Rails route line, balancing
+// do/end blocks, and joins the prefixes of every enclosing `namespace :x`.
+func railsNamespacePrefix(c Contract, srcFor func(filePath string) []byte) string {
+	src := srcFor(c.FilePath)
+	if src == nil {
+		return ""
+	}
+	lines := strings.Split(string(src), "\n")
+	idx := c.Line - 1
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	depth := 0
+	var parts []string
+	for i := idx - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "end" || strings.HasPrefix(trimmed, "end ") {
+			depth++
+			continue
+		}
+		if !railsLineOpensBlock(trimmed) {
+			continue
+		}
+		if depth > 0 {
+			depth--
+			continue
+		}
+		// Enclosing block opener at depth 0.
+		if m := railsNamespaceRE.FindStringSubmatch(lines[i]); m != nil {
+			parts = append([]string{m[1]}, parts...)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+// railsLineOpensBlock reports whether a Ruby routes line opens a do-block
+// (namespace / resources / scope / draw).
+func railsLineOpensBlock(trimmed string) bool {
+	return strings.HasSuffix(trimmed, " do") ||
+		strings.HasSuffix(trimmed, "do") && strings.Contains(trimmed, " do") ||
+		strings.Contains(trimmed, " do |") ||
+		strings.Contains(trimmed, " do;")
+}
+
+// laravelGroupPrefix walks upward from a Laravel route line, balancing
+// braces, and joins the prefixes of every enclosing
+// Route::prefix('x')->group(... { block.
+func laravelGroupPrefix(c Contract, srcFor func(filePath string) []byte) string {
+	src := srcFor(c.FilePath)
+	if src == nil {
+		return ""
+	}
+	lines := strings.Split(string(src), "\n")
+	idx := c.Line - 1
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	depth := 0
+	var parts []string
+	for i := idx - 1; i >= 0; i-- {
+		line := lines[i]
+		for j := len(line) - 1; j >= 0; j-- {
+			switch line[j] {
+			case '}':
+				depth++
+			case '{':
+				if depth > 0 {
+					depth--
+					continue
+				}
+				// Enclosing open brace: prepend its prefix clause, if any.
+				if m := laravelPrefixRE.FindStringSubmatch(line); m != nil {
+					parts = append([]string{cleanPrefix(m[1])}, parts...)
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return joinPaths(parts...)
 }
 
 // nestControllerPrefix scans upward from a NestJS route line for the
