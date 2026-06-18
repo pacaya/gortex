@@ -664,9 +664,9 @@ func priorMtimesFromStore(g graph.Store, cm *config.ConfigManager, entry config.
 // could not satisfy — so its persisted rows are in an old shape and the
 // warm/incremental reconcile must be bypassed for a full re-index. This is a
 // generic, opt-in capability probe: a backend implements NeedsRebuild() bool
-// to participate. No backend currently does, so this always reports false;
-// it stays as a hook for any future on-disk store that needs schema-version
-// gating on warm restart.
+// to participate. The on-disk sqlite store does — it reports true for the one
+// open in which it dropped an incompatible-schema database and recreated it
+// empty (see store_sqlite.Store.NeedsRebuild). The in-memory store does not.
 func storeNeedsRebuild(g any) bool {
 	rb, ok := g.(interface{ NeedsRebuild() bool })
 	return ok && rb.NeedsRebuild()

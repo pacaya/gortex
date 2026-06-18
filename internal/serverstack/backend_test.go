@@ -13,7 +13,7 @@ import (
 // default) returns a usable in-process store.
 func TestOpenBackend_MemoryDefault(t *testing.T) {
 	for _, name := range []string{"", "memory", "mem", "in-memory"} {
-		store, cleanup, err := OpenBackend(name, "", 0, zap.NewNop())
+		store, cleanup, err := OpenBackend(name, "", 0, zap.NewNop(), false)
 		if err != nil {
 			t.Fatalf("OpenBackend(%q): %v", name, err)
 		}
@@ -31,7 +31,7 @@ func TestOpenBackend_MemoryDefault(t *testing.T) {
 // creates) a store at the resolved path.
 func TestOpenBackend_SqliteOpensFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "store.sqlite")
-	store, cleanup, err := OpenBackend("sqlite", path, 0, zap.NewNop())
+	store, cleanup, err := OpenBackend("sqlite", path, 0, zap.NewNop(), true)
 	if err != nil {
 		t.Fatalf("OpenBackend(sqlite): %v", err)
 	}
@@ -45,7 +45,7 @@ func TestOpenBackend_SqliteOpensFile(t *testing.T) {
 // stale backend name (e.g. the removed ladybug) errors rather than
 // silently falling back.
 func TestOpenBackend_Unknown(t *testing.T) {
-	if _, _, err := OpenBackend("ladybug", "", 0, zap.NewNop()); err == nil {
+	if _, _, err := OpenBackend("ladybug", "", 0, zap.NewNop(), false); err == nil {
 		t.Fatal("an unknown backend must error")
 	}
 }

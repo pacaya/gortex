@@ -61,6 +61,14 @@ type Store struct {
 
 	edgeIdentityRevs atomic.Int64
 
+	// wiped records that Open dropped an incompatible on-disk DB and
+	// recreated it empty (a schema-version mismatch that an in-place ALTER
+	// could not satisfy). Surfaced via NeedsRebuild so the daemon forces a
+	// full re-index on warm restart instead of an incremental reconcile,
+	// rather than relying on the side effect that a total wipe also empties
+	// file_mtimes.
+	wiped bool
+
 	// WAL-checkpoint loop lifecycle. In WAL mode a COMMIT only appends to
 	// the -wal file; pages move into the main DB (and the WAL becomes
 	// reusable) at a checkpoint. SQLite's default passive auto-checkpoint
@@ -131,6 +139,12 @@ var _ graph.Store = (*Store)(nil)
 // state mutations on the same store.
 func (s *Store) ResolveMutex() *sync.Mutex { return &s.resolveMu }
 
+// NeedsRebuild reports that Open dropped an incompatible on-disk database and
+// recreated it empty, so the daemon's warm-restart path should force a full
+// re-index (bypassing an incremental reconcile that would carry stale state)
+// — see cmd/gortex.storeNeedsRebuild, the capability probe this satisfies.
+func (s *Store) NeedsRebuild() bool { return s.wiped }
+
 // Open opens (or creates) the SQLite database at path, runs the schema
 // migration, and prepares hot statements. The DB is opened with WAL
 // journaling and synchronous=NORMAL -- the same durability/throughput
@@ -138,7 +152,51 @@ func (s *Store) ResolveMutex() *sync.Mutex { return &s.resolveMu }
 //
 // Pass ":memory:" for an ephemeral in-process database (handy for
 // tests when you don't need on-disk persistence).
-func Open(path string) (*Store, error) {
+//
+// By default Open will NOT destroy an incompatible on-disk database: if the
+// stored schema version requires a rebuild (a newer build's DB, or an older
+// one crossing a rebuild migration) it returns ErrSchemaRebuildRequired and
+// leaves the file untouched. Pass WithRebuild to permit the drop-and-recreate
+// — only a caller that holds exclusive access to the store may do so (see
+// WithRebuild).
+func Open(path string, opts ...Option) (*Store, error) {
+	var o openOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return openWith(path, currentSchemaVersion, schemaMigrations, o.allowRebuild)
+}
+
+// Option configures Open.
+type Option func(*openOptions)
+
+type openOptions struct {
+	allowRebuild bool
+}
+
+// WithRebuild permits Open to drop and recreate an on-disk database whose
+// schema version is incompatible (a newer build's, or an older one crossing a
+// migration that an in-place ALTER cannot satisfy).
+//
+// The caller MUST hold exclusive cross-process access to the store file —
+// removing a SQLite file another process has open silently splits its state.
+// The daemon satisfies this: it takes an exclusive flock on <store>.lock for
+// the writable on-disk sqlite lifecycle and passes this option only in that
+// branch (see serverstack.NewSharedServer / OpenBackend). Without it, a wipe
+// plan yields ErrSchemaRebuildRequired and the file is left intact, so a
+// caller that does not hold the lock cannot corrupt a live store.
+func WithRebuild() Option { return func(o *openOptions) { o.allowRebuild = true } }
+
+// ErrSchemaRebuildRequired is returned by Open when an on-disk database needs a
+// destructive rebuild but the caller did not pass WithRebuild (i.e. cannot
+// prove it holds the store lock).
+var ErrSchemaRebuildRequired = errors.New("store_sqlite: on-disk schema is incompatible and must be rebuilt; reopen with WithRebuild while holding the store lock")
+
+// openWith is Open parameterised by the target schema version, migration
+// registry, and rebuild permission so tests can drive the baseline / in-place
+// / rebuild arms without mutating package globals. Open passes the package
+// defaults (currentSchemaVersion, schemaMigrations) and the WithRebuild flag.
+func openWith(path string, current int, migrations []schemaMigration, allowRebuild bool) (*Store, error) {
 	// Pragmas: WAL + synchronous=NORMAL is the standard write-heavy
 	// embedded tradeoff. cache_size(-32768) gives each pooled connection a
 	// 32 MiB page cache; temp_store(MEMORY) keeps GROUP BY / ORDER BY scratch
@@ -171,6 +229,40 @@ func Open(path string) (*Store, error) {
 	// pin one connection to "remember" them.
 	db.SetMaxOpenConns(runtime.NumCPU())
 
+	// Reconcile the on-disk schema version before applying schemaSQL. The graph
+	// store is a rebuildable cache, so an incompatible (older needing a rebuild
+	// step, or newer) DB is dropped and reindexed rather than migrated in place
+	// (see schema_version.go). The daemon holds an exclusive store.lock around
+	// Open, so wiping the file here cannot race another process.
+	stored, err := readUserVersion(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite read schema version: %w", err)
+	}
+	plan := planSchemaMigrationWith(stored, current, migrations)
+	didWipe := false
+	if plan.wipe && !isMemoryPath(path) {
+		// Refuse the destructive rebuild unless the caller proved it holds
+		// exclusive access (WithRebuild). This keeps the file safe even if a
+		// future caller reaches a wipe plan without the daemon's store lock.
+		if !allowRebuild {
+			_ = db.Close()
+			return nil, ErrSchemaRebuildRequired
+		}
+		if err := db.Close(); err != nil {
+			return nil, fmt.Errorf("sqlite close for rebuild: %w", err)
+		}
+		if err := removeStoreFiles(path); err != nil {
+			return nil, fmt.Errorf("sqlite rebuild: %w", err)
+		}
+		db, err = sql.Open("sqlite", dsn)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite reopen for rebuild: %w", err)
+		}
+		db.SetMaxOpenConns(runtime.NumCPU())
+		didWipe = true
+	}
+
 	if _, err := db.Exec(schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite schema: %w", err)
@@ -193,7 +285,21 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite node columns: %w", err)
 	}
 
-	s := &Store{db: db, dbPath: path}
+	// Apply any in-place migration steps (none on a fresh, baseline, or wiped
+	// DB), then stamp the current schema version. After a wipe the store is
+	// empty and the daemon's normal indexing repopulates it.
+	if plan.stamp {
+		if err := applyInPlaceMigrations(db, plan.inPlace); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite schema migrate: %w", err)
+		}
+		if err := setUserVersion(db, current); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite stamp schema version: %w", err)
+		}
+	}
+
+	s := &Store{db: db, dbPath: path, wiped: didWipe}
 	// Initialise the bundle cache at construction so its pointer is
 	// never written after Open — concurrent SearchSymbolBundles reads
 	// and SetBundleFingerprints writes then race only on the cache's

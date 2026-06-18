@@ -34,7 +34,11 @@ import (
 //
 // Returns the store, a cleanup func the caller must defer (closes the
 // underlying handle on disk-backed stores), and any open error.
-func OpenBackend(name, path string, bufferPoolMB uint64, logger *zap.Logger) (graph.Store, func(), error) {
+// allowRebuild permits the on-disk sqlite backend to drop and recreate a
+// database whose schema version is incompatible. The caller must hold the
+// store lock; NewSharedServer passes true only in the branch where it acquired
+// the exclusive flock.
+func OpenBackend(name, path string, bufferPoolMB uint64, logger *zap.Logger, allowRebuild bool) (graph.Store, func(), error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "memory", "mem", "in-memory":
 		s := graph.New()
@@ -47,7 +51,7 @@ func OpenBackend(name, path string, bufferPoolMB uint64, logger *zap.Logger) (gr
 		if logger != nil {
 			logger.Info("opening sqlite backend", zap.String("path", resolved))
 		}
-		return openSqliteBackend(resolved, bufferPoolMB)
+		return openSqliteBackend(resolved, bufferPoolMB, allowRebuild)
 	default:
 		return nil, nil, fmt.Errorf("unknown backend %q (expected: memory, sqlite)", name)
 	}
@@ -93,9 +97,13 @@ func resolveBackendPath(in, filename string) (string, error) {
 // getting a real query planner that drives the graph's secondary indexes.
 // bufferPoolMB is accepted for signature parity with other on-disk
 // backends but unused — SQLite sizes its page cache via a pragma.
-func openSqliteBackend(path string, bufferPoolMB uint64) (graph.Store, func(), error) {
+func openSqliteBackend(path string, bufferPoolMB uint64, allowRebuild bool) (graph.Store, func(), error) {
 	_ = bufferPoolMB
-	s, err := store_sqlite.Open(path)
+	var opts []store_sqlite.Option
+	if allowRebuild {
+		opts = append(opts, store_sqlite.WithRebuild())
+	}
+	s, err := store_sqlite.Open(path, opts...)
 	if err != nil {
 		hint := "if another gortex daemon is using this store, stop it first (`gortex daemon status` / `gortex daemon stop`)"
 		if pid, ok := daemon.RunningPID(); ok {

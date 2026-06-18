@@ -244,6 +244,7 @@ func NewSharedServer(cfg SharedServerConfig) (*SharedServer, error) {
 	// another process owns the store. SQLite's in-process writeMu +
 	// busy_timeout serialise in-process writers only; nothing else stops
 	// a second OS process opening the same file and corrupting it.
+	storeLockHeld := false // set true once the exclusive store flock is owned below
 	if cfg.Lifecycle.Writable() && isSqliteBackend(backendName) {
 		storePath, perr := resolveBackendPath(cfg.BackendPath, "store.sqlite")
 		if perr != nil {
@@ -262,9 +263,12 @@ func NewSharedServer(cfg SharedServerConfig) (*SharedServer, error) {
 			return nil, fmt.Errorf("%s — stop it first (`gortex daemon stop`)", hint)
 		}
 		s.cleanup = append(s.cleanup, func() { _ = lock.Unlock() })
+		storeLockHeld = true
 	}
 
-	g, backendCleanup, err := OpenBackend(backendName, cfg.BackendPath, cfg.BufferPoolMB, logger)
+	// allowRebuild is gated on actually holding the store lock: only then may
+	// the sqlite backend drop and recreate an incompatible-schema DB.
+	g, backendCleanup, err := OpenBackend(backendName, cfg.BackendPath, cfg.BufferPoolMB, logger, storeLockHeld)
 	if err != nil {
 		return nil, err
 	}
