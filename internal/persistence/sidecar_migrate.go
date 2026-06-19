@@ -58,6 +58,34 @@ func runMigrations(db *sql.DB) error {
 	return nil
 }
 
+// runBaseSchema applies the idempotent base shape (sidecarSchema) inside one
+// IMMEDIATE-locked transaction. The sidecar DSN's _txlock=immediate makes
+// db.Begin() emit BEGIN IMMEDIATE, so the reserved write lock is held from the
+// start of the batch.
+//
+// This matters for the same reason applyOne wraps its work: the base schema's
+// CREATE TABLE / CREATE INDEX IF NOT EXISTS statements write, and run in
+// autocommit each one first takes a read lock and then tries to promote to a
+// write lock. SQLite answers that promotion with an un-retryable SQLITE_BUSY
+// (busy_timeout is not consulted on a lock upgrade) when another process is
+// concurrently creating the same objects — so several gortex processes opening
+// a fresh or stale DB at once would race here, before runMigrations' own
+// IMMEDIATE transactions ever run, and the losers would fail the open. Taking
+// the write lock at BEGIN instead makes a concurrent opener block on
+// busy_timeout and then re-run the IF NOT EXISTS statements as clean no-ops, so
+// every opener succeeds.
+func runBaseSchema(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once Commit succeeds
+	if _, err := tx.Exec(sidecarSchema); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // applyOne applies a single migration if the DB's user_version is below it.
 //
 // The sidecar DSN sets _txlock=immediate, so db.Begin() emits BEGIN IMMEDIATE

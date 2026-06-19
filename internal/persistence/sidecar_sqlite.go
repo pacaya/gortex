@@ -237,9 +237,23 @@ func OpenSidecar(path string) (*SidecarStore, error) {
 	// up unbounded under steady writes with ever-present readers (same WAL
 	// growth class the graph store guards against).
 	//
+	// busy_timeout is listed FIRST, before journal_mode: modernc applies
+	// _pragma settings in DSN order, and the very first connection to a DB
+	// created in rollback-journal mode runs PRAGMA journal_mode=WAL, which
+	// takes a brief EXCLUSIVE lock to convert the file. Unlike the graph store
+	// (one process), the sidecar is opened concurrently by the daemon, every
+	// per-repo `gortex mcp` subprocess, and the CLI — so that conversion races.
+	// With busy_timeout set first the loser blocks and retries; set after
+	// journal_mode it would still be 0 during the conversion and fail
+	// immediately with SQLITE_BUSY.
+	//
 	// _txlock=immediate makes db.Begin() emit BEGIN IMMEDIATE so a write
-	// transaction takes the reserved lock at BEGIN. runMigrations depends on
-	// this: it reads PRAGMA user_version inside the transaction, and a plain
+	// transaction takes the reserved lock at BEGIN. Both runBaseSchema (the
+	// CREATE ... IF NOT EXISTS batch) and runMigrations depend on this so
+	// several processes opening the same DB at once serialise on busy_timeout
+	// instead of racing on an un-retryable lock-promotion SQLITE_BUSY.
+	// runMigrations additionally reads PRAGMA user_version inside the
+	// transaction, and a plain
 	// DEFERRED begin would not hold the write lock at that point — two
 	// processes opening a stale DB at once could both pass the version gate,
 	// and the loser would hit an un-retryable SQLITE_BUSY on lock upgrade
@@ -248,12 +262,12 @@ func OpenSidecar(path string) (*SidecarStore, error) {
 	// bumped version and skips cleanly. Harmless for the savings write
 	// transactions (already serialised in-process by writeMu); only changes
 	// when their write lock is taken, not whether.
-	dsn := abs + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(OFF)&_pragma=journal_size_limit(67108864)&_txlock=immediate"
+	dsn := abs + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(OFF)&_pragma=journal_size_limit(67108864)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("persistence: open sidecar: %w", err)
 	}
-	if _, err := db.Exec(sidecarSchema); err != nil {
+	if err := runBaseSchema(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("persistence: sidecar schema: %w", err)
 	}
