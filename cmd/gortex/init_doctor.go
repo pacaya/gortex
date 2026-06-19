@@ -2,14 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/zzet/gortex/internal/agents"
+	"github.com/zzet/gortex/internal/daemon"
 )
 
 // initDoctorCmd implements `gortex init doctor`. It re-runs every
@@ -33,6 +36,20 @@ var initDoctorJSON bool
 func init() {
 	initDoctorCmd.Flags().BoolVar(&initDoctorJSON, "json", false, "emit a structured JSON report on stdout")
 	initCmd.AddCommand(initDoctorCmd)
+}
+
+// DoctorEnvironment captures the live wiring doctor can verify because
+// Gortex owns the binary and the daemon — something a config-file-only
+// integration cannot check: that the `gortex` the editor will launch is the
+// one on PATH, and that the daemon it proxies to actually answers a handshake.
+type DoctorEnvironment struct {
+	BinaryOnPath  bool   `json:"binary_on_path"`
+	BinaryPath    string `json:"binary_path,omitempty"`
+	BinaryError   string `json:"binary_error,omitempty"`
+	DaemonRunning bool   `json:"daemon_running"`
+	DaemonSocket  string `json:"daemon_socket,omitempty"`
+	DaemonVersion string `json:"daemon_version,omitempty"`
+	DaemonError   string `json:"daemon_error,omitempty"`
 }
 
 // DoctorAgentReport is one agent's slice of the doctor output.
@@ -59,6 +76,12 @@ type DoctorFileStatus struct {
 	Keys     []string          `json:"keys,omitempty"`
 	ByteSize int64             `json:"byte_size,omitempty"`
 	Reason   string            `json:"reason,omitempty"`
+	// StanzaStatus is set for a present mcpServers file carrying a
+	// Gortex-authored entry: "current" when it matches the canonical stanza,
+	// "stale" when Gortex wrote it but the shape has since changed. Empty for
+	// files that are not Gortex MCP configs. StanzaHint carries the fix.
+	StanzaStatus string `json:"stanza_status,omitempty"`
+	StanzaHint   string `json:"stanza_hint,omitempty"`
 }
 
 func runInitDoctor(cmd *cobra.Command, _ []string) error {
@@ -77,6 +100,8 @@ func runInitDoctor(cmd *cobra.Command, _ []string) error {
 		Stderr:       nil, // suppress progress lines; doctor is read-only
 	}
 
+	doctorEnv := doctorEnvironment()
+
 	registry := buildRegistry()
 	reports := make([]DoctorAgentReport, 0, len(registry.All()))
 	for _, a := range registry.All() {
@@ -86,10 +111,77 @@ func runInitDoctor(cmd *cobra.Command, _ []string) error {
 	if initDoctorJSON {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{"agents": reports})
+		return enc.Encode(map[string]any{"environment": doctorEnv, "agents": reports})
 	}
+	printDoctorEnvironment(cmd.OutOrStdout(), doctorEnv)
 	printDoctorHuman(cmd.OutOrStdout(), reports)
 	return nil
+}
+
+// doctorEnvironment probes the live wiring: whether `gortex` resolves on PATH
+// and whether the daemon answers a handshake on its socket. Both are
+// best-effort and never fail the command — doctor is a read-only diagnostic.
+func doctorEnvironment() DoctorEnvironment {
+	out := DoctorEnvironment{DaemonSocket: daemon.SocketPath()}
+	if p, err := exec.LookPath("gortex"); err == nil {
+		out.BinaryOnPath = true
+		out.BinaryPath = p
+	} else {
+		out.BinaryError = err.Error()
+	}
+	// A real handshake (not just a socket stat) proves the daemon is alive and
+	// speaking the protocol this binary expects.
+	c, err := daemon.Dial(daemon.Handshake{Mode: daemon.ModeControl, ClientName: "init-doctor"})
+	if err != nil {
+		if errors.Is(err, daemon.ErrDaemonUnavailable) {
+			out.DaemonError = "no daemon running (start it with `gortex daemon start`)"
+		} else {
+			out.DaemonError = err.Error()
+		}
+		return out
+	}
+	defer func() { _ = c.Close() }()
+	out.DaemonRunning = true
+	out.DaemonVersion = c.Ack.DaemonVersion
+	return out
+}
+
+// inspectMCPStanza reads a present file, looks for a Gortex-authored entry
+// under mcpServers, and reports whether it matches the canonical stanza
+// ("current") or has drifted ("stale"). ok is false when the file is not a
+// Gortex MCP config (not JSON, no mcpServers, or the entry is user-authored),
+// so non-MCP planned files are left unannotated.
+func inspectMCPStanza(path string) (status string, ok bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var root map[string]any
+	if json.Unmarshal(raw, &root) != nil {
+		return "", false
+	}
+	servers, isMap := root["mcpServers"].(map[string]any)
+	if !isMap {
+		return "", false
+	}
+	entry, found := servers["gortex"]
+	if !found {
+		// Some configs key the server differently; accept any single
+		// Gortex-authored entry.
+		for _, v := range servers {
+			if agents.IsGortexAuthoredMCPEntry(v) {
+				entry, found = v, true
+				break
+			}
+		}
+	}
+	if !found || !agents.IsGortexAuthoredMCPEntry(entry) {
+		return "", false
+	}
+	if agents.MCPEntriesEqual(entry, agents.DefaultGortexMCPEntry()) {
+		return "current", true
+	}
+	return "stale", true
 }
 
 // inspectAdapter runs Detect + Plan for one adapter, then stats
@@ -114,6 +206,16 @@ func inspectAdapter(a agents.Adapter, env agents.Env) DoctorAgentReport {
 			anyPresent = true
 			status.Status = "present"
 			status.ByteSize = info.Size()
+			// For a present mcpServers config, verify the Gortex stanza is
+			// the current canonical shape — Gortex owns the migration logic,
+			// so doctor can flag an authored-but-outdated stanza and name the
+			// one-command fix instead of silently leaving a broken wiring.
+			if st, isStanza := inspectMCPStanza(pf.Path); isStanza {
+				status.StanzaStatus = st
+				if st == "stale" {
+					status.StanzaHint = "Gortex-authored but outdated — run `gortex install` to migrate"
+				}
+			}
 		case os.IsNotExist(err):
 			status.Status = "missing"
 		default:
@@ -125,6 +227,34 @@ func inspectAdapter(a agents.Adapter, env agents.Env) DoctorAgentReport {
 	rep.Configured = anyPresent
 	return rep
 }
+
+// printDoctorEnvironment renders the live-wiring preamble: the binary on PATH
+// and the daemon handshake. These two lines answer "is the integration
+// actually live", not just "is the config file present".
+func printDoctorEnvironment(w io.Writer, env DoctorEnvironment) {
+	_, _ = fmt.Fprintln(w, "Gortex init doctor — environment:")
+	if env.BinaryOnPath {
+		_, _ = fmt.Fprintf(w, "  %s gortex on PATH: %s\n", glyphCheck, env.BinaryPath)
+	} else {
+		_, _ = fmt.Fprintf(w, "  %s gortex not found on PATH (%s)\n", glyphCross, env.BinaryError)
+	}
+	if env.DaemonRunning {
+		ver := env.DaemonVersion
+		if ver == "" {
+			ver = "ok"
+		}
+		_, _ = fmt.Fprintf(w, "  %s daemon handshake: %s (%s)\n", glyphCheck, ver, env.DaemonSocket)
+	} else {
+		_, _ = fmt.Fprintf(w, "  %s daemon handshake: %s\n", glyphCross, env.DaemonError)
+	}
+	_, _ = fmt.Fprintln(w)
+}
+
+// glyphCheck / glyphCross are the doctor's status markers.
+const (
+	glyphCheck = "✓"
+	glyphCross = "✗"
+)
 
 // printDoctorHuman renders the human-readable summary. One row per
 // agent, with a nested file list. Columns line up for copy-paste
@@ -156,6 +286,12 @@ func printDoctorHuman(w io.Writer, reports []DoctorAgentReport) {
 			extra := ""
 			if f.Status == "present" && f.ByteSize > 0 {
 				extra = fmt.Sprintf(" (%d bytes)", f.ByteSize)
+			}
+			switch f.StanzaStatus {
+			case "stale":
+				extra += " [stale stanza: run `gortex install` to migrate]"
+			case "current":
+				extra += " [stanza current]"
 			}
 			if f.Status == "missing" && f.Planned != "" {
 				// Strip the "would-" prefix so we don't print

@@ -44,7 +44,7 @@ func UpsertMCPServerWithMigration(root map[string]any, serverName string, entry 
 		servers = make(map[string]any)
 	}
 	if existing, exists := servers[serverName]; exists {
-		if mcpEntriesEqual(existing, entry) {
+		if MCPEntriesEqual(existing, entry) {
 			return false
 		}
 		if !opts.Force && !IsGortexAuthoredMCPEntry(existing) {
@@ -78,11 +78,12 @@ func IsGortexAuthoredMCPEntry(entry any) bool {
 	return first == "mcp"
 }
 
-// mcpEntriesEqual compares two MCP stanzas by their JSON-marshaled
+// MCPEntriesEqual compares two MCP stanzas by their JSON-marshaled
 // form. Round-tripping is the simplest way to handle the []string vs
 // []any drift between freshly-built entries and entries decoded from
-// an existing mcp.json on disk.
-func mcpEntriesEqual(a, b any) bool {
+// an existing mcp.json on disk. Exported so the doctor can compare an
+// on-disk stanza against DefaultGortexMCPEntry() to flag a stale entry.
+func MCPEntriesEqual(a, b any) bool {
 	aj, err := json.Marshal(a)
 	if err != nil {
 		return false
