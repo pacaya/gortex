@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -26,9 +27,76 @@ func writeIndexTextSummary(w io.Writer, path string, r *indexer.IndexResult) {
 	}
 
 	_, _ = fmt.Fprintf(w, "  %s   %s\n", progress.Row(path, "", 4), progress.StatStrip(stats...))
-	for _, e := range r.Errors {
-		_, _ = fmt.Fprintf(w, "      %s\n", progress.Caption(fmt.Sprintf("%s: %s", e.FilePath, e.Error)))
+	writeIndexErrorBreakdown(w, r)
+}
+
+// indexBreakdownErrorCap bounds how many distinct error reasons the breakdown
+// lists before collapsing the tail into a "+N more" line.
+const indexBreakdownErrorCap = 12
+
+// writeIndexErrorBreakdown prints the parse-failure picture for an index pass:
+// the crash-isolation / size-cap counts the indexer surfaces as dedicated
+// fields, then the parse errors grouped by a normalised reason (so "N files
+// failed: unterminated string" reads at a glance instead of N raw lines). A
+// clean pass prints nothing.
+func writeIndexErrorBreakdown(w io.Writer, r *indexer.IndexResult) {
+	var caps []string
+	if r.QuarantinedFiles > 0 {
+		caps = append(caps, fmt.Sprintf("%s quarantined (parser crash/timeout)", humanizeInt(r.QuarantinedFiles)))
 	}
+	if r.SkippedFiles > 0 {
+		caps = append(caps, fmt.Sprintf("%s skipped (size/timeout cap)", humanizeInt(r.SkippedFiles)))
+	}
+	if n := len(r.FailedFiles); n > 0 {
+		caps = append(caps, fmt.Sprintf("%s failed after retry", humanizeInt(n)))
+	}
+	if len(caps) > 0 {
+		_, _ = fmt.Fprintf(w, "      %s\n", progress.Caption("breakdown: "+strings.Join(caps, " · ")))
+	}
+
+	if len(r.Errors) == 0 {
+		return
+	}
+	// Group by a normalised reason so a class of failures collapses to one line.
+	counts := make(map[string]int, len(r.Errors))
+	for _, e := range r.Errors {
+		counts[normalizeIndexErrorReason(e.Error)]++
+	}
+	reasons := make([]string, 0, len(counts))
+	for reason := range counts {
+		reasons = append(reasons, reason)
+	}
+	sort.Slice(reasons, func(i, j int) bool {
+		if counts[reasons[i]] != counts[reasons[j]] {
+			return counts[reasons[i]] > counts[reasons[j]] // most frequent first
+		}
+		return reasons[i] < reasons[j]
+	})
+	shown := reasons
+	if len(shown) > indexBreakdownErrorCap {
+		shown = shown[:indexBreakdownErrorCap]
+	}
+	for _, reason := range shown {
+		_, _ = fmt.Fprintf(w, "      %s\n", progress.Caption(fmt.Sprintf("%s × %s", humanizeInt(counts[reason]), reason)))
+	}
+	if extra := len(reasons) - len(shown); extra > 0 {
+		_, _ = fmt.Fprintf(w, "      %s\n", progress.Caption(fmt.Sprintf("+%d more error reasons", extra)))
+	}
+}
+
+// normalizeIndexErrorReason collapses an error message to a coarse, groupable
+// reason: the text before the first ':' (which is usually the file/offset
+// detail), trimmed and lower-cased, so per-file specifics don't fragment the
+// breakdown. Returns "parse error" for an empty message.
+func normalizeIndexErrorReason(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return "parse error"
+	}
+	if i := strings.Index(msg, ":"); i > 0 {
+		msg = msg[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(msg))
 }
 
 // humanizeInt returns the integer with thousands separators ("1234" → "1,234").

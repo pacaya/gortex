@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,18 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+// exitCodeError carries a specific process exit code out of a command's RunE
+// without printing the usual "Error:" banner. A command sets it (with
+// SilenceErrors) to communicate a machine-readable outcome — e.g. `affected`
+// uses it so a CI script can branch on whether any test was affected.
+type exitCodeError struct {
+	code int
+	msg  string
+}
+
+func (e *exitCodeError) Error() string { return e.msg }
+func (e *exitCodeError) ExitCode() int { return e.code }
 
 var (
 	cfgFile    string
@@ -107,6 +120,13 @@ func newLogger() *zap.Logger {
 func execute() {
 	assignCommandGroups()
 	if err := rootCmd.Execute(); err != nil {
+		var ec *exitCodeError
+		if errors.As(err, &ec) {
+			if ec.msg != "" {
+				_, _ = fmt.Fprintln(os.Stderr, ec.msg)
+			}
+			os.Exit(ec.code)
+		}
 		os.Exit(1)
 	}
 }
