@@ -176,8 +176,79 @@ const pprIterations = 40
 // score; an empty map is returned when no seed resolves to a snapshot
 // node.
 func (a *AdjacencySnapshot) PersonalizedPageRank(seeds []string, restart float64) map[string]float64 {
-	if a == nil || len(a.ids) == 0 {
+	return a.PersonalizedPageRankTopK(seeds, restart, 0)
+}
+
+// PersonalizedPageRankTopK is PersonalizedPageRank restricted to the k
+// nodes with the highest stationary score. The seeded walk concentrates
+// almost all of its mass on a small neighbourhood of the seeds, so the
+// long tail of near-floor scores carries no usable ranking signal: every
+// consumer either looks a candidate's score up by ID (absent → 0, exactly
+// as a zero score already is) or max-normalises against the top entry,
+// which top-k always retains. Capping the result turns a cached walk from
+// a full-graph-sized map (~len(ids) entries) into at most k entries, which
+// is what bounds the PPR walk cache's memory. k <= 0 (or k >= the number
+// of scored nodes) returns the full dense map, identical to
+// PersonalizedPageRank.
+func (a *AdjacencySnapshot) PersonalizedPageRankTopK(seeds []string, restart float64, k int) map[string]float64 {
+	score := a.personalizedPageRankScores(seeds, restart)
+	if score == nil {
 		return map[string]float64{}
+	}
+	if k <= 0 {
+		out := make(map[string]float64, len(score))
+		for i, v := range score {
+			if v != 0 {
+				out[a.ids[i]] = v
+			}
+		}
+		return out
+	}
+
+	// Gather the non-zero (index, score) pairs, then keep the k largest.
+	pairs := make([]pprScore, 0, len(score))
+	for i, v := range score {
+		if v != 0 {
+			pairs = append(pairs, pprScore{idx: i, score: v})
+		}
+	}
+	if k >= len(pairs) {
+		out := make(map[string]float64, len(pairs))
+		for _, p := range pairs {
+			out[a.ids[p.idx]] = p.score
+		}
+		return out
+	}
+	// Partial selection by descending score; ties broken by index so the
+	// retained set is deterministic across runs.
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].score != pairs[j].score {
+			return pairs[i].score > pairs[j].score
+		}
+		return pairs[i].idx < pairs[j].idx
+	})
+	out := make(map[string]float64, k)
+	for _, p := range pairs[:k] {
+		out[a.ids[p.idx]] = p.score
+	}
+	return out
+}
+
+// pprScore pairs a snapshot node index with its stationary score for the
+// top-k partial selection in PersonalizedPageRankTopK.
+type pprScore struct {
+	idx   int
+	score float64
+}
+
+// personalizedPageRankScores runs the seeded random-walk-with-restart and
+// returns the raw stationary score array aligned to a.ids (score[i] is the
+// proximity of a.ids[i]). It returns nil when the snapshot is empty or no
+// seed resolves to a snapshot node — the public wrappers then return an
+// empty map.
+func (a *AdjacencySnapshot) personalizedPageRankScores(seeds []string, restart float64) []float64 {
+	if a == nil || len(a.ids) == 0 {
+		return nil
 	}
 	if restart <= 0 || restart >= 1 {
 		restart = pprDefaultRestart
@@ -196,7 +267,7 @@ func (a *AdjacencySnapshot) PersonalizedPageRank(seeds []string, restart float64
 		}
 	}
 	if len(seedIdx) == 0 {
-		return map[string]float64{}
+		return nil
 	}
 	restartVec := make([]float64, n)
 	seedMass := 1.0 / float64(len(seedIdx))
@@ -240,11 +311,5 @@ func (a *AdjacencySnapshot) PersonalizedPageRank(seeds []string, restart float64
 		score = next
 	}
 
-	out := make(map[string]float64, n)
-	for i := 0; i < n; i++ {
-		if score[i] != 0 {
-			out[a.ids[i]] = score[i]
-		}
-	}
-	return out
+	return score
 }

@@ -20,8 +20,16 @@ func (s *Server) personalizedPageRank(snap *analysis.AdjacencySnapshot, seeds []
 		return nil
 	}
 	cache := s.pprCache
+	// topK caps the walk to its highest-scoring nodes before it is cached,
+	// so a single retained entry stays a few hundred KB instead of a full-
+	// graph-sized map. Applied on both paths so a cached and an uncached
+	// walk return the same result.
+	topK := pprCacheDefaultTopK
+	if cache != nil {
+		topK = cache.topK
+	}
 	if cache == nil || !cache.enabled {
-		return snap.PersonalizedPageRank(seeds, 0)
+		return snap.PersonalizedPageRankTopK(seeds, 0, topK)
 	}
 	// Merkle-keyed walk cache: the key embeds the per-package content
 	// roots the walk depends on, so an unchanged walk hits even across
@@ -34,7 +42,7 @@ func (s *Server) personalizedPageRank(snap *analysis.AdjacencySnapshot, seeds []
 			return scores
 		}
 	}
-	scores := snap.PersonalizedPageRank(seeds, 0)
+	scores := snap.PersonalizedPageRankTopK(seeds, 0, topK)
 	cache.put(key, scores)
 	return scores
 }

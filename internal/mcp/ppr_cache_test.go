@@ -1,6 +1,10 @@
 package mcp
 
-import "testing"
+import (
+	"container/list"
+	"strconv"
+	"testing"
+)
 
 func TestPPRWalkCacheLRU(t *testing.T) {
 	c := newPPRWalkCache()
@@ -63,5 +67,88 @@ func TestPPRWalkCacheEmptyKeyAndScores(t *testing.T) {
 	c.put("k", nil) // empty scores ignored
 	if _, ok := c.get("k"); ok {
 		t.Fatal("empty scores should not be stored")
+	}
+}
+
+func TestPPRWalkCacheDefaults(t *testing.T) {
+	// Construction without overriding env carries the memory-bounding
+	// defaults that keep the cache from ballooning on a large graph.
+	c := newPPRWalkCache()
+	if c.maxBytes != pprCacheDefaultMaxBytes {
+		t.Errorf("default maxBytes=%d, want %d", c.maxBytes, pprCacheDefaultMaxBytes)
+	}
+	if c.topK != pprCacheDefaultTopK {
+		t.Errorf("default topK=%d, want %d", c.topK, pprCacheDefaultTopK)
+	}
+}
+
+func TestPPRWalkCacheEnvOverrides(t *testing.T) {
+	t.Setenv("GORTEX_PPR_CACHE_MAX_MB", "8")
+	t.Setenv("GORTEX_PPR_CACHE_TOPK", "0") // 0 = unbounded is a valid override
+	c := newPPRWalkCache()
+	if c.maxBytes != 8<<20 {
+		t.Errorf("maxBytes=%d, want %d", c.maxBytes, 8<<20)
+	}
+	if c.topK != 0 {
+		t.Errorf("topK=%d, want 0", c.topK)
+	}
+}
+
+// newTestPPRCache builds a cache with explicit bounds, bypassing the
+// environment so the test is hermetic.
+func newTestPPRCache(cap int, maxBytes int64) *pprWalkCache {
+	return &pprWalkCache{
+		ll:       list.New(),
+		m:        make(map[string]*list.Element),
+		cap:      cap,
+		maxBytes: maxBytes,
+		enabled:  true,
+	}
+}
+
+func scoresOfSize(n int) map[string]float64 {
+	m := make(map[string]float64, n)
+	for i := range n {
+		m["id"+strconv.Itoa(i)] = float64(i + 1)
+	}
+	return m
+}
+
+func TestPPRCache_ByteBudgetEvicts(t *testing.T) {
+	// Each 10-score entry costs 10*pprCacheBytesPerScore. Budget for two;
+	// the entry-count ceiling is high so the byte budget is what governs.
+	per := int64(10) * pprCacheBytesPerScore
+	c := newTestPPRCache(1000, 2*per)
+
+	for i := range 5 {
+		c.put("k"+strconv.Itoa(i), scoresOfSize(10))
+	}
+
+	if _, _, size, _, _ := c.stats(); size != 2 {
+		t.Fatalf("byte budget should cap the cache at 2 entries, got %d", size)
+	}
+	if c.curBytes > c.maxBytes {
+		t.Fatalf("curBytes %d exceeds budget %d", c.curBytes, c.maxBytes)
+	}
+	if _, ok := c.get("k4"); !ok {
+		t.Errorf("most-recent key k4 should survive")
+	}
+	if _, ok := c.get("k0"); ok {
+		t.Errorf("oldest key k0 should have been evicted")
+	}
+}
+
+func TestPPRCache_ReputSameSizeKeepsByteAccounting(t *testing.T) {
+	c := newTestPPRCache(1000, 1<<30)
+	c.put("a", scoresOfSize(10))
+	before := c.curBytes
+	// Re-putting an existing key replaces its scores and re-accounts its
+	// bytes in place — no double counting.
+	c.put("a", scoresOfSize(10))
+	if c.curBytes != before {
+		t.Errorf("re-put of same-size entry changed curBytes: before=%d after=%d", before, c.curBytes)
+	}
+	if _, _, size, _, _ := c.stats(); size != 1 {
+		t.Errorf("re-put must not add a second entry, size=%d", size)
 	}
 }
