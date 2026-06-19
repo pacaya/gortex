@@ -1201,6 +1201,13 @@ func (r *Resolver) resolveEdge(e *graph.Edge, stats *ResolveStats) (oldTo string
 		// function/method passes would miss because they only accept
 		// method/function candidates.
 		r.resolveTokenRef(e, target, stats)
+	case e.Kind == graph.EdgeRendersChild:
+		// A rendered child component (`<Button/>`) binds FIRST against the
+		// caller file's import bindings — ground truth that pins the exact
+		// component even when the name is ambiguous repo-wide — and only
+		// falls through to the name / dir-proximity cascade when the
+		// component is locally defined (no matching import).
+		r.resolveRendersChild(e, target, stats)
 	default:
 		// For instantiates/references edges, try to resolve as a type first;
 		// for calls edges, resolve as a function (original behavior).
