@@ -1257,6 +1257,7 @@ func NewServer(engine *query.Engine, g graph.Store, idx *indexer.Indexer, watche
 	s.registerChangeContractTools()
 	s.registerNotesTools()
 	s.registerMemoriesTools()
+	s.registerWhyTool()
 	s.registerNotebookTools()
 	s.registerCitationTools()
 	s.registerKnowledgeGapsTool()
