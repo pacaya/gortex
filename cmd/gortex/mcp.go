@@ -74,7 +74,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpSemanticMode, "semantic-mode", "typecheck", "Go analysis mode: typecheck or callgraph")
 	mcpCmd.Flags().BoolVar(&mcpNoDaemon, "no-daemon", false, "deprecated no-op (warns when set); the embedded server is used automatically when no daemon is available")
 	mcpCmd.Flags().BoolVar(&mcpForceProxy, "proxy", false, "require a running daemon and proxy through it (error if unavailable)")
-	mcpCmd.Flags().StringVar(&mcpTools, "tools", "", "restrict the published MCP tool surface to a preset: full|readonly|edit|nav (optionally with ,+tool / ,-tool deltas). GORTEX_TOOLS overrides this")
+	mcpCmd.Flags().StringVar(&mcpTools, "tools", "", "restrict the published MCP tool surface to a preset: core (default)|full|readonly|edit|nav (optionally with ,+tool / ,-tool deltas). GORTEX_TOOLS overrides this")
 	mcpCmd.Flags().StringVar(&mcpToolsMode, "tools-mode", "", "how a --tools preset hides tools: hide (remove from tools/list + block calls) or defer (keep reachable via tools_search). Default hide")
 	rootCmd.AddCommand(mcpCmd)
 }

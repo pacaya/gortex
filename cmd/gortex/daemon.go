@@ -118,7 +118,7 @@ func init() {
 	daemonStartCmd.Flags().Uint64Var(&daemonBackendBufferPoolMB, "backend-buffer-pool-mb", 0,
 		"advisory page-cache cap (MiB) for on-disk backends. 0 reads $GORTEX_DAEMON_BUFFER_POOL_MB or lets the backend choose its own default; backends that manage their own cache (e.g. sqlite) ignore it")
 	daemonStartCmd.Flags().StringVar(&daemonTools, "tools", "",
-		"restrict the published MCP tool surface to a preset: full|readonly|edit|nav (optionally with ,+tool / ,-tool deltas). GORTEX_TOOLS overrides this")
+		"restrict the published MCP tool surface to a preset: core (default)|full|readonly|edit|nav (optionally with ,+tool / ,-tool deltas). GORTEX_TOOLS overrides this")
 	daemonStartCmd.Flags().StringVar(&daemonToolsMode, "tools-mode", "",
 		"how a --tools preset hides tools: hide (remove from tools/list + block calls) or defer (keep reachable via tools_search). Default hide")
 	daemonLogsCmd.Flags().IntVarP(&daemonTail, "tail", "n", 50,

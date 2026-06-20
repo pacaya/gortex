@@ -88,3 +88,62 @@ func TestLazyRegistration_E2EOverMCPDispatch(t *testing.T) {
 	}
 	require.True(t, promoted, "promoted store_memory must be in tools/list after discovery")
 }
+
+// TestCoreDefaultDefer_E2EOverMCPDispatch exercises the SHIPPED DEFAULT
+// surface — the `core` preset in `defer` mode, with no GORTEX_LAZY_TOOLS
+// override — through the real MCPServer.HandleMessage path: the cold
+// tools/list carries the curated core, a specialised tool is absent
+// until tools_search fetches its schema, and the promotion lands it in
+// a subsequent tools/list (callable thereafter).
+func TestCoreDefaultDefer_E2EOverMCPDispatch(t *testing.T) {
+	srv := setupPresetServer(t, ToolPolicyConfig{Preset: "core", Mode: "defer"})
+	ctx := context.Background()
+
+	listFrame := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	parseNames := func(reply any) map[string]bool {
+		out, _ := json.Marshal(reply)
+		var parsed struct {
+			Result struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(out, &parsed))
+		names := make(map[string]bool, len(parsed.Result.Tools))
+		for _, e := range parsed.Result.Tools {
+			names[e.Name] = true
+		}
+		return names
+	}
+
+	// 1. Cold tools/list — curated core + tools_search visible; a
+	//    specialised analysis tool is deferred (absent).
+	names := parseNames(srv.MCPServer().HandleMessage(ctx, listFrame))
+	require.True(t, names["smart_context"], "core tool smart_context must be eagerly visible")
+	require.True(t, names["edit_file"], "core tool edit_file must be eagerly visible")
+	require.True(t, names[LazyToolsSearchName], "tools_search must be eagerly visible")
+	require.False(t, names["get_architecture"], "deferred get_architecture must not appear before discovery")
+
+	// 2. tools_search promotes get_architecture and returns its schema.
+	callFrame, _ := json.Marshal(struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      int    `json:"id"`
+		Method  string `json:"method"`
+		Params  any    `json:"params"`
+	}{
+		JSONRPC: "2.0", ID: 2, Method: "tools/call",
+		Params: mcplib.CallToolParams{
+			Name:      LazyToolsSearchName,
+			Arguments: map[string]any{"query": "select:get_architecture"},
+		},
+	})
+	out2, _ := json.Marshal(srv.MCPServer().HandleMessage(ctx, callFrame))
+	require.True(t, strings.Contains(string(out2), "get_architecture"),
+		"tools_search response must carry get_architecture schema:\n%s", string(out2))
+
+	// 3. tools/list again — the promoted tool is now live.
+	names2 := parseNames(srv.MCPServer().HandleMessage(ctx, listFrame))
+	require.True(t, names2["get_architecture"],
+		"promoted get_architecture must be in tools/list after discovery")
+}

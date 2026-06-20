@@ -27,7 +27,9 @@ Gortex exposes a knowledge-graph query surface over the [Model Context Protocol]
 
 ## Tool discovery (lazy mode)
 
-By default the server publishes the entire tool surface in the initial `tools/list` payload. The lazy/discovery flow — where only a hot set of ~25 tools ships eagerly and the rest are fetched on demand through `tools_search` — is opt-in via `GORTEX_LAZY_TOOLS=1`. The opt-in default exists because dominant stdio MCP hosts (Claude Code among them) don't re-fetch `tools/list` when the server fires `notifications/tools/list_changed`, leaving every post-promotion tool unreachable; eager registration sidesteps that.
+By default the server ships a curated **`core`** preset in **`defer`** mode (see [presets](#restricting-the-tool-surface-presets)): ~34 dev-cycle workhorse tools are published eagerly in the initial `tools/list`, and the rest of the ~180-tool catalogue is deferred — fetched on demand through `tools_search`. A cold session therefore pays for the workhorse schemas, not the whole surface. Opt back into the full eager surface with preset `full` (`GORTEX_TOOLS=full`).
+
+`tools_search` returns each deferred tool's schema **inline** (in a `<functions>{…}</functions>` block) and promotes it into `tools/list`, firing `notifications/tools/list_changed`. Clients that honour that notification (or read the inline schema) reach deferred tools transparently. `GORTEX_LAZY_TOOLS=1` is the older, all-or-nothing switch that defers everything except a hard-coded hot set regardless of preset; the `core`/`defer` default supersedes it for the common case.
 
 ```jsonc
 // With GORTEX_LAZY_TOOLS=1 set:
@@ -48,23 +50,24 @@ Returned tools are auto-promoted (`promote:false` opts out) and the server fires
 
 ## Restricting the tool surface (presets)
 
-The full ~170-tool surface is more than many agents need. A **tool preset** restricts what the server publishes — the basis for a minimal, headless editing harness (an agent on a trusted box driving a remote daemon through a small, fixed tool set).
+The full ~180-tool surface is more than many agents need. A **tool preset** picks what the server publishes — the basis both for the lean shipped default and for a minimal, headless editing harness (an agent on a trusted box driving a remote daemon through a small, fixed tool set).
 
-Four built-in presets:
+Five built-in presets:
 
 | Preset | Surface |
 |--------|---------|
-| `full` (default) | every tool |
+| `core` (**default**) | the curated dev-cycle set (~34 tools): orient + search/navigate + read + edit + verify/test + `analyze` + review + the memory workflow. Aliases: `default`, `classic` |
+| `full` | every tool (the pre-`core` behaviour — opt back in here) |
 | `readonly` | everything except the mutating tools (`edit_file`, `write_file`, `index_repository`, …) |
 | `edit` | the minimal headless editing set — orient + navigate + mutate + verify (`smart_context`, `search_symbols`, `find_files`, `edit_file`, `verify_change`, `get_test_targets`, …) |
 | `nav` | read-only navigation / exploration; no editors |
 
 `tool_profile` and `tools_search` are always kept. Layer per-tool deltas on any preset with `allow` / `deny`.
 
-**Two modes** (`mode`, default `hide`):
+**Two modes** (`mode`):
 
-- `hide` — non-allowed tools are removed from `tools/list` **and** calls to them are hard-blocked. The locked-down surface; works on every client.
-- `defer` — non-allowed tools are kept out of the cold `tools/list` but stay reachable through `tools_search` (the lazy-discovery path). Only effective on clients that honour `notifications/tools/list_changed`.
+- `defer` (the default mode for `core`) — non-allowed tools are kept out of the cold `tools/list` but stay reachable through `tools_search`, which returns their schema inline and promotes them (firing `notifications/tools/list_changed`). The lean-but-complete surface: nothing is lost, the rare tool is one discovery call away.
+- `hide` (the default mode for the explicit `edit` / `nav` / `readonly` harness presets) — non-allowed tools are removed from `tools/list` **and** calls to them are hard-blocked. The locked-down surface; works identically on every client.
 
 Select a preset three ways (precedence: **env > flag > config > default**):
 
@@ -72,8 +75,8 @@ Select a preset three ways (precedence: **env > flag > config > default**):
 # .gortex.yaml — config file
 mcp:
   tools:
-    preset: edit          # full | readonly | edit | nav
-    mode: hide            # hide | defer
+    preset: full          # core (default) | full | readonly | edit | nav
+    mode: defer           # defer | hide
     allow: [find_files]   # add tools on top of the preset
     deny: [write_file]    # remove tools from the preset
 ```

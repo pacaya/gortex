@@ -1485,10 +1485,14 @@ func (c MCPConfig) RedactConfigSecretsEnabled() bool {
 }
 
 // MCPToolsConfig selects which MCP tools the server publishes. Preset is
-// one of full (default) / readonly / edit / nav; Allow / Deny are
+// one of core (default) / full / readonly / edit / nav; Allow / Deny are
 // per-tool deltas layered on the preset; Mode is "hide" (remove
 // non-allowed tools from tools/list and hard-block calls) or "defer"
 // (hide from the cold tools/list but keep reachable via tools_search).
+// The default is core/defer — a lean, curated dev-cycle surface ships
+// eagerly and the rest stay one tools_search away — so a cold session
+// pays for ~34 tool schemas instead of the full ~180. Opt back into the
+// whole surface with preset "full" (or GORTEX_TOOLS=full).
 // GORTEX_TOOLS / GORTEX_TOOLS_MODE override these at runtime.
 type MCPToolsConfig struct {
 	Preset string   `mapstructure:"preset" yaml:"preset,omitempty"`
@@ -1525,6 +1529,14 @@ func Default() *Config {
 		MCP: MCPConfig{
 			Transport: "stdio",
 			Port:      8765,
+			// Default tool surface: a curated dev-cycle "core" preset in
+			// defer mode — the lean cold tools/list is the workhorse set,
+			// the rest stay reachable on demand via tools_search. Opt into
+			// the full eager surface with preset "full" / GORTEX_TOOLS=full.
+			Tools: MCPToolsConfig{
+				Preset: "core",
+				Mode:   "defer",
+			},
 		},
 		Multi: MultiRepoConfig{
 			AutoDetect: false,

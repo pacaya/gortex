@@ -26,6 +26,19 @@ func TestToolPolicy_Presets(t *testing.T) {
 		{"full", "analyze", true},
 		{"full", "edit_file", true},
 		{"", "analyze", true},
+		// core (the shipped default) → curated dev-cycle surface only.
+		{"core", "smart_context", true},
+		{"core", "edit_file", true},
+		{"core", "analyze", true},
+		{"core", "store_memory", true},
+		{"core", "review", true},
+		{"core", "get_architecture", false},
+		{"core", "taint_paths", false},
+		{"core", "overlay_push", false},
+		// "default" / "classic" are aliases of core.
+		{"default", "smart_context", true},
+		{"default", "get_architecture", false},
+		{"classic", "edit_file", true},
 		// edit → only the headless editing surface.
 		{"edit", "edit_file", true},
 		{"edit", "find_files", true},
@@ -80,6 +93,10 @@ func TestToolPolicy_ModesAndUnknown(t *testing.T) {
 
 	// full is inactive regardless of mode.
 	require.False(t, newToolPolicy(ToolPolicyConfig{Preset: "full", Mode: "defer"}, zap.NewNop()).deferMode())
+
+	// core aliases normalise to the canonical "core" label.
+	require.Equal(t, "core", newToolPolicy(ToolPolicyConfig{Preset: "default"}, zap.NewNop()).preset)
+	require.Equal(t, "core", newToolPolicy(ToolPolicyConfig{Preset: "classic"}, zap.NewNop()).preset)
 
 	// Unknown preset fails open (full surface), never strands the agent.
 	unknown := newToolPolicy(ToolPolicyConfig{Preset: "bogus"}, zap.NewNop())
@@ -192,4 +209,44 @@ func TestToolPolicy_DeferModeServer(t *testing.T) {
 	require.True(t, srv.IsToolEnabled("analyze"))
 	require.Equal(t, "deferred", srv.toolStatus("analyze"))
 	require.Nil(t, srv.checkToolPresetGate("analyze"))
+}
+
+// TestToolPolicy_CoreDefaultServer exercises the shipped default surface
+// (config.Default(): core preset in defer mode) end to end: every core
+// tool ships eagerly, specialised tools are deferred behind tools_search
+// (never call-gated), and the cold surface stays far below the full
+// catalogue.
+func TestToolPolicy_CoreDefaultServer(t *testing.T) {
+	srv := setupPresetServer(t, ToolPolicyConfig{Preset: "core", Mode: "defer"})
+
+	require.True(t, srv.lazy.Enabled(), "core/defer must enable the lazy registry")
+	require.True(t, srv.toolPolicy.deferMode())
+	require.Equal(t, "core", srv.toolPolicy.preset)
+
+	// Every curated core tool is eagerly live in the cold tools/list.
+	for _, name := range corePresetTools {
+		require.Equalf(t, "live", srv.toolStatus(name),
+			"core tool %q must be eagerly live", name)
+	}
+	// Introspection + discovery survive every preset.
+	require.Equal(t, "live", srv.toolStatus("tool_profile"))
+	require.Equal(t, "live", srv.toolStatus(LazyToolsSearchName))
+
+	// Specialised tools are deferred (reachable on demand), not blocked.
+	for _, name := range []string{"get_architecture", "get_communities", "taint_paths", "flow_between"} {
+		require.Equalf(t, "deferred", srv.toolStatus(name),
+			"non-core tool %q must be deferred under core/defer", name)
+		require.Nilf(t, srv.checkToolPresetGate(name),
+			"defer mode must never call-gate %q", name)
+		require.Truef(t, srv.IsToolEnabled(name),
+			"deferred tool %q is still reachable via tools_search", name)
+	}
+
+	// The eager surface stays lean — a fraction of the full ~180 catalogue.
+	live := srv.liveToolNames()
+	t.Logf("core/defer cold surface = %d live tools", len(live))
+	require.GreaterOrEqual(t, len(live), len(corePresetTools),
+		"all core tools must be live")
+	require.Lessf(t, len(live), 60,
+		"core/defer cold surface should be lean, got %d", len(live))
 }

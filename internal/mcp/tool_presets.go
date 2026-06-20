@@ -37,6 +37,43 @@ const (
 	toolPresetModeEnv = "GORTEX_TOOLS_MODE"
 )
 
+// corePresetTools is the curated "classic developer" surface published
+// eagerly by default — the workhorses a regular dev reaches for across
+// the whole cycle: orient, search/navigate, read, edit, verify/test,
+// analyze, review, and the mandatory memory steps. It is the allow-set
+// of the `core` preset, which is the server default (in defer mode):
+// these ship in the cold tools/list, everything else is deferred behind
+// tools_search. Sized to cover the documented mandatory workflow end to
+// end so the common task never needs a discovery round-trip.
+//
+// tool_profile and tools_search are always kept on top of any preset
+// (isAlwaysKeptTool), so they are intentionally absent here.
+//
+// NB: this is the DEFAULT-surface roster, distinct from
+// lazy_tools.go::hotEagerTools (the GORTEX_LAZY_TOOLS=1 eager set) — the
+// two answer different questions and are allowed to diverge.
+var corePresetTools = []string{
+	// orient
+	"smart_context", "get_repo_outline", "graph_stats",
+	// search / navigate
+	"search_symbols", "search_text", "find_files", "find_usages",
+	"find_implementations", "get_callers", "get_call_chain",
+	"get_dependencies", "get_dependents",
+	// read
+	"read_file", "get_symbol", "get_symbol_source", "get_file_summary",
+	"get_editing_context",
+	// edit
+	"edit_file", "edit_symbol", "write_file", "batch_edit", "rename_symbol",
+	// verify / test
+	"verify_change", "get_diagnostics", "check_guards", "get_test_targets",
+	// analyze (61-kind dispatcher — one name, broad coverage)
+	"analyze",
+	// review / commit
+	"detect_changes", "diff_context", "review",
+	// memory (the mandatory save/recall/surface workflow)
+	"surface_memories", "save_note", "store_memory",
+}
+
 // editPresetTools is the minimal headless code-editing surface: orient,
 // navigate, mutate, verify. Sized so an agent can edit code safely on a
 // remote box without the full 170-tool catalogue. tool_profile and
@@ -75,6 +112,8 @@ func builtinToolPresetSet(name string) (set map[string]bool, denyMutating, known
 	switch name {
 	case "", "full", "all":
 		return nil, false, true
+	case "core", "default", "classic":
+		return toToolSet(corePresetTools), false, true
 	case "readonly", "read-only", "read_only":
 		return nil, true, true
 	case "edit", "editor", "edit-harness":
@@ -87,7 +126,7 @@ func builtinToolPresetSet(name string) (set map[string]bool, denyMutating, known
 }
 
 // builtinPresetNames lists the recognised preset names for diagnostics.
-var builtinPresetNames = []string{"full", "readonly", "edit", "nav"}
+var builtinPresetNames = []string{"core", "full", "readonly", "edit", "nav"}
 
 // toolPolicy is the resolved, in-memory restriction applied to the tool
 // surface by the lazy registry (defer mode) and toolSurfaceFilter /
@@ -147,8 +186,11 @@ func newToolPolicy(cfg ToolPolicyConfig, logger *zap.Logger) *toolPolicy {
 		explicit = set
 		denyMutating = dm
 		label = rawPreset
-		if label == "all" {
+		switch label {
+		case "all":
 			label = "full"
+		case "default", "classic":
+			label = "core"
 		}
 	} else {
 		// A typo'd preset fails open to the full surface (never strands
