@@ -10,6 +10,12 @@ type Config struct {
 	WatchDebounceMs   int              `mapstructure:"watch_debounce_ms" yaml:"watch_debounce_ms,omitempty"`
 	RefuteUnconfirmed bool             `mapstructure:"refute_unconfirmed" yaml:"refute_unconfirmed,omitempty"`
 	Providers         []ProviderConfig `mapstructure:"providers" yaml:"providers,omitempty"`
+	// ExcludeGlobs lists path globs to skip for semantic enrichment, in
+	// addition to the built-in generated/vendored heuristic. A file matching
+	// any glob is not enriched and does not count toward a repo's present
+	// languages (so a language server is not spawned for a repo whose only
+	// files of that language are excluded).
+	ExcludeGlobs []string `mapstructure:"exclude_globs" yaml:"exclude_globs,omitempty"`
 }
 
 // ProviderConfig holds configuration for a single semantic provider.

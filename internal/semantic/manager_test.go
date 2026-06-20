@@ -227,6 +227,22 @@ func (f *fakeRouter) ProviderForSpec(name string) (Provider, error) {
 	return p, nil
 }
 
+func (f *fakeRouter) ProviderForSpecWorkspace(name, workspace string) (Provider, error) {
+	f.calls = append(f.calls, "ProviderForSpecWorkspace:"+name)
+	if err, ok := f.providerErrs[name]; ok {
+		return nil, err
+	}
+	p, ok := f.providers[name]
+	if !ok {
+		return nil, assertionError("no provider for spec " + name)
+	}
+	return p, nil
+}
+
+func (f *fakeRouter) ReleaseSpecWorkspace(name, workspace string) {
+	f.calls = append(f.calls, "ReleaseSpecWorkspace:"+name)
+}
+
 func (f *fakeRouter) Close() error {
 	f.closeCalls++
 	return nil
@@ -305,6 +321,49 @@ func TestManager_EnrichAll_SkipsCoveredLanguages(t *testing.T) {
 	// because go is already covered.
 	assert.Len(t, results, 1)
 	assert.Equal(t, "eager-go", results[0].Provider)
+}
+
+// TestManager_EnrichAll_GatesAbsentLanguages — on a populated repo (positive
+// presence evidence), a router-backed spec whose language the repo does NOT
+// contain is never spawned (ProviderForSpec is not called for it), while a
+// provider whose language IS present still runs.
+func TestManager_EnrichAll_GatesAbsentLanguages(t *testing.T) {
+	logger := zap.NewNop()
+	cfg := Config{
+		Enabled: true,
+		Providers: []ProviderConfig{
+			{Name: "eager-go", Languages: []string{"go"}, Priority: 1, Enabled: true},
+		},
+	}
+	mgr := NewManager(cfg, logger)
+	mgr.RegisterProvider(&mockProvider{name: "eager-go", languages: []string{"go"}, available: true})
+
+	// A router spec serving rust — a language this repo does not contain.
+	rustProvider := &mockProvider{name: "lsp-rust-analyzer", languages: []string{"rust"}, available: true}
+	r := &fakeRouter{
+		specs:     []string{"rust-analyzer"},
+		available: map[string]bool{"rust-analyzer": true},
+		languages: map[string][]string{"rust-analyzer": {"rust"}},
+		providers: map[string]Provider{"rust-analyzer": rustProvider},
+	}
+	mgr.SetLSPRouter(r)
+
+	// Populated repo: one Go node tagged with the roots-key prefix, no Rust.
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "myrepo/main.go::main", Kind: graph.KindFunction, Name: "main", FilePath: "myrepo/main.go", Language: "go", RepoPrefix: "myrepo"})
+
+	roots := map[string]string{"myrepo": "/tmp/r"}
+	results, err := mgr.EnrichAll(g, roots)
+	require.NoError(t, err)
+
+	// The eager Go provider runs; the Rust spec is gated out before any spawn.
+	require.Len(t, results, 1)
+	assert.Equal(t, "eager-go", results[0].Provider)
+	for _, c := range r.calls {
+		if c == "ProviderForSpec:rust-analyzer" {
+			t.Fatalf("rust spec should be gated out (repo has no rust nodes), but ProviderForSpec was called — calls: %v", r.calls)
+		}
+	}
 }
 
 // TestManager_HasProviders_RouterOnly — a router-only setup with at

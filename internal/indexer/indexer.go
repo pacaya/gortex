@@ -827,11 +827,7 @@ func (idx *Indexer) RunDeferredPasses(ctx context.Context) {
 	tphase := time.Now()
 	var dGoMod, dResolve, dEnrich, dContract time.Duration
 
-	// Materialise dep::<module> contract nodes from go.mod BEFORE
-	// ResolveAll so the resolver's import bridge can re-target Go
-	// imports of declared modules to their dep contract node instead
-	// of producing an `external::` stub.
-	idx.extractGoModContracts(idx.pendingContractReg)
+	idx.runDeferredGoMod()
 	dGoMod = time.Since(tphase)
 	tphase = time.Now()
 
@@ -848,38 +844,13 @@ func (idx *Indexer) RunDeferredPasses(ctx context.Context) {
 	dResolve = time.Since(tphase)
 	tphase = time.Now()
 
-	if idx.semanticMgr != nil && idx.semanticMgr.Enabled() && idx.semanticMgr.HasProviders() {
-		reporter.Report("semantic enrichment", 0, 0)
-		// Key by the repo prefix so a repo-scoped provider can scope file
-		// selection to this repo (empty in single-repo mode).
-		roots := map[string]string{idx.repoPrefix: idx.rootPath}
-		results, err := idx.semanticMgr.EnrichAll(idx.graph, roots)
-		if err != nil {
-			idx.logger.Warn("semantic enrichment failed", zap.Error(err))
-		} else if len(results) > 0 {
-			for _, r := range results {
-				idx.logger.Info("semantic enrichment result",
-					zap.String("provider", r.Provider),
-					zap.String("language", r.Language),
-					zap.Int("confirmed", r.EdgesConfirmed),
-					zap.Int("added", r.EdgesAdded),
-					zap.Int("refuted", r.EdgesRefuted),
-					zap.Float64("coverage", r.CoveragePercent),
-				)
-			}
-		}
-	}
-
+	reporter.Report("semantic enrichment", 0, 0)
+	idx.runDeferredEnrich()
 	dEnrich = time.Since(tphase)
 	tphase = time.Now()
 
 	reporter.Report("extracting contracts", 0, 0)
-	// extractGoModContracts already ran (see above) so dep nodes
-	// were available during ResolveAll's import-bridge pass.
-	idx.extractExternalModules()
-	idx.extractDIContracts(idx.pendingContractReg)
-	idx.commitContracts(idx.pendingContractReg)
-	idx.pendingContractReg = nil
+	idx.runDeferredContracts()
 	dContract = time.Since(tphase)
 	idx.logger.Info("DEFERRED-TIMING per-repo",
 		zap.String("repo", idx.repoPrefix),
@@ -887,6 +858,63 @@ func (idx *Indexer) RunDeferredPasses(ctx context.Context) {
 		zap.Duration("resolve", dResolve),
 		zap.Duration("enrich", dEnrich),
 		zap.Duration("contract_commit", dContract))
+}
+
+// runDeferredGoMod materialises dep::<module> contract nodes from go.mod
+// BEFORE ResolveAll so the resolver's import bridge can re-target Go imports
+// of declared modules to their dep contract node instead of an external::
+// stub. Split out of RunDeferredPasses so the batch driver can run it
+// serially across repos ahead of the parallel enrichment phase.
+func (idx *Indexer) runDeferredGoMod() {
+	if idx.pendingContractReg == nil {
+		return
+	}
+	idx.extractGoModContracts(idx.pendingContractReg)
+}
+
+// runDeferredEnrich runs semantic enrichment for this repo. Safe to run
+// concurrently across repos: the manager fetches a per-repo LSP provider
+// instance (keyed by the repo's workspace), the go-types stash is keyed by
+// repo root, tstypes is stateless, and every provider serialises its graph
+// mutations on the backend resolve mutex.
+func (idx *Indexer) runDeferredEnrich() {
+	if idx.semanticMgr == nil || !idx.semanticMgr.Enabled() || !idx.semanticMgr.HasProviders() {
+		return
+	}
+	// Key by the repo prefix so a repo-scoped provider can scope file
+	// selection to this repo (empty in single-repo mode).
+	roots := map[string]string{idx.repoPrefix: idx.rootPath}
+	results, err := idx.semanticMgr.EnrichAll(idx.graph, roots)
+	if err != nil {
+		idx.logger.Warn("semantic enrichment failed", zap.Error(err))
+		return
+	}
+	for _, r := range results {
+		idx.logger.Info("semantic enrichment result",
+			zap.String("provider", r.Provider),
+			zap.String("language", r.Language),
+			zap.Int("confirmed", r.EdgesConfirmed),
+			zap.Int("added", r.EdgesAdded),
+			zap.Int("refuted", r.EdgesRefuted),
+			zap.Float64("coverage", r.CoveragePercent),
+		)
+	}
+}
+
+// runDeferredContracts extracts and commits this repo's contract nodes and
+// clears the pending registration. extractGoModContracts already ran via
+// runDeferredGoMod. Mutates the shared graph and walks repo edges, so the
+// batch driver runs it serially after the parallel enrichment phase. The
+// go-types LookupTypeAtLine it relies on reads the per-repo stash, so it is
+// correct even though every repo's enrichment ran before any contracts.
+func (idx *Indexer) runDeferredContracts() {
+	if idx.pendingContractReg == nil {
+		return
+	}
+	idx.extractExternalModules()
+	idx.extractDIContracts(idx.pendingContractReg)
+	idx.commitContracts(idx.pendingContractReg)
+	idx.pendingContractReg = nil
 }
 
 // RootPath returns the root path used for relative path computation.

@@ -299,6 +299,7 @@ func NewSharedServer(cfg SharedServerConfig) (*SharedServer, error) {
 			EnrichOnWatch:     conf.Semantic.EnrichOnWatch,
 			WatchDebounceMs:   conf.Semantic.WatchDebounceMs,
 			RefuteUnconfirmed: conf.Semantic.RefuteUnconfirmed,
+			ExcludeGlobs:      conf.Semantic.ExcludeGlobs,
 		}
 		for _, pc := range conf.Semantic.Providers {
 			out := semantic.ProviderConfig{
@@ -348,7 +349,8 @@ func NewSharedServer(cfg SharedServerConfig) (*SharedServer, error) {
 			WithIdleTimeout(10 * time.Minute).
 			WithReaperInterval(time.Minute).
 			WithMaxAlive(6).
-			WithAdditionalWorkspaceFolders(conf.Semantic.AdditionalWorkspaceFolders)
+			WithAdditionalWorkspaceFolders(conf.Semantic.AdditionalWorkspaceFolders).
+			WithEnrichExcludeGlobs(conf.Semantic.ExcludeGlobs)
 		semMgr.SetLSPRouter(lspRouter)
 
 		for _, pc := range semCfg.Providers {

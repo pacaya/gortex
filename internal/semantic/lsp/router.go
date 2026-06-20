@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/zzet/gortex/internal/semantic"
 )
+
+// fileExists reports whether path names an existing regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
 
 // Router is a daemon-managed pool of LSP providers keyed by ServerSpec.
 // It routes requests to the right provider by file extension, spawns
@@ -47,6 +54,10 @@ type Router struct {
 	// root) so a server can resolve cross-package imports.
 	additionalWorkspaceFolders []string
 
+	// enrichExcludeGlobs are user-configured path globs to skip for
+	// enrichment, propagated to every spawned provider.
+	enrichExcludeGlobs []string
+
 	mu        sync.Mutex
 	providers map[providerKey]*routedProvider // (spec.Name, workspace) → cached provider
 	enabled   map[string]*ServerSpec          // spec.Name → spec marked enabled by config (no spawn until For/ForSpec)
@@ -77,6 +88,11 @@ type routedProvider struct {
 	workspace string
 	provider  *Provider
 	lastUsed  time.Time
+	// inUse counts callers currently holding this provider for a long
+	// operation (an enrichment pass). The LRU evictor skips any provider
+	// with inUse > 0 so a slow in-flight pass is never Close()d mid-use by
+	// another repo's concurrent spawn. Guarded by r.mu.
+	inUse int
 }
 
 // providerKey identifies a (spec, workspace) pair in the cache. Each
@@ -208,6 +224,24 @@ func (r *Router) ProviderForSpec(name string) (semantic.Provider, error) {
 	return r.ForSpec(spec)
 }
 
+// ProviderForSpecWorkspace returns the lazy-spawned LSP provider for the
+// named spec scoped to a specific workspace root, so each repo gets its own
+// provider instance keyed by (spec, workspace) instead of sharing the
+// default-workspace one. Used by per-repo enrichment so concurrent passes
+// across repos do not share a single Provider's connection / document caches.
+func (r *Router) ProviderForSpecWorkspace(name, workspace string) (semantic.Provider, error) {
+	r.mu.Lock()
+	spec, ok := r.enabled[name]
+	r.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("LSP spec %q not registered", name)
+	}
+	// forSpecWorkspace with pin=true increments inUse inside the same locked
+	// section it publishes/looks up the provider, closing the spawn→pin race.
+	// The caller MUST pair this with ReleaseSpecWorkspace.
+	return r.forSpecWorkspace(spec, workspace, true)
+}
+
 // SpecAvailable reports whether the named spec is registered AND its
 // command resolves on PATH. Pure read — no subprocess spawn. Caches
 // the PATH-lookup result like specAvailable does for ForSpec.
@@ -264,6 +298,14 @@ func (r *Router) WithAdditionalWorkspaceFolders(folders []string) *Router {
 	return r
 }
 
+// WithEnrichExcludeGlobs sets user-configured path globs that every spawned
+// provider skips for enrichment (on top of the built-in generated/vendored
+// heuristic). Builder-style.
+func (r *Router) WithEnrichExcludeGlobs(globs []string) *Router {
+	r.enrichExcludeGlobs = globs
+	return r
+}
+
 // WithReaperInterval starts a background reaper that calls Reap() at
 // the given cadence. Idempotent — calling twice replaces the previous
 // reaper. A zero duration disables reaping.
@@ -288,6 +330,30 @@ func (r *Router) WithReaperInterval(d time.Duration) *Router {
 func (r *Router) WithMaxAlive(n int) *Router {
 	r.maxAlive = n
 	return r
+}
+
+// workspaceKey resolves a workspace string to the cache key form
+// ForSpecWorkspace uses (default-substituted, absolutised).
+func (r *Router) workspaceKey(specName, workspace string) providerKey {
+	if workspace == "" {
+		workspace = r.defaultWorkspace
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	return providerKey{specName: specName, workspace: workspace}
+}
+
+// ReleaseSpecWorkspace marks a provider previously obtained via
+// ProviderForSpecWorkspace as no longer in active use, so the LRU evictor /
+// reaper may reclaim it again. Pairs one-to-one with ProviderForSpecWorkspace.
+func (r *Router) ReleaseSpecWorkspace(name, workspace string) {
+	key := r.workspaceKey(name, workspace)
+	r.mu.Lock()
+	if rp := r.providers[key]; rp != nil && rp.inUse > 0 {
+		rp.inUse--
+	}
+	r.mu.Unlock()
 }
 
 // For returns the provider responsible for the given file path under
@@ -322,6 +388,15 @@ func (r *Router) ForSpec(spec *ServerSpec) (*Provider, error) {
 // given workspace root, spawning it on first call. The (spec,
 // workspace) tuple uniquely identifies the cached Provider.
 func (r *Router) ForSpecWorkspace(spec *ServerSpec, workspace string) (*Provider, error) {
+	return r.forSpecWorkspace(spec, workspace, false)
+}
+
+// forSpecWorkspace is ForSpecWorkspace with an optional in-use pin. When pin
+// is true the returned provider's inUse count is incremented in the SAME
+// locked section that looks it up or publishes it — so a concurrent spawn's
+// LRU eviction can never Close a freshly-returned-but-not-yet-pinned provider
+// (the spawn→pin TOCTOU). A pinned fetch MUST be paired with ReleaseSpecWorkspace.
+func (r *Router) forSpecWorkspace(spec *ServerSpec, workspace string, pin bool) (*Provider, error) {
 	if !r.specAvailable(spec) {
 		return nil, fmt.Errorf("LSP server %q not available on PATH", spec.Name)
 	}
@@ -337,6 +412,9 @@ func (r *Router) ForSpecWorkspace(spec *ServerSpec, workspace string) (*Provider
 	rp, ok := r.providers[key]
 	if ok {
 		rp.lastUsed = time.Now()
+		if pin {
+			rp.inUse++
+		}
 		r.mu.Unlock()
 		return rp.provider, nil
 	}
@@ -345,7 +423,21 @@ func (r *Router) ForSpecWorkspace(spec *ServerSpec, workspace string) (*Provider
 	// Spawn outside the lock — initialize() blocks on stdio I/O.
 	p := NewProviderFromSpec(spec, r.logger)
 	p.workspaceFolders = r.additionalWorkspaceFolders
+	p.excludeGlobs = r.enrichExcludeGlobs
+	// ruby-lsp (and any spec opting in) runs a `bundle install` for a composed
+	// bundle on spawn unless BUNDLE_GEMFILE is set; point it at the workspace's
+	// own Gemfile when present so enrichment skips that install.
+	if spec.UseWorkspaceBundleGemfile {
+		if gemfile := filepath.Join(workspace, "Gemfile"); fileExists(gemfile) {
+			p.env = append(append([]string(nil), p.env...), "BUNDLE_GEMFILE="+gemfile)
+		}
+	}
 	if err := p.EnsureClient(workspace); err != nil {
+		// A binary that resolves on PATH but cannot launch (e.g. a rustup
+		// `rust-analyzer` shim whose toolchain lacks the component) would
+		// otherwise be re-attempted on every repo. Mark it unavailable so the
+		// router stops retrying it for this session.
+		r.markSpawnFailed(spec.Name, err)
 		return nil, fmt.Errorf("spawn %s: %w", spec.Name, err)
 	}
 	// Attach the diagnostics hook (if any) before publishing to the
@@ -359,15 +451,24 @@ func (r *Router) ForSpecWorkspace(spec *ServerSpec, workspace string) (*Provider
 	// initializing. Prefer the existing one and shut down our duplicate.
 	if existing, ok := r.providers[key]; ok {
 		existing.lastUsed = time.Now()
+		if pin {
+			existing.inUse++
+		}
 		go func() { _ = p.Close() }()
 		return existing.provider, nil
 	}
-	r.providers[key] = &routedProvider{
+	newRP := &routedProvider{
 		spec:      spec,
 		workspace: workspace,
 		provider:  p,
 		lastUsed:  time.Now(),
 	}
+	// Pin BEFORE maybeEvictLRULocked runs so the just-published provider is
+	// never the eviction victim, and is protected the instant it is reachable.
+	if pin {
+		newRP.inUse = 1
+	}
+	r.providers[key] = newRP
 	r.maybeEvictLRULocked()
 	return p, nil
 }
@@ -510,6 +611,27 @@ func (r *Router) specAvailable(spec *ServerSpec) bool {
 	return avail
 }
 
+// markSpawnFailed records that a spec's server process failed to start, so
+// the availability cache reports it unavailable and the router stops
+// retrying it for the life of the daemon (until restart). Enrichment is
+// best-effort: a binary that resolves on PATH but cannot launch should be
+// dropped once with a clear warning rather than re-attempted on every repo.
+// The warning is emitted only on the transition to unavailable so a single
+// failure is reported once, not once per repo.
+func (r *Router) markSpawnFailed(specName string, err error) {
+	r.availMu.Lock()
+	prev, known := r.avail[specName]
+	r.avail[specName] = false
+	r.availMu.Unlock()
+	if known && !prev {
+		return // already marked unavailable — don't re-log
+	}
+	r.logger.Warn("LSP server failed to start; skipping its language enrichment this session",
+		zap.String("spec", specName),
+		zap.Error(err),
+	)
+}
+
 // LanguageIDForPath proxies to the package-level helper for callers
 // that hold a router but not a Provider.
 func (r *Router) LanguageIDForPath(path string) string { return LanguageIDForPath(path) }
@@ -524,6 +646,9 @@ func (r *Router) Reap() []string {
 	r.mu.Lock()
 	var victims []*routedProvider
 	for key, rp := range r.providers {
+		if rp.inUse > 0 {
+			continue // a provider held by an in-flight pass is not idle
+		}
 		if rp.lastUsed.Before(cut) {
 			victims = append(victims, rp)
 			delete(r.providers, key)
@@ -550,6 +675,9 @@ func (r *Router) maybeEvictLRULocked() {
 	var oldest *routedProvider
 	var oldestKey providerKey
 	for key, rp := range r.providers {
+		if rp.inUse > 0 {
+			continue // never evict a provider held by an in-flight pass
+		}
 		if oldest == nil || rp.lastUsed.Before(oldest.lastUsed) {
 			oldest = rp
 			oldestKey = key

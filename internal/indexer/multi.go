@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -401,8 +402,19 @@ func (mi *MultiIndexer) RunDeferredPassesAll(ctx context.Context) {
 	for _, idx := range indexers {
 		idx.SetSkipResolveInDeferred(true)
 	}
+	// Per-repo deferred work in three phases. gomod (materialises dep
+	// contract nodes) and contracts (extract + commit, which walk repo edges)
+	// mutate the shared graph in ways that race across repos, so they stay
+	// serial. Enrichment is the dominant cost — LSP background-indexing and
+	// hover I/O — and is safe to overlap across repos: the manager hands each
+	// repo its own LSP provider instance, go-types stashes per repo, and every
+	// provider serialises its graph mutations on the backend resolve mutex.
 	for _, idx := range indexers {
-		idx.RunDeferredPasses(ctx)
+		idx.runDeferredGoMod()
+	}
+	mi.runDeferredEnrichParallel(indexers)
+	for _, idx := range indexers {
+		idx.runDeferredContracts()
 	}
 	for _, idx := range indexers {
 		idx.SetSkipResolveInDeferred(false)
@@ -424,6 +436,50 @@ func (mi *MultiIndexer) RunDeferredPassesAll(ctx context.Context) {
 		master.ResolveAll()
 		mi.logger.Info("DEFERRED-TIMING master.ResolveAll", zap.Duration("elapsed", time.Since(mt)))
 	}
+}
+
+// runDeferredEnrichParallel runs each indexer's semantic enrichment in a
+// bounded worker pool. Concurrency is capped so at most a few LSP servers
+// background-index at once (the memory-sensitive part). The manager pins each
+// repo's LSP provider in-use for the duration of its pass, so the router's
+// LRU evictor never closes a provider another repo is still enriching against.
+func (mi *MultiIndexer) runDeferredEnrichParallel(indexers []*Indexer) {
+	conc := enrichConcurrency(len(indexers))
+	if conc <= 1 {
+		for _, idx := range indexers {
+			idx.runDeferredEnrich()
+		}
+		return
+	}
+
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+	for _, idx := range indexers {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx *Indexer) {
+			defer func() { <-sem; wg.Done() }()
+			idx.runDeferredEnrich()
+		}(idx)
+	}
+	wg.Wait()
+}
+
+// enrichConcurrency caps how many repos enrich at once during batch warmup.
+// Half the CPUs, clamped to [1,4] and to the repo count — a few concurrent
+// LSP servers background-index in parallel without a memory blow-up.
+func enrichConcurrency(repos int) int {
+	c := runtime.NumCPU() / 2
+	if c > 4 {
+		c = 4
+	}
+	if c < 1 {
+		c = 1
+	}
+	if c > repos {
+		c = repos
+	}
+	return c
 }
 
 // EndBatch turns off deferred-global-passes mode and runs the graph-

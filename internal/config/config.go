@@ -223,6 +223,12 @@ type SemanticConfig struct {
 	// the indexed repo root — the language server is told to treat
 	// those folders as part of the same workspace.
 	AdditionalWorkspaceFolders []string `mapstructure:"additional_workspace_folders" yaml:"additional_workspace_folders,omitempty"`
+	// ExcludeGlobs lists path globs to skip for semantic enrichment, in
+	// addition to the built-in generated/vendored heuristic (vendored deps,
+	// tree-sitter generated parser.c, protobuf-generated files, …). A file
+	// matching any glob is not enriched and does not count toward a repo's
+	// present languages, so a language server is not spawned just to index it.
+	ExcludeGlobs []string `mapstructure:"exclude_globs" yaml:"exclude_globs,omitempty"`
 	// SkipEmbed lists (language, kind) combinations that should be
 	// indexed for graph queries but *not* embedded into the vector
 	// search. Design tokens (CSS custom properties), terraform

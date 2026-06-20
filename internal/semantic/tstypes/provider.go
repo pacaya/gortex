@@ -132,7 +132,7 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 		for _, facts := range all {
 			analyzed[facts.file] = true
 		}
-		p.countCoverage(g, analyzed, res)
+		p.countCoverage(g, repoPrefix, analyzed, res)
 		mu.Unlock()
 	}
 
@@ -181,7 +181,7 @@ func (p *Provider) EnrichFile(g graph.Store, repoRoot, filePath string) (*semant
 		ap := newApplier(g, p.spec, p.Name())
 		ap.applyAll([]*fileFacts{facts}, res)
 		ap.flush()
-		p.countCoverage(g, map[string]bool{facts.file: true}, res)
+		p.countCoverage(g, fileNode.RepoPrefix, map[string]bool{facts.file: true}, res)
 		mu.Unlock()
 	}
 	res.DurationMs = time.Since(start).Milliseconds()
@@ -191,13 +191,20 @@ func (p *Provider) EnrichFile(g graph.Store, repoRoot, filePath string) (*semant
 // countCoverage fills the symbols-covered counters: total is every
 // symbol of the provider's languages, covered is the subset living in
 // files the pass analyzed.
-func (p *Provider) countCoverage(g graph.Store, analyzed map[string]bool, res *semantic.EnrichResult) {
+func (p *Provider) countCoverage(g graph.Store, repoPrefix string, analyzed map[string]bool, res *semantic.EnrichResult) {
 	langs := make(map[string]bool, len(p.spec.Languages))
 	for _, l := range p.spec.Languages {
 		langs[l] = true
 	}
-	for _, n := range g.AllNodes() {
-		if !langs[n.Language] || n.Kind == graph.KindFile || n.Kind == graph.KindImport {
+	// Indexed repo-scoped scan rather than a whole-graph AllNodes walk; the
+	// whole-graph form also counted every other repo's symbols against this
+	// repo's coverage. Fall back to AllNodes only for the embedded ("") path.
+	nodes := g.GetRepoNodes(repoPrefix)
+	if len(nodes) == 0 && repoPrefix == "" {
+		nodes = g.AllNodes()
+	}
+	for _, n := range nodes {
+		if n.RepoPrefix != repoPrefix || !langs[n.Language] || n.Kind == graph.KindFile || n.Kind == graph.KindImport {
 			continue
 		}
 		res.SymbolsTotal++

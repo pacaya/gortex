@@ -40,6 +40,21 @@ type LSPRouter interface {
 	// if the spec is not enabled or its command is not on PATH.
 	ProviderForSpec(name string) (Provider, error)
 
+	// ProviderForSpecWorkspace is ProviderForSpec scoped to a workspace
+	// root, so each repo gets its own provider instance (keyed by
+	// (spec, workspace)). Per-repo instances are what let cross-repo
+	// enrichment run concurrently without sharing one provider's LSP
+	// connection or document caches. While the returned provider is held,
+	// it is pinned in-use; the caller MUST pair it with ReleaseSpecWorkspace.
+	ProviderForSpecWorkspace(name, workspace string) (Provider, error)
+
+	// ReleaseSpecWorkspace marks a provider obtained via
+	// ProviderForSpecWorkspace as no longer in active use, so the router's
+	// LRU evictor / idle reaper may reclaim it. Pairs one-to-one with
+	// ProviderForSpecWorkspace so a slow, in-use server is never evicted
+	// mid-pass by another repo's concurrent spawn.
+	ReleaseSpecWorkspace(name, workspace string)
+
 	// Close shuts down every active provider. Called by Manager.Close.
 	Close() error
 }
@@ -128,11 +143,42 @@ func (m *Manager) EnrichAll(g graph.Store, roots map[string]string) ([]*EnrichRe
 	// registered via RegisterProvider.
 	langProviders := m.selectProviders()
 
+	// Languages actually present (in symbol-bearing nodes) across the repos
+	// being enriched, from the indexed repo-scoped node scan. A provider — and
+	// the LSP server spawn it would trigger — is skipped when none of its
+	// languages are present, so a clangd / sourcekit / ruby-lsp never starts
+	// for a repo that has no C / Swift / Ruby. This is the same condition the
+	// per-provider EnrichRepo gate already applies, lifted ahead of the spawn.
+	//
+	// The gate fires only on POSITIVE evidence of absence: when the repo set
+	// has indexed symbols (present is non-empty) but none in a provider's
+	// languages. An empty / unindexed graph yields no evidence, so we don't
+	// gate — providers fall through to their own per-pass gate as before.
+	present := m.repoLanguages(g, roots)
+	gateOnPresence := len(present) > 0
+	if gateOnPresence {
+		langs := make([]string, 0, len(present))
+		for l := range present {
+			langs = append(langs, l)
+		}
+		sort.Strings(langs)
+		m.logger.Info("semantic enrichment: repo languages present",
+			zap.Strings("languages", langs),
+		)
+	}
+
 	var results []*EnrichResult
 
 	for lang, provider := range langProviders {
 		if !provider.Available() {
 			m.logger.Debug("semantic provider unavailable, skipping",
+				zap.String("provider", provider.Name()),
+				zap.String("language", lang),
+			)
+			continue
+		}
+		if gateOnPresence && !anyLangPresent(provider.Languages(), present) {
+			m.logger.Debug("semantic provider skipped, no nodes for its languages",
 				zap.String("provider", provider.Name()),
 				zap.String("language", lang),
 			)
@@ -164,6 +210,13 @@ func (m *Manager) EnrichAll(g graph.Store, roots map[string]string) ([]*EnrichRe
 				if _, eagerCovered := langProviders[lang]; eagerCovered {
 					continue
 				}
+				// Only compete for a language the repo set actually contains —
+				// a spec that wins no present language never enters runOrder and
+				// so is never spawned via ProviderForSpec. Skipped when there is
+				// no presence evidence at all (empty / unindexed graph).
+				if gateOnPresence && !present[lang] {
+					continue
+				}
 				cur, exists := bestSpec[lang]
 				if !exists || prio < bestPrio[lang] || (prio == bestPrio[lang] && name < cur) {
 					bestSpec[lang] = name
@@ -184,19 +237,30 @@ func (m *Manager) EnrichAll(g graph.Store, roots map[string]string) ([]*EnrichRe
 		}
 		sort.Strings(runOrder)
 		for _, name := range runOrder {
-			provider, err := m.lspRouter.ProviderForSpec(name)
-			if err != nil {
-				m.logger.Debug("router-backed LSP provider unavailable, skipping",
-					zap.String("spec", name),
-					zap.Error(err),
-				)
-				continue
+			// Fetch a provider per repo root (keyed by workspace) rather than
+			// one shared default-workspace provider, so concurrent cross-repo
+			// enrichment never shares a single LSP connection or document cache.
+			for repoName, repoRoot := range roots {
+				provider, err := m.lspRouter.ProviderForSpecWorkspace(name, repoRoot)
+				if err != nil {
+					m.logger.Debug("router-backed LSP provider unavailable, skipping",
+						zap.String("spec", name),
+						zap.String("repo", repoName),
+						zap.Error(err),
+					)
+					continue
+				}
+				// ProviderForSpecWorkspace pinned the provider in-use; release
+				// it once this repo's pass returns so the evictor can reclaim it.
+				func() {
+					defer m.lspRouter.ReleaseSpecWorkspace(name, repoRoot)
+					langs := provider.Languages()
+					if len(langs) == 0 {
+						return
+					}
+					results = m.runEnrichOne(g, repoName, repoRoot, langs[0], provider, results)
+				}()
 			}
-			langs := provider.Languages()
-			if len(langs) == 0 {
-				continue
-			}
-			results = m.runEnrichForProvider(g, roots, langs[0], provider, results)
 		}
 	}
 
@@ -211,10 +275,56 @@ func (m *Manager) EnrichAll(g graph.Store, roots map[string]string) ([]*EnrichRe
 		if len(langs) == 0 {
 			continue
 		}
+		if gateOnPresence && !anyLangPresent(langs, present) {
+			continue
+		}
 		results = m.runEnrichForProvider(g, roots, langs[0], p, results)
 	}
 
 	return results, nil
+}
+
+// repoLanguages returns the union of languages present (in symbol-bearing
+// nodes) across the given repo roots, computed from the indexed repo-scoped
+// node scan. Used to skip providers — and the LSP server spawns they would
+// trigger — for languages a repo set does not contain. Mirrors the
+// node-language condition the per-provider EnrichRepo gate applies, so a
+// provider is gated here exactly when its own pass would have found no work.
+func (m *Manager) repoLanguages(g graph.Store, roots map[string]string) map[string]bool {
+	present := make(map[string]bool)
+	for repoPrefix := range roots {
+		nodes := g.GetRepoNodes(repoPrefix)
+		if len(nodes) == 0 && repoPrefix == "" {
+			nodes = g.AllNodes()
+		}
+		for _, n := range nodes {
+			// Include file/import nodes too: the per-provider EnrichRepo gate
+			// can spawn on an ambiguous edge sourced from a file/import node, so
+			// presence here must be at least as permissive — otherwise we would
+			// gate out a provider whose own pass would have run.
+			if n.RepoPrefix != repoPrefix || n.Language == "" {
+				continue
+			}
+			// Generated / vendored files don't make a language "present" — a
+			// repo whose only C is tree-sitter's generated parser.c should not
+			// spawn clangd just to index it.
+			if IsLowValueForEnrichment(n.FilePath, m.config.ExcludeGlobs) {
+				continue
+			}
+			present[n.Language] = true
+		}
+	}
+	return present
+}
+
+// anyLangPresent reports whether any of langs is in the present set.
+func anyLangPresent(langs []string, present map[string]bool) bool {
+	for _, l := range langs {
+		if present[l] {
+			return true
+		}
+	}
+	return false
 }
 
 // providerDisabled reports an explicit `enabled: false` config entry
@@ -247,52 +357,62 @@ func (m *Manager) configPriorityFor(name string) (int, bool) {
 // providers.
 func (m *Manager) runEnrichForProvider(g graph.Store, roots map[string]string, lang string, provider Provider, results []*EnrichResult) []*EnrichResult {
 	for repoName, repoRoot := range roots {
-		start := time.Now()
-		m.logger.Info("semantic enrichment starting",
+		results = m.runEnrichOne(g, repoName, repoRoot, lang, provider, results)
+	}
+	return results
+}
+
+// runEnrichOne runs one provider against one repo root and appends the
+// result. Split out of runEnrichForProvider so the Router-backed path can
+// fetch a per-repo provider instance (keyed by the repo's workspace) before
+// dispatching — distinct providers per repo are what makes concurrent
+// cross-repo enrichment safe.
+func (m *Manager) runEnrichOne(g graph.Store, repoName, repoRoot, lang string, provider Provider, results []*EnrichResult) []*EnrichResult {
+	start := time.Now()
+	m.logger.Info("semantic enrichment starting",
+		zap.String("provider", provider.Name()),
+		zap.String("language", lang),
+		zap.String("repo", repoName),
+	)
+
+	// repoName is the roots-map key. In multi-repo mode it carries the
+	// repo prefix (the MultiIndexer keys roots by prefix; the per-repo
+	// indexer passes its own RepoPrefix()); a repo-scoped provider uses
+	// it to scope file selection to the repo actually being enriched.
+	var result *EnrichResult
+	var err error
+	if rsp, ok := provider.(RepoScopedProvider); ok {
+		result, err = rsp.EnrichRepo(g, repoName, repoRoot)
+	} else {
+		result, err = provider.Enrich(g, repoRoot)
+	}
+	if err != nil {
+		m.logger.Warn("semantic enrichment failed",
 			zap.String("provider", provider.Name()),
 			zap.String("language", lang),
-			zap.String("repo", repoName),
+			zap.Error(err),
 		)
+		return results
+	}
 
-		// repoName is the roots-map key. In multi-repo mode it carries the
-		// repo prefix (the MultiIndexer keys roots by prefix; the per-repo
-		// indexer passes its own RepoPrefix()); a repo-scoped provider uses
-		// it to scope file selection to the repo actually being enriched.
-		var result *EnrichResult
-		var err error
-		if rsp, ok := provider.(RepoScopedProvider); ok {
-			result, err = rsp.EnrichRepo(g, repoName, repoRoot)
-		} else {
-			result, err = provider.Enrich(g, repoRoot)
-		}
-		if err != nil {
-			m.logger.Warn("semantic enrichment failed",
-				zap.String("provider", provider.Name()),
-				zap.String("language", lang),
-				zap.Error(err),
-			)
-			continue
-		}
+	if result != nil {
+		result.DurationMs = time.Since(start).Milliseconds()
+		results = append(results, result)
 
-		if result != nil {
-			result.DurationMs = time.Since(start).Milliseconds()
-			results = append(results, result)
+		m.mu.Lock()
+		m.lastResults[provider.Name()] = result
+		m.mu.Unlock()
 
-			m.mu.Lock()
-			m.lastResults[provider.Name()] = result
-			m.mu.Unlock()
-
-			m.logger.Info("semantic enrichment complete",
-				zap.String("provider", provider.Name()),
-				zap.String("language", lang),
-				zap.Int("confirmed", result.EdgesConfirmed),
-				zap.Int("added", result.EdgesAdded),
-				zap.Int("refuted", result.EdgesRefuted),
-				zap.Int("nodes_enriched", result.NodesEnriched),
-				zap.Float64("coverage", result.CoveragePercent),
-				zap.Int64("duration_ms", result.DurationMs),
-			)
-		}
+		m.logger.Info("semantic enrichment complete",
+			zap.String("provider", provider.Name()),
+			zap.String("language", lang),
+			zap.Int("confirmed", result.EdgesConfirmed),
+			zap.Int("added", result.EdgesAdded),
+			zap.Int("refuted", result.EdgesRefuted),
+			zap.Int("nodes_enriched", result.NodesEnriched),
+			zap.Float64("coverage", result.CoveragePercent),
+			zap.Int64("duration_ms", result.DurationMs),
+		)
 	}
 	return results
 }

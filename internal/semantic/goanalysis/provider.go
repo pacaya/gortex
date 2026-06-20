@@ -37,10 +37,19 @@ type Provider struct {
 	includeTest bool
 	logger      *zap.Logger
 
-	// Cached state from the last Enrich() — used by LookupTypeAtLine
-	// to answer per-binding type queries from the contract pipeline
-	// without re-loading packages. Guarded by stateMu.
+	// Cached per-repo state from EnrichRepo — used by LookupTypeAtLine to
+	// answer per-binding type queries from the contract pipeline without
+	// re-loading packages. Keyed by the repo's absolute root so that, when
+	// multiple repos are enriched (in any order, possibly concurrently) before
+	// their contracts are extracted, each repo's contract pass still finds its
+	// own loaded packages rather than the last writer's. Guarded by stateMu.
 	stateMu sync.RWMutex
+	stashes map[string]*goStash // absRoot → loaded package state
+}
+
+// goStash is one repo's loaded go/packages state, retained for
+// LookupTypeAtLine after EnrichRepo returns.
+type goStash struct {
 	pkgs    []*packages.Package
 	fset    *token.FileSet
 	absRoot string
@@ -66,6 +75,17 @@ func (p *Provider) Available() bool {
 }
 
 func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResult, error) {
+	return p.EnrichRepo(g, "", repoRoot)
+}
+
+// EnrichRepo runs the go/types enrichment pass with its graph scans scoped
+// to repoPrefix (the multi-repo scope key; "" for a single-repo / in-memory
+// graph). The go/packages load is already scoped to repoRoot; scoping the
+// graph-side symbol count and implements-edge scan to one repo stops a
+// multi-repo warmup from paying a whole-graph AllNodes / AllEdges walk per
+// repo. Implementing this makes the provider a semantic.RepoScopedProvider,
+// so the manager dispatches it per repo with the repo's prefix.
+func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*semantic.EnrichResult, error) {
 	start := time.Now()
 
 	absRoot, err := filepath.Abs(repoRoot)
@@ -79,20 +99,30 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 		return nil, fmt.Errorf("load packages: %w", err)
 	}
 
-	// Stash the loaded state so LookupTypeAtLine can serve per-binding
-	// type queries from the contract pipeline without paying the
-	// 5-10s loadPackages cost again. The state survives until the
-	// next Enrich call (which replaces it).
+	// Stash the loaded state, keyed by this repo's root, so LookupTypeAtLine
+	// can serve per-binding type queries from the contract pipeline without
+	// paying the 5-10s loadPackages cost again — and so a later repo's enrich
+	// does not clobber this repo's state before its contracts are extracted.
 	p.stateMu.Lock()
-	p.pkgs = pkgs
-	p.fset = fset
-	p.absRoot = absRoot
+	if p.stashes == nil {
+		p.stashes = make(map[string]*goStash)
+	}
+	p.stashes[absRoot] = &goStash{pkgs: pkgs, fset: fset, absRoot: absRoot}
 	p.stateMu.Unlock()
 
 	result := &semantic.EnrichResult{
 		Provider: p.Name(),
 		Language: "go",
 	}
+
+	// Serialise the graph-touching work below on the backend resolve mutex —
+	// the same lock every other edge-mutating pass holds — so this pass can run
+	// concurrently with other repos' enrichment. loadPackages (the expensive
+	// go/packages load) already ran above, outside the lock, so it still
+	// overlaps across repos; only the in-memory graph build is serialised.
+	rmu := g.ResolveMutex()
+	rmu.Lock()
+	defer rmu.Unlock()
 
 	// Build symbol map: go/types objects → Gortex node IDs.
 	symMap := semantic.NewSymbolMap()
@@ -128,9 +158,12 @@ func (p *Provider) Enrich(g graph.Store, repoRoot string) (*semantic.EnrichResul
 		}
 	}
 
-	// Count total Go symbols.
-	for _, n := range g.AllNodes() {
-		if n.Language == "go" && n.Kind != graph.KindFile && n.Kind != graph.KindImport {
+	// Count total Go symbols in this repo via the indexed repo-scoped scan
+	// rather than a whole-graph AllNodes walk (which, in a multi-repo graph,
+	// also wrongly counted every other repo's Go nodes against this repo's
+	// coverage).
+	for _, n := range repoGoNodes(g, repoPrefix) {
+		if n.Kind != graph.KindFile && n.Kind != graph.KindImport {
 			result.SymbolsTotal++
 		}
 	}
@@ -321,28 +354,35 @@ func (p *Provider) EnrichFile(g graph.Store, repoRoot, filePath string) (*semant
 // resolution at any line in the indexed source.
 func (p *Provider) LookupTypeAtLine(filePath string, line int) (string, bool) {
 	p.stateMu.RLock()
-	pkgs := p.pkgs
-	fset := p.fset
-	absRoot := p.absRoot
+	stashes := make([]*goStash, 0, len(p.stashes))
+	for _, s := range p.stashes {
+		stashes = append(stashes, s)
+	}
 	p.stateMu.RUnlock()
-	if len(pkgs) == 0 || fset == nil || absRoot == "" {
+	if len(stashes) == 0 {
 		return "", false
 	}
+	// Try every repo's stash; the file resolves under exactly one repo root.
 	target := normalizeRelPath(filePath)
-	for _, pkg := range pkgs {
-		if pkg.TypesInfo == nil {
+	for _, st := range stashes {
+		if len(st.pkgs) == 0 || st.fset == nil || st.absRoot == "" {
 			continue
 		}
-		for _, syntax := range pkg.Syntax {
-			if syntax == nil {
+		for _, pkg := range st.pkgs {
+			if pkg.TypesInfo == nil {
 				continue
 			}
-			pos := fset.Position(syntax.Pos())
-			if normalizeRelPath(relativePath(pos.Filename, absRoot)) != target {
-				continue
-			}
-			if t, ok := lookupTypeAtLineInFile(syntax, pkg.TypesInfo, fset, line); ok {
-				return t, true
+			for _, syntax := range pkg.Syntax {
+				if syntax == nil {
+					continue
+				}
+				pos := st.fset.Position(syntax.Pos())
+				if normalizeRelPath(relativePath(pos.Filename, st.absRoot)) != target {
+					continue
+				}
+				if t, ok := lookupTypeAtLineInFile(syntax, pkg.TypesInfo, st.fset, line); ok {
+					return t, true
+				}
 			}
 		}
 	}
@@ -542,6 +582,26 @@ func (p *Provider) loadPackages(dir string) ([]*packages.Package, *token.FileSet
 	return valid, cfg.Fset, nil
 }
 
+// repoGoNodes returns the repo's Go-language nodes via the indexed
+// GetRepoNodes scan, falling back to a language-filtered AllNodes pass for
+// the embedded single-repo ("") path where GetRepoNodes can come back empty.
+func repoGoNodes(g graph.Store, repoPrefix string) []*graph.Node {
+	filter := func(nodes []*graph.Node) []*graph.Node {
+		out := make([]*graph.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if n.Language == "go" && n.RepoPrefix == repoPrefix {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+	out := filter(g.GetRepoNodes(repoPrefix))
+	if len(out) == 0 && repoPrefix == "" {
+		return filter(g.AllNodes())
+	}
+	return out
+}
+
 // enrichImplements confirms existing EdgeImplements edges using go/types.
 func (p *Provider) enrichImplements(g graph.Store, pkgs []*packages.Package, objToNode map[types.Object]string) int {
 	confirmed := 0
@@ -556,11 +616,12 @@ func (p *Provider) enrichImplements(g graph.Store, pkgs []*packages.Package, obj
 		}
 	}
 
-	// Check existing EdgeImplements edges.
-	for _, e := range g.AllEdges() {
-		if e.Kind != graph.EdgeImplements {
-			continue
-		}
+	// Check existing EdgeImplements edges. Iterate the kind-indexed edge set
+	// (not a whole-graph AllEdges scan, but still graph-wide for this kind) so
+	// a cross-repo implements edge — concrete type in another repo, interface
+	// in this repo's loaded packages — is still confirmed, matching the
+	// original behavior.
+	for e := range g.EdgesByKind(graph.EdgeImplements) {
 		fromNode := g.GetNode(e.From)
 		if fromNode == nil || fromNode.Language != "go" {
 			continue

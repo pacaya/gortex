@@ -73,6 +73,12 @@ type ServerSpec struct {
 	// already running, rather than spawning a duplicate 200-500 MB
 	// subprocess per language.
 	Connect *ConnectSpec
+	// UseWorkspaceBundleGemfile, when true, makes the router set
+	// BUNDLE_GEMFILE to the spawned workspace's own Gemfile (when one
+	// exists) in the server's environment. ruby-lsp runs a `bundle install`
+	// for a "composed bundle" on spawn unless BUNDLE_GEMFILE is already set;
+	// pointing it at the project Gemfile skips that install for enrichment.
+	UseWorkspaceBundleGemfile bool
 }
 
 // ConnectSpec carries the transport coordinates for passive LSP attach
@@ -396,9 +402,10 @@ var Servers = []ServerSpec{
 			".rb":   "ruby",
 			".rake": "ruby",
 		},
-		Priority:    5,
-		Daemon:      true,
-		MaxParallel: 6,
+		Priority:                  5,
+		Daemon:                    true,
+		MaxParallel:               6,
+		UseWorkspaceBundleGemfile: true,
 		AlternativeCommands: []ServerAlt{
 			{Command: "solargraph", Args: []string{"stdio"}},
 		},
