@@ -16,13 +16,13 @@ import (
 // triplet:
 //
 //   - store_memory     — create or update a memory (auto-linked to
-//                        symbols mentioned in the body)
+//     symbols mentioned in the body)
 //   - query_memories   — list / search memories by symbol / file /
-//                        tag / kind / source / author / text
+//     tag / kind / source / author / text
 //   - surface_memories — proactively rank memories for a given
-//                        working set (anchor symbols / files + task
-//                        description); the memory analogue of
-//                        smart_context
+//     working set (anchor symbols / files + task
+//     description); the memory analogue of
+//     smart_context
 //
 // Memories are workspace-wide and have no session boundary, so
 // every result is filtered through the session's workspace scope
@@ -191,6 +191,7 @@ func (s *Server) handleStoreMemory(ctx context.Context, req mcp.CallToolRequest)
 			newID := id
 			_, _ = store.Update(oldID, MemoryPatch{SupersededBy: &newID})
 		}
+		s.reconcileRationale(scope)
 		return s.respondJSONOrTOON(ctx, req, memoryEntryToWire(updated))
 	}
 
@@ -255,6 +256,7 @@ func (s *Server) handleStoreMemory(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	saved, _ := store.Get(newID)
+	s.reconcileRationale(scope)
 	return s.respondJSONOrTOON(ctx, req, memoryEntryToWire(saved))
 }
 

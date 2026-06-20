@@ -68,6 +68,16 @@ func newMemoryManagerFromSidecar(sidecar *persistence.SidecarStore, repoKey, leg
 	return mm
 }
 
+// allEntries returns a snapshot copy of every stored memory entry, for callers
+// (e.g. the rationale projection) that need the full set under the lock.
+func (m *memoryManager) allEntries() []persistence.MemoryEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]persistence.MemoryEntry, len(m.store.Entries))
+	copy(out, m.store.Entries)
+	return out
+}
+
 // MemoryQueryFilter constrains a Query call. Zero-value fields
 // disable the corresponding filter; tag matching is exact
 // (case-insensitive).
