@@ -696,8 +696,17 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 		return result, fmt.Errorf("LSP enrichment aborted: %w", abortErr)
 	}
 
+	// The graph-mutation blocks below serialise on the backend resolve mutex
+	// (the same lock every other edge-mutating pass holds) so this pass can run
+	// concurrently with other repos' enrichment. Only the in-memory mutations
+	// are locked — the per-item findImplementations / findReferences LSP I/O
+	// stays outside the lock so concurrent language servers still overlap.
+	rmu := g.ResolveMutex()
+
 	if len(stampedNodes) > 0 {
+		rmu.Lock()
 		g.AddBatch(stampedNodes, nil)
+		rmu.Unlock()
 	}
 
 	// Query implementations for interface nodes.
@@ -719,6 +728,7 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 			continue
 		}
 
+		rmu.Lock()
 		for _, loc := range impls {
 			implPath := uriToPath(loc.URI, absRoot)
 			if implPath == "" {
@@ -741,6 +751,7 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 				result.EdgesAdded++
 			}
 		}
+		rmu.Unlock()
 	}
 
 	// Apply the call- and type-hierarchy hops collected while each file was
@@ -748,12 +759,14 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 	// the graph — promoting AST-missed call edges to lsp_resolved, or adding
 	// the cross-file call / extends / implements edges the AST extractor
 	// could not follow (the single biggest non-Go win).
+	rmu.Lock()
 	for _, h := range callHops {
 		p.recordHierarchyCall(g, repoPrefix, absRoot, h.n, h.other, h.asOutgoing, result)
 	}
 	for _, h := range typeHops {
 		p.linkTypeHierarchy(g, repoPrefix, absRoot, h.n, h.other, h.asSupertype, result)
 	}
+	rmu.Unlock()
 
 	// Query references for AMBIGUOUS edges to confirm/refute.
 	for _, t := range targets {
@@ -791,7 +804,9 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 		}
 
 		if confirmed {
+			rmu.Lock()
 			semantic.ConfirmEdge(t.edge, p.Name())
+			rmu.Unlock()
 			result.EdgesConfirmed++
 		}
 	}

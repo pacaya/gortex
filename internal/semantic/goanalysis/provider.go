@@ -105,6 +105,15 @@ func (p *Provider) EnrichRepo(g graph.Store, repoPrefix, repoRoot string) (*sema
 		Language: "go",
 	}
 
+	// Serialise the graph-touching work below on the backend resolve mutex —
+	// the same lock every other edge-mutating pass holds — so this pass can run
+	// concurrently with other repos' enrichment. loadPackages (the expensive
+	// go/packages load) already ran above, outside the lock, so it still
+	// overlaps across repos; only the in-memory graph build is serialised.
+	rmu := g.ResolveMutex()
+	rmu.Lock()
+	defer rmu.Unlock()
+
 	// Build symbol map: go/types objects → Gortex node IDs.
 	symMap := semantic.NewSymbolMap()
 	objToNode := make(map[types.Object]string) // types.Object → Gortex node ID
