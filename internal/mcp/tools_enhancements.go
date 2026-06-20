@@ -3944,6 +3944,72 @@ func markdownFenceLang(language, filePath string) string {
 	return languageForExtension(filePath)
 }
 
+// contextSymbolEntries returns the symbol entries the briefing should render
+// and how many the source pipeline omitted for budget. The graded-fidelity
+// context_manifest is preferred when present — it carries the tiered,
+// budget-packed source — otherwise the flat relevant_symbols list is used. In
+// graded mode relevant_symbols is built without source, so falling back to it
+// blindly would render an empty briefing.
+func contextSymbolEntries(data map[string]any) (entries []any, omitted int) {
+	if mani, ok := data["context_manifest"].(map[string]any); ok {
+		if me, ok := mani["entries"].([]any); ok && len(me) > 0 {
+			if o, ok := mani["omitted"].(float64); ok {
+				omitted = int(o)
+			}
+			return me, omitted
+		}
+	}
+	entries, _ = data["relevant_symbols"].([]any)
+	return entries, 0
+}
+
+// renderSymbolEntries writes the "Key Symbols" body for a list of symbol
+// entries. The entry shape is shared by the flat relevant_symbols list and the
+// graded manifest, so manifest-only fields (tier, compressed) are rendered when
+// present and skipped otherwise. Each source snippet is fenced with its own
+// language rather than a hardcoded "go".
+func renderSymbolEntries(sb *strings.Builder, entries []any, charBudget int) {
+	for _, raw := range entries {
+		em, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := em["name"].(string)
+		kind, _ := em["kind"].(string)
+		id, _ := em["id"].(string)
+		filePath, _ := em["file_path"].(string)
+		language, _ := em["language"].(string)
+		startLine, _ := em["start_line"].(float64)
+
+		fmt.Fprintf(sb, "### `%s` (%s)\n\n", name, kind)
+		fmt.Fprintf(sb, "- **ID:** `%s`\n", id)
+		fmt.Fprintf(sb, "- **File:** `%s:%d`\n", filePath, int(startLine))
+		if tier, ok := em["tier"].(string); ok && tier != "" {
+			fmt.Fprintf(sb, "- **Tier:** %s\n", tier)
+		}
+		if sig, ok := em["signature"].(string); ok && sig != "" {
+			fmt.Fprintf(sb, "- **Signature:** `%s`\n", sig)
+		}
+
+		// Include source if within budget. The fence language tracks the
+		// symbol's own language rather than a hardcoded "go" so a snippet from
+		// any indexed language is highlighted correctly.
+		if source, ok := em["source"].(string); ok && source != "" {
+			if sb.Len()+len(source) < charBudget {
+				if compressed, _ := em["compressed"].(bool); compressed {
+					sb.WriteString("- *(source compressed — bodies elided)*\n")
+				}
+				fmt.Fprintf(sb, "\n```%s\n", markdownFenceLang(language, filePath))
+				sb.WriteString(source)
+				sb.WriteString("\n```\n")
+			} else {
+				sb.WriteString("- *(source omitted — token budget exceeded)*\n")
+			}
+		}
+		sb.WriteString("\n")
+	}
+}
+
 // renderContextMarkdown converts smart_context JSON output into a self-contained
 // markdown briefing suitable for sharing outside MCP.
 func renderContextMarkdown(data map[string]any, tokenBudget int) string {
@@ -3968,42 +4034,17 @@ func renderContextMarkdown(data map[string]any, tokenBudget int) string {
 		sb.WriteString("\n\n")
 	}
 
-	// Key symbols.
-	if symbols, ok := data["relevant_symbols"].([]any); ok && len(symbols) > 0 {
+	// Key symbols. The graded-fidelity manifest carries the richest
+	// (tiered, budget-packed) source set; prefer it when present and fall
+	// back to the flat relevant_symbols list otherwise. Both share the same
+	// entry shape, so one renderer handles either — without this, a graded
+	// briefing showed no source at all, because the flat list it falls back
+	// to is built source-less in graded mode.
+	if symbols, omitted := contextSymbolEntries(data); len(symbols) > 0 {
 		sb.WriteString("## Key Symbols\n\n")
-		for _, sym := range symbols {
-			symMap, ok := sym.(map[string]any)
-			if !ok {
-				continue
-			}
-			name, _ := symMap["name"].(string)
-			kind, _ := symMap["kind"].(string)
-			id, _ := symMap["id"].(string)
-			filePath, _ := symMap["file_path"].(string)
-			language, _ := symMap["language"].(string)
-			startLine, _ := symMap["start_line"].(float64)
-
-			fmt.Fprintf(&sb, "### `%s` (%s)\n\n", name, kind)
-			fmt.Fprintf(&sb, "- **ID:** `%s`\n", id)
-			fmt.Fprintf(&sb, "- **File:** `%s:%d`\n", filePath, int(startLine))
-
-			if sig, ok := symMap["signature"].(string); ok && sig != "" {
-				fmt.Fprintf(&sb, "- **Signature:** `%s`\n", sig)
-			}
-
-			// Include source if within budget. The fence language tracks the
-			// symbol's own language rather than a hardcoded "go" so a snippet
-			// from any indexed language is highlighted correctly.
-			if source, ok := symMap["source"].(string); ok && source != "" {
-				if sb.Len()+len(source) < charBudget {
-					fmt.Fprintf(&sb, "\n```%s\n", markdownFenceLang(language, filePath))
-					sb.WriteString(source)
-					sb.WriteString("\n```\n")
-				} else {
-					sb.WriteString("- *(source omitted — token budget exceeded)*\n")
-				}
-			}
-			sb.WriteString("\n")
+		renderSymbolEntries(&sb, symbols, charBudget)
+		if omitted > 0 {
+			fmt.Fprintf(&sb, "*(%d more symbol(s) omitted — token budget)*\n\n", omitted)
 		}
 	}
 

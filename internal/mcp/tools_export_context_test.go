@@ -175,3 +175,85 @@ func TestRenderContextMarkdown_GoSymbolStillFencedAsGo(t *testing.T) {
 
 	assert.Contains(t, md, "```go\n", "a Go symbol must still be fenced as go")
 }
+
+// TestRenderContextMarkdown_GradedManifestRendersSource is the regression
+// guard for the graded-fidelity path: smart_context with fidelity:graded emits
+// a context_manifest holding the source and builds relevant_symbols without
+// source. The renderer previously only looked at relevant_symbols, so a graded
+// briefing showed symbol headers but no code at all. The manifest must be
+// rendered, fenced by each entry's own language.
+func TestRenderContextMarkdown_GradedManifestRendersSource(t *testing.T) {
+	data := map[string]any{
+		"task": "token invalidation",
+		// In graded mode relevant_symbols carries no source — only the
+		// manifest does. The renderer must prefer the manifest.
+		"relevant_symbols": []any{
+			map[string]any{
+				"id":         "src/auth.ts::invalidateToken",
+				"kind":       "function",
+				"name":       "invalidateToken",
+				"file_path":  "src/auth.ts",
+				"language":   "typescript",
+				"start_line": float64(10),
+			},
+		},
+		"context_manifest": map[string]any{
+			"omitted": float64(2),
+			"entries": []any{
+				map[string]any{
+					"id":         "src/auth.ts::invalidateToken",
+					"kind":       "function",
+					"name":       "invalidateToken",
+					"file_path":  "src/auth.ts",
+					"language":   "typescript",
+					"start_line": float64(10),
+					"tier":       "focus",
+					"source":     "function invalidateToken(t: string) {}",
+				},
+			},
+		},
+	}
+
+	md := renderContextMarkdown(data, 2000)
+
+	assert.Contains(t, md, "function invalidateToken(t: string) {}",
+		"graded manifest source must be rendered")
+	assert.Contains(t, md, "```typescript\n",
+		"manifest source must be fenced by the entry's language")
+	assert.NotContains(t, md, "```go",
+		"a TypeScript manifest snippet must never be fenced as go")
+	assert.Contains(t, md, "**Tier:** focus",
+		"the manifest tier should be surfaced")
+	assert.Contains(t, md, "2 more symbol(s) omitted",
+		"the manifest omitted count should be surfaced")
+}
+
+// TestRenderContextMarkdown_GradedManifestMarksCompressed verifies a
+// compressed (body-elided) manifest entry is labelled as such so the reader
+// knows the snippet is a skeleton rather than the full body.
+func TestRenderContextMarkdown_GradedManifestMarksCompressed(t *testing.T) {
+	data := map[string]any{
+		"task": "compressed entry",
+		"context_manifest": map[string]any{
+			"entries": []any{
+				map[string]any{
+					"id":         "pkg/big.go::Huge",
+					"kind":       "type",
+					"name":       "Huge",
+					"file_path":  "pkg/big.go",
+					"language":   "go",
+					"start_line": float64(1),
+					"tier":       "focus",
+					"compressed": true,
+					"source":     "type Huge struct { /* … */ }",
+				},
+			},
+		},
+	}
+
+	md := renderContextMarkdown(data, 2000)
+
+	assert.Contains(t, md, "source compressed",
+		"a compressed manifest entry must be labelled compressed")
+	assert.Contains(t, md, "```go\n", "the compressed snippet must still be fenced")
+}

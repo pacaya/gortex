@@ -101,6 +101,7 @@ func (s *Server) buildContextManifest(ctx context.Context, focus, outlineCandida
 			"kind":       string(n.Kind),
 			"name":       n.Name,
 			"file_path":  n.FilePath,
+			"language":   n.Language,
 			"start_line": n.StartLine,
 			"relation":      "",
 			"distance":      0,
