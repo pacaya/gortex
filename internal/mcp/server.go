@@ -795,7 +795,8 @@ func defaultFormatForClient(name string) string {
 		"kilocode",
 		"opencode",
 		"openclaw",
-		"codex":
+		"codex",
+		"omp-coding-agent":
 		return "gcx"
 	}
 	return ""

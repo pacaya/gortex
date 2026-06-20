@@ -26,10 +26,10 @@
   <a href="https://trendshift.io/repositories/36832" target="_blank"><img src="https://trendshift.io/api/badge/repositories/36832" alt="zzet%2Fgortex | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-High-quality parsing 257 languages/grammars through tree-sitter AST analysis, in-process resolvers, enhanced with [compiler-grade resolution](https://github.com/zzet/gortex/blob/main/docs/lsp.md) for Python, TypeScript / JavaScript, PHP, C#, Go, C, C++, Java, Kotlin, Swift, Zig, Rust, Ruby, Elixir, Ocaml, Haskell, and [others](https://github.com/zzet/gortex/blob/main/docs/languages.md#at-a-glance) - producing a persistent provenance-tiered knowledge graph of functions, classes, call chains, HTTP routes, and cross-service contracts and calls with a strong confidence model. 175 (configurable) MCP tools - use only what you need. Zero dependencies. Plug and play across 16 coding agents. **Up to 50× fewer tokens per response**. Reproducible [benchmarks](BENCHMARK.md).
+High-quality parsing 257 languages/grammars through tree-sitter AST analysis, in-process resolvers, enhanced with [compiler-grade resolution](https://github.com/zzet/gortex/blob/main/docs/lsp.md) for Python, TypeScript / JavaScript, PHP, C#, Go, C, C++, Java, Kotlin, Swift, Zig, Rust, Ruby, Elixir, Ocaml, Haskell, and [others](https://github.com/zzet/gortex/blob/main/docs/languages.md#at-a-glance) - producing a persistent provenance-tiered knowledge graph of functions, classes, call chains, HTTP routes, and cross-service contracts and calls with a strong confidence model. 175 (configurable) MCP tools - use only what you need. Zero dependencies. Plug and play across 17 coding agents. **Up to 50× fewer tokens per response**. Reproducible [benchmarks](BENCHMARK.md).
 
 
-> 16 AI coding agents (Claude Code, Kiro, Cursor, Windsurf, VS Code / Copilot, Continue.dev, Cline, OpenCode, Antigravity, Codex CLI, Gemini CLI, Zed, Aider, Kilo Code, OpenClaw, Hermes) supported out of the box.
+> 17 AI coding agents (Claude Code, Kiro, Cursor, Windsurf, VS Code / Copilot, Continue.dev, Cline, OpenCode, Antigravity, Codex CLI, Gemini CLI, Zed, Aider, Kilo Code, OpenClaw, Hermes, Oh My Pi) supported out of the box.
 >
 > One install configures every one detected on your machine — see [docs/agents.md](docs/agents.md).
 
@@ -48,7 +48,7 @@ High-quality parsing 257 languages/grammars through tree-sitter AST analysis, in
 - **Cross-repo by default** — N repos in one graph; contracts, references, and call chains span repo boundaries with evidence-gated resolution, contract matching, impact analysis, per-session isolation → [docs/multi-repo.md](docs/multi-repo.md)
 - **Extreamly fast analysis** — a precomputed depth-3 reach index turns blast-radius queries into O(seeds × reach) map lookups. Safe to ask "what breaks if I change this?" on every edit. No dozens of tool calls to grasp context.
 - **Zero external dependencies** — single binary, everything in-process. No network, no model download to get started. Install, start daemon, use.
-- **Agent integrations (16)** — `gortex init` configures every detected coding assistant on the machine → [docs/agents.md](docs/agents.md)
+- **Agent integrations (17)** — `gortex init` configures every detected coding assistant on the machine → [docs/agents.md](docs/agents.md)
 - **100+ MCP tools, 16 resources, 3 prompts** — symbol lookup, call chains, blast radius, dataflow, clone detection, refactoring, code actions → [docs/mcp.md](docs/mcp.md)
 - **Semantic search default-on** — baked GloVe-50d (3.8 MB embedded), hybrid BM25 + vector + RRF, zero deps; opt-in MiniLM / Ollama / OpenAI → [docs/semantic-search.md](docs/semantic-search.md)
 - **Speculative execution** — `preview_edit` / `simulate_chain` answer "what would change if I applied this WorkspaceEdit?" without touching disk
@@ -162,7 +162,7 @@ Data flow, graph schema (node and edge kinds, multi-repo fields, test taxonomy),
 | Optional LLM features | [llm.md](docs/llm.md) |
 | LSP integration | [lsp.md](docs/lsp.md) |
 | Per-community skills & agent usage | [skills.md](docs/skills.md) |
-| AI agent adapters (15) | [agents.md](docs/agents.md) |
+| AI agent adapters (17) | [agents.md](docs/agents.md) |
 | Supported languages (257) | [languages.md](docs/languages.md) |
 | Token savings | [savings.md](docs/savings.md) |
 | GCX1 wire format | [wire-format.md](docs/wire-format.md) |
