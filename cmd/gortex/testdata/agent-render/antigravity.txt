@@ -11,9 +11,9 @@ This codebase is indexed by Gortex, an in-memory knowledge graph code intelligen
 **MANDATORY:** You MUST prioritize using the Gortex CLI via `run_command` instead of using standard text searches (`grep_search`) or full file reads (`view_file`). This drastically improves token efficiency and prevents hallucination.
 
 ## Setup
-If the index is not running or tracking your target repos, you can trigger an index manually:
+If the daemon is not tracking your target repos, register the current repo so the graph tools activate:
 ```bash
-./gortex index .
+gortex track .
 ```
 
 ## Standard Workflow Translation

@@ -1008,7 +1008,7 @@ func ServerInstructionsUntracked(cwd string) string {
 	}
 	return fmt.Sprintf("Gortex is connected but INACTIVE for this directory: %q is not covered by any tracked repository, "+
 		"so the graph tools have nothing to answer with yet.\n\n"+
-		"To activate: run `gortex track %s` (or `gortex index .`), then reconnect — the full tool catalogue and the "+
+		"To activate: run `gortex track %s`, then reconnect — the full tool catalogue and the "+
 		"graph become available.\n\n"+
 		"Until then tools/list is intentionally empty; fall back to your own file reads and text search.", target, target)
 }

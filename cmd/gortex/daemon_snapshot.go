@@ -346,9 +346,8 @@ func saveSnapshot(g *graph.Graph, repos []snapshotRepo, snapContracts []snapshot
 	_ = saveSnapshotTo(g, repos, snapContracts, vec, version, daemon.BackendSnapshotPath("memory"), logger)
 }
 
-// saveSnapshotTo writes the snapshot to an explicit path. Used by
-// `gortex index --snapshot <path>` (the cloud indexer worker shells
-// this out). Returns an error when the path can't be written so the
+// saveSnapshotTo writes the snapshot to an explicit path. Used by the
+// daemon's snapshot writer. Returns an error when the path can't be written so the
 // caller can fail the job; the daemon's saveSnapshot wrapper still
 // swallows errors because a failed snapshot must never block clean
 // shutdown.

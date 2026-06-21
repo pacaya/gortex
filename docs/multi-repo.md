@@ -85,7 +85,6 @@ gortex track /path/to/repo          # Add a repo to the workspace
 gortex untrack /path/to/repo        # Remove a repo from the workspace
 gortex mcp --track /path/to/repo    # Track additional repos on startup
 gortex mcp --project my-saas        # Set active project scope
-gortex index repo-a/ repo-b/        # Index multiple repos
 gortex status                       # Per-repo and per-project stats
 gortex repos                        # List tracked repos — head-commit SHA, last-indexed time, staleness flag
 gortex repos --json                 # Same, machine-readable (for scripts / CI)

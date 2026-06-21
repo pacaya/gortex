@@ -128,8 +128,8 @@ func LogFilePath() string {
 
 // SnapshotPath returns the legacy backend-agnostic snapshot path —
 // `daemon.gob.gz` under the state dir. Kept for callers that haven't
-// moved to backend-tagged storage yet (cloud indexer worker, ad-hoc
-// `gortex index --snapshot` runs). The daemon itself routes through
+// moved to backend-tagged storage yet (the legacy cloud indexer
+// worker). The daemon itself routes through
 // BackendSnapshotPath so a memory ↔ disk-backend switch can't read the
 // other backend's snapshot — see that function's doc.
 func SnapshotPath() string {

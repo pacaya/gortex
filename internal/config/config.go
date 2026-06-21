@@ -167,7 +167,7 @@ func (a ArchitectureConfig) IsEmpty() bool {
 // flag — moved out from under `workspace:` because that key is now
 // reclaimed for the workspace-identity slug.
 type MultiRepoConfig struct {
-	// AutoDetect — when true, `gortex index <parent-dir>` walks
+	// AutoDetect — when true, tracking a parent directory walks its
 	// immediate subdirectories looking for `.git/`, treating each
 	// match as a tracked repo. The legacy YAML key
 	// `workspace.auto_detect: true` is still accepted by the custom

@@ -8,9 +8,8 @@ import (
 )
 
 // TimingReporter records the first-seen timestamp of each stage and,
-// when printed, emits a per-stage duration breakdown. Used by the
-// `gortex index --profile` command to show where wall-clock time is
-// being spent during a full index pass.
+// when printed, emits a per-stage duration breakdown. Shows where
+// wall-clock time is being spent during a full index pass.
 //
 // Stage transitions are detected by the reporter seeing a *new* stage
 // label arrive — subsequent ticks for the same stage (progress updates

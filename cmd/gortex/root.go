@@ -208,7 +208,7 @@ func assignCommandGroups() {
 		"clones": "query", "feedback": "query",
 		"edit":   "edit",
 		"memory": "memory",
-		"index":  "index", "enrich": "index", "db": "index",
+		"enrich": "index", "db": "index",
 		"init": "setup", "install": "setup", "uninstall": "setup", "agents": "setup",
 		"hook": "setup", "githook": "setup", "config": "setup",
 		"provider": "setup", "plugin": "setup", "cloud": "setup",

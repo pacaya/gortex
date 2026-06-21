@@ -14,7 +14,6 @@ gortex audit [flags]         A-F repo health grade derived from per-symbol compl
 gortex gain [flags]          Forward-looking per-call USD savings projection from the latest bench tokens output
 gortex context [flags]       Generate portable context briefing for a task
 gortex savings [flags]       Token-savings dashboard (Today / Last 7 days / All time + USD avoided)
-gortex index [path...]       Index one or more repositories and print stats
 gortex status [flags]        Show index status (per-repo and per-project in multi-repo mode)
 gortex repos [--json]        List every tracked repo with git head-commit SHA, last-indexed time, and a staleness flag
 gortex track <path>          Add a repository to the tracked workspace

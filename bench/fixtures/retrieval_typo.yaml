@@ -824,7 +824,7 @@ cases:
         - cmd/gortex/mcp.go::mcpCmd
         - cmd/gortex/server.go::serverCmd
         - cmd/gortex/daemon.go::daemonCmd
-        - cmd/gortex/index.go::indexCmd
+        - cmd/gortex/track.go::trackCmd
         - cmd/gortex/eval.go::evalCmd
     - id: mh-config-load-typo
       tier: multi_hop

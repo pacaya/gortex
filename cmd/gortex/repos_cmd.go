@@ -164,7 +164,7 @@ func loadRepoIndexStates() map[string]graph.RepoIndexState {
 //
 // The authoritative source is the daemon's repo_index_state row, keyed by
 // the repo's resolved prefix (config.ResolvePrefix — the entry Name, else
-// the path basename); this is what `gortex index` and daemon warmup write.
+// the path basename); this is what the daemon writes when it tracks or warms up a repo.
 // When there is exactly one tracked repo, a lone-repo index keyed under the
 // empty prefix counts too. Failing that, the legacy snapshot store (keyed by
 // canonical path + branch) written by the embedded `gortex mcp --index` path

@@ -96,8 +96,8 @@ func reposTestEnv(t *testing.T, repos []config.RepoEntry) {
 }
 
 // seedIndexState writes a repo_index_state freshness row into the test's
-// isolated SQLite backend store — the same table `gortex index` / daemon
-// warmup write, and the authoritative source describeRepo reads first.
+// isolated SQLite backend store — the same table the daemon writes when it tracks or warms up
+// a repo, and the authoritative source describeRepo reads first.
 func seedIndexState(t *testing.T, prefix, sha string, dirty bool, indexedAt time.Time) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(reposBackendPath), 0o755))

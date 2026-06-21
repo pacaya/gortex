@@ -22,7 +22,7 @@ func TestHelpCommandGroups(t *testing.T) {
 	// Representative commands land in the expected group.
 	want := map[string]string{
 		"mcp": "serve", "daemon": "engine", "track": "engine",
-		"query": "query", "audit": "query", "edit": "edit", "memory": "memory", "index": "index", "config": "setup",
+		"query": "query", "audit": "query", "edit": "edit", "memory": "memory", "enrich": "index", "config": "setup",
 	}
 	got := map[string]string{}
 	for _, c := range rootCmd.Commands() {

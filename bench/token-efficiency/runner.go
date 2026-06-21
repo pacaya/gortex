@@ -46,7 +46,7 @@ type pipelineResult struct {
 	// is exhausted. Aligned with Returned by index.
 	PerFileTokens []int `json:"per_file_tokens"`
 	// Error captures pipeline failures (e.g. ripgrep missing,
-	// gortex index failed). Empty string on success.
+	// indexing failed). Empty string on success.
 	Error string `json:"error,omitempty"`
 }
 
