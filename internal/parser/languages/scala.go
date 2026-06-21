@@ -76,6 +76,15 @@ func (e *ScalaExtractor) extractAll(
 			if node.Parent() != nil && node.Parent().Type() == "compilation_unit" {
 				e.extractTopLevelFunction(node, src, filePath, fileNode, result, seen, annotationSeen)
 			}
+		case "val_definition", "var_definition", "val_declaration", "var_declaration":
+			// A file-level `val x: Foo` / `var x: Foo` (direct child of the
+			// compilation_unit, not a class/object/trait member — those are
+			// handled by extractMembersFromBody). Its declared type is a
+			// cross-file type usage attributed to the enclosing function when
+			// one exists, otherwise the file node.
+			if node.Parent() != nil && node.Parent().Type() == "compilation_unit" {
+				e.extractTopLevelValVar(node, src, filePath, fileNode, result)
+			}
 		case "call_expression":
 			e.extractCall(node, src, filePath, result)
 		}
@@ -134,6 +143,7 @@ func (e *ScalaExtractor) extractTrait(
 								FilePath: filePath, Line: mStartLine,
 							})
 							emitScalaAnnotationEdges(member, mID, filePath, src, result, annotationSeen)
+							emitScalaDefTypeUses(member, mID, filePath, src, result)
 						}
 					}
 				}
@@ -185,6 +195,7 @@ func (e *ScalaExtractor) extractClass(
 		FilePath: filePath, Line: startLine,
 	})
 	emitScalaAnnotationEdges(node, id, filePath, src, result, annotationSeen)
+	emitScalaClassParamTypeUses(node, id, filePath, src, result)
 
 	// Extract methods inside the class template_body.
 	e.extractMembersFromBody(node, src, filePath, fileNode, id, name, result, seen, annotationSeen)
@@ -279,6 +290,7 @@ func (e *ScalaExtractor) extractMembersFromBody(
 				FilePath: filePath, Line: mStartLine,
 			})
 			emitScalaAnnotationEdges(member, mID, filePath, src, result, annotationSeen)
+			emitScalaDefTypeUses(member, mID, filePath, src, result)
 		}
 	}
 }
@@ -359,9 +371,29 @@ func (e *ScalaExtractor) emitScalaField(member *sitter.Node, src []byte, filePat
 	})
 	result.Edges = append(result.Edges, &graph.Edge{From: fileNode.ID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: line})
 	result.Edges = append(result.Edges, &graph.Edge{From: id, To: ownerID, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: line})
-	if typ != "" {
-		result.Edges = append(result.Edges, &graph.Edge{From: id, To: "unresolved::" + typ, Kind: graph.EdgeTypedAs, FilePath: filePath, Line: line})
+	// Emit the type-usage edge from the raw annotation (generics intact) so the
+	// container-unwrap canonicalizer can reach the element type — `field_type`
+	// meta keeps the stripped base name for backward compatibility.
+	if raw := scalaTypeAnnotationRaw(member, src); raw != "" {
+		emitScalaTypeUseEdges(id, raw, filePath, line, result)
 	}
+}
+
+// extractTopLevelValVar emits a type-use edge for a file-level `val/var x: Foo`
+// annotation. Top-level vals are not materialised as field nodes (they have no
+// enclosing type), so the usage edge is attributed to the enclosing function
+// when the binding sits inside one, falling back to the file node otherwise.
+func (e *ScalaExtractor) extractTopLevelValVar(member *sitter.Node, src []byte, filePath string, fileNode *graph.Node, result *parser.ExtractionResult) {
+	raw := scalaTypeAnnotationRaw(member, src)
+	if raw == "" {
+		return
+	}
+	line := int(member.StartPoint().Row) + 1
+	ownerID := findEnclosingFunc(buildFuncRanges(result), line)
+	if ownerID == "" {
+		ownerID = fileNode.ID
+	}
+	emitScalaTypeUseEdges(ownerID, raw, filePath, line, result)
 }
 
 // extractExtension models a Scala 3 `extension (x: T) def m = ...` block: each
@@ -403,6 +435,7 @@ func (e *ScalaExtractor) extractExtension(node *sitter.Node, src []byte, filePat
 		if recv != "" {
 			result.Edges = append(result.Edges, &graph.Edge{From: id, To: "unresolved::" + recv, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: line})
 		}
+		emitScalaDefTypeUses(fn, id, filePath, src, result)
 	}
 }
 
@@ -554,6 +587,7 @@ func (e *ScalaExtractor) extractTopLevelFunction(
 		FilePath: filePath, Line: startLine,
 	})
 	emitScalaAnnotationEdges(node, id, filePath, src, result, annotationSeen)
+	emitScalaDefTypeUses(node, id, filePath, src, result)
 }
 
 // extractCall extracts a call_expression.

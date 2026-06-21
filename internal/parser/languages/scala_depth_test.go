@@ -33,7 +33,9 @@ class Account {
 		}
 	}
 
-	// val field with its type-annotation reference.
+	// val field keeps its base type in meta, but a primitive annotation
+	// (Int) deliberately emits no typed_as usage edge — those would just
+	// clutter the graph with unresolved::Int edges that never land.
 	balance := byName["balance"]
 	if balance == nil || balance.Kind != graph.KindField {
 		t.Fatalf("val 'balance' should be a field node, got %+v", balance)
@@ -41,8 +43,14 @@ class Account {
 	if balance.Meta["field_type"] != "Int" {
 		t.Errorf("balance field_type = %v, want Int", balance.Meta["field_type"])
 	}
-	if typedAs[balance.ID] != "unresolved::Int" {
-		t.Errorf("balance should have a typed_as edge to unresolved::Int, got %q", typedAs[balance.ID])
+	if _, ok := typedAs[balance.ID]; ok {
+		t.Errorf("primitive-typed balance should NOT have a typed_as edge, got %q", typedAs[balance.ID])
+	}
+
+	// A container generic surfaces its element type as a usage edge:
+	// `List[Transaction]` references Transaction.
+	if p := byName["pending"]; p != nil && typedAs[p.ID] != "unresolved::Transaction" {
+		t.Errorf("pending (List[Transaction]) should typed_as unresolved::Transaction, got %q", typedAs[p.ID])
 	}
 
 	// var field is flagged mutable; generic type reduced to its base.
