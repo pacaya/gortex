@@ -281,6 +281,7 @@ func (mi *MultiIndexer) RunGlobalResolve() {
 	cr.SetLogger(mi.logger)
 	cr.SetCrossWorkspaceDepLookup(mi.crossWorkspaceLookup())
 	cr.SetNpmAliasResolver(mi.npmAliasResolver())
+	cr.SetPathAliasResolver(mi.pathAliasResolver())
 	cr.SetWorkspaceMembership(mi.workspaceMembershipResolver())
 	mi.applyRemoteStitch(cr)
 	cr.ResolveAll()

@@ -382,6 +382,10 @@ func New(g graph.Store, reg *parser.Registry, cfg config.IndexConfig, logger *za
 	// local index. The index is built lazily on first use — the repo
 	// root and prefix are not final until after New().
 	idx.resolver.SetNpmAliasResolver(idx.resolveNpmAliasImport)
+	// Expand JS/TS tsconfig/jsconfig path-alias imports (`@/lib/x`)
+	// against the local index so cross-directory alias imports resolve
+	// to their real file. Same lazy-build rationale.
+	idx.resolver.SetPathAliasResolver(idx.resolvePathAliasImport)
 	// Break same-named import collisions in favour of the importer's
 	// own package-manager workspace member. Same lazy-build rationale.
 	idx.resolver.SetWorkspaceMembership(idx.indexerWorkspaceMembership)

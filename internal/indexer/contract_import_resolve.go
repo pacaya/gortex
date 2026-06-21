@@ -126,7 +126,7 @@ func (mi *MultiIndexer) resolveBareTypeViaImports(
 }
 
 // tsAliasCache caches the per-repo Collection of tsconfig/jsconfig
-// alias maps. Loaded lazily on first lookup for a repoPrefix and
+// alias maps. Loaded lazily on first lookup for a repo ROOT PATH and
 // reused across all import resolutions in the same session. A nil
 // entry means "scanned, no usable config" — distinct from "not yet
 // scanned" (missing key).
@@ -153,7 +153,7 @@ func (mi *MultiIndexer) tsAliasMapFor(srcFile string) (*tsalias.Map, string) {
 		if prefix == "" || !strings.HasPrefix(srcFile, prefix+"/") {
 			continue
 		}
-		coll := loadTSAliasCollection(prefix, m.RootPath)
+		coll := loadTSAliasCollection(m.RootPath)
 		if coll == nil {
 			return nil, prefix
 		}
@@ -163,14 +163,14 @@ func (mi *MultiIndexer) tsAliasMapFor(srcFile string) (*tsalias.Map, string) {
 	return nil, ""
 }
 
-func loadTSAliasCollection(prefix, rootPath string) *tsalias.Collection {
+func loadTSAliasCollection(rootPath string) *tsalias.Collection {
 	tsAliasCacheMu.Lock()
 	defer tsAliasCacheMu.Unlock()
-	if c, ok := tsAliasCache[prefix]; ok {
+	if c, ok := tsAliasCache[rootPath]; ok {
 		return c
 	}
 	c := tsalias.Load(rootPath)
-	tsAliasCache[prefix] = c
+	tsAliasCache[rootPath] = c
 	return c
 }
 

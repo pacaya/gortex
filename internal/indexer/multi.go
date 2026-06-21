@@ -431,6 +431,7 @@ func (mi *MultiIndexer) RunDeferredPassesAll(ctx context.Context) {
 			master.SetLSPHelper(mi.resolverLSPHelper)
 		}
 		master.SetNpmAliasResolver(mi.npmAliasResolver())
+		master.SetPathAliasResolver(mi.pathAliasResolver())
 		master.SetWorkspaceMembership(mi.workspaceMembershipResolver())
 		mt := time.Now()
 		master.ResolveAll()
@@ -1013,6 +1014,7 @@ func (mi *MultiIndexer) indexMultiRepo(repos []config.RepoEntry) (map[string]*In
 	cr := resolver.NewCrossRepo(mi.graph)
 	cr.SetCrossWorkspaceDepLookup(mi.crossWorkspaceLookup())
 	cr.SetNpmAliasResolver(mi.npmAliasResolver())
+	cr.SetPathAliasResolver(mi.pathAliasResolver())
 	cr.SetWorkspaceMembership(mi.workspaceMembershipResolver())
 	mi.applyRemoteStitch(cr)
 	cr.ResolveAll()

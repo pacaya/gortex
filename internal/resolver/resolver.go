@@ -116,6 +116,12 @@ type Resolver struct {
 	// contract. Set via SetNpmAliasResolver before ResolveAll runs.
 	npmAlias NpmAliasResolver
 
+	// pathAlias, when non-nil, expands a JS/TS tsconfig/jsconfig
+	// `compilerOptions.paths` / `baseUrl` import specifier to the
+	// repo-prefixed file stem it targets. See jsts_imports.go for the
+	// contract. Set via SetPathAliasResolver before ResolveAll runs.
+	pathAlias PathAliasResolver
+
 	// workspaceMembers, when non-nil, maps a file path to the
 	// package-manager workspace it belongs to. Used to break a
 	// same-named import collision in favour of the candidate that
@@ -1335,6 +1341,25 @@ func (r *Resolver) resolveImport(e *graph.Edge, importPath string, stats *Resolv
 	// instead of falling through to an external stub. A no-op for
 	// non-aliased specifiers and non-JS/TS callers.
 	importPath, npmAliased := rewriteNpmAliasImport(r.npmAlias, e.FilePath, importPath)
+
+	// JS/TS relative + tsconfig-path-alias / baseUrl import: resolve the
+	// specifier onto the in-repo file (or exported symbol) it names. The
+	// dirIndex cascade below is package-directory-oriented and never
+	// matches a JS/TS file stem, so without this every cross-directory
+	// JS/TS import would fall through to an `external::*` stub — starving
+	// buildImportClosure of reachability and letting the cross-package
+	// guard revert the callers (issue #136). A no-op for non-JS/TS callers
+	// and for genuine third-party specifiers.
+	if to := resolveJSTSImportTarget(r.cachedGetNode, r.pathAlias, jsTSImportCallerFile(e), importPath); to != "" {
+		e.To = to
+		if callerRepo != "" {
+			if n := r.cachedGetNode(to); n != nil && n.RepoPrefix != "" && n.RepoPrefix != callerRepo {
+				e.CrossRepo = true
+			}
+		}
+		stats.Resolved++
+		return
+	}
 
 	// Look for a package node with matching qualified name.
 	node := r.cachedGetNodeByQualName(importPath)

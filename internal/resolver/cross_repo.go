@@ -106,6 +106,11 @@ type CrossRepoResolver struct {
 	// ancestor package.json. Same contract as the field of the
 	// same name on Resolver — see npm_alias.go.
 	npmAlias NpmAliasResolver
+	// pathAlias expands a JS/TS tsconfig/jsconfig path-alias / baseUrl
+	// import specifier to the repo-prefixed file stem it targets. Same
+	// contract as the field of the same name on Resolver — see
+	// jsts_imports.go.
+	pathAlias PathAliasResolver
 	// workspaceMembers maps a file path to the package-manager
 	// workspace it belongs to, used to prefer a same-workspace
 	// candidate on a same-named import collision. Same contract as
@@ -983,6 +988,23 @@ func (cr *CrossRepoResolver) resolveImport(e *graph.Edge, importPath string, sta
 	// locally-vendored real package when the per-repo pass left it
 	// unresolved.
 	importPath, npmAliased := rewriteNpmAliasImport(cr.npmAlias, e.FilePath, importPath)
+
+	// JS/TS relative + tsconfig-path-alias / baseUrl import: resolve the
+	// specifier onto the in-repo file (or exported symbol) it names, the
+	// same as Resolver.resolveImport. Aliases are repo-local, so this is
+	// mostly a no-op once the per-repo pass has run; kept for parity so a
+	// JS/TS import edge reaching the cross-repo pass still unresolved gets
+	// the same treatment (issue #136).
+	if to := resolveJSTSImportTarget(cr.cachedGetNode, cr.pathAlias, jsTSImportCallerFile(e), importPath); to != "" {
+		e.To = to
+		if picked := cr.cachedGetNode(to); picked != nil && picked.RepoPrefix != callerRepo {
+			e.CrossRepo = true
+			stats.CrossRepoEdges++
+			stats.ByRepo[picked.RepoPrefix]++
+		}
+		stats.Resolved++
+		return
+	}
 
 	// Look for a package node with matching qualified name.
 	if node := cr.cachedGetNodeByQualName(importPath); node != nil {
