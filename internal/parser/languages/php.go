@@ -427,6 +427,11 @@ func (e *PHPExtractor) extractPhpProperty(
 		result.Edges = append(result.Edges, &graph.Edge{
 			From: id, To: ownerID, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: line,
 		})
+		// Typed property (`private Session $s;`): emit a usage edge from
+		// the field to the declared class so find_usages lands it without
+		// an LSP. Builtins / nullable / union / namespace are handled by
+		// emitPHPTypeUseEdges.
+		emitPHPTypeUseEdges(id, propType, filePath, line, result)
 	}
 }
 
@@ -505,6 +510,52 @@ func phpBuiltinType(t string) bool {
 	return false
 }
 
+// canonicalizePHPTypeRef reduces one PHP type atom (no `|`/`&` left) to its
+// bare class name: it strips the nullable `?` prefix and reduces a namespaced
+// reference (`\App\Http\HttpResponse`, `App\HttpResponse`) to its last segment,
+// so the name-based resolver can land it against the `Type` node defined under
+// its short name. Returns "" for an empty atom.
+func canonicalizePHPTypeRef(t string) string {
+	t = strings.TrimSpace(t)
+	t = strings.TrimPrefix(t, "?")
+	t = strings.TrimSpace(t)
+	if i := strings.LastIndex(t, `\`); i >= 0 {
+		t = t[i+1:]
+	}
+	return strings.TrimSpace(t)
+}
+
+// emitPHPTypeUseEdges parses a PHP type declaration used in property /
+// parameter position and emits one EdgeTypedAs from ownerID to the bare named
+// type for every non-builtin branch. PHP 8 union (`Foo|Bar`) and intersection
+// (`Foo&Bar`) declarations each contribute one branch; the nullable `?Foo`
+// shorthand and namespace prefixes are stripped by canonicalizePHPTypeRef.
+// Edges ride at OriginASTInferred — the binding is a tree-sitter inference, not
+// an LSP-checked fact — so a class used only in a type declaration becomes a
+// traversable cross-file reference find_usages can land without a language
+// server. Builtin scalar/pseudo types (int, string, void, self, …) are skipped.
+func emitPHPTypeUseEdges(ownerID, typeText, filePath string, line int, result *parser.ExtractionResult) {
+	if ownerID == "" || typeText == "" {
+		return
+	}
+	seen := map[string]bool{}
+	for _, atom := range strings.FieldsFunc(typeText, func(r rune) bool { return r == '|' || r == '&' }) {
+		t := canonicalizePHPTypeRef(atom)
+		if t == "" || phpBuiltinType(t) || seen[t] {
+			continue
+		}
+		seen[t] = true
+		result.Edges = append(result.Edges, &graph.Edge{
+			From:     ownerID,
+			To:       "unresolved::" + t,
+			Kind:     graph.EdgeTypedAs,
+			FilePath: filePath,
+			Line:     line,
+			Origin:   graph.OriginASTInferred,
+		})
+	}
+}
+
 // phpReturnType returns the declared return type of a method/function (the type
 // node after formal_parameters, before the body), or "".
 func phpReturnType(node *sitter.Node, src []byte) string {
@@ -523,6 +574,47 @@ func phpReturnType(node *sitter.Node, src []byte) string {
 		case "primitive_type", "named_type", "union_type", "nullable_type", "intersection_type", "optional_type", "qualified_name", "bottom_type":
 			return strings.TrimSpace(c.Content(src))
 		case "compound_statement":
+			return ""
+		}
+	}
+	return ""
+}
+
+// emitPHPParamTypeUseEdges walks a function/method's formal_parameters and
+// emits an EdgeTypedAs from ownerID to each non-builtin parameter type. PHP
+// has no separate param node in this extractor, so the usage is attributed to
+// the enclosing function/method — enough for find_usages to land a class used
+// only in a parameter type declaration (`function f(HttpResponse $r)`).
+func (e *PHPExtractor) emitPHPParamTypeUseEdges(node *sitter.Node, src []byte, ownerID, filePath string, result *parser.ExtractionResult) {
+	params := e.findChildByType(node, "formal_parameters")
+	if params == nil {
+		return
+	}
+	for i := 0; i < int(params.NamedChildCount()); i++ {
+		p := params.NamedChild(i)
+		switch p.Type() {
+		case "simple_parameter", "variadic_parameter", "property_promotion_parameter":
+		default:
+			continue
+		}
+		pt := phpParameterType(p, src)
+		if pt == "" {
+			continue
+		}
+		emitPHPTypeUseEdges(ownerID, pt, filePath, int(p.StartPoint().Row)+1, result)
+	}
+}
+
+// phpParameterType returns the declared type of a parameter node (the type
+// node before its variable_name), or "".
+func phpParameterType(node *sitter.Node, src []byte) string {
+	for i := 0; i < int(node.NamedChildCount()); i++ {
+		c := node.NamedChild(i)
+		switch c.Type() {
+		case "primitive_type", "named_type", "union_type", "nullable_type",
+			"intersection_type", "optional_type", "qualified_name":
+			return strings.TrimSpace(c.Content(src))
+		case "variable_name":
 			return ""
 		}
 	}
@@ -568,6 +660,8 @@ func (e *PHPExtractor) extractFunction(
 			From: id, To: "unresolved::" + rt, Kind: graph.EdgeReturns, FilePath: filePath, Line: startLine,
 		})
 	}
+	// Typed parameters → EdgeTypedAs usage edges on the function.
+	e.emitPHPParamTypeUseEdges(node, src, id, filePath, result)
 
 	// Extract call sites within the function body.
 	body := e.findChildByType(node, "compound_statement")
@@ -622,6 +716,8 @@ func (e *PHPExtractor) extractMethod(
 			From: id, To: "unresolved::" + rt, Kind: graph.EdgeReturns, FilePath: filePath, Line: startLine,
 		})
 	}
+	// Typed parameters → EdgeTypedAs usage edges on the method.
+	e.emitPHPParamTypeUseEdges(node, src, id, filePath, result)
 	annotationSeen := map[string]bool{}
 	emitPHPAnnotationEdgesFromAttrs(collectPhpAttributes(node, src), id, filePath, result, annotationSeen)
 	result.Edges = append(result.Edges, &graph.Edge{
