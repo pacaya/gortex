@@ -1,6 +1,8 @@
 package languages
 
 import (
+	"strconv"
+
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/parser"
 	sitter "github.com/zzet/gortex/internal/parser/tsitter"
@@ -185,4 +187,172 @@ func kotlinFunctionBody(funcNode *sitter.Node) *sitter.Node {
 		}
 	}
 	return nil
+}
+
+// emitKotlinTypeUseEdges emits an EdgeTypedAs from ownerID to the bare
+// named type that typeText references, so a tree-sitter-only build still
+// links a Kotlin symbol to the type it is annotated with (parameter,
+// return, local `val`/`var`, or property). typeText is the verbatim
+// annotation source; it is normalized through normalizeKotlinTypeName,
+// which strips the nullable `?` suffix and generic `<…>` arguments and
+// drops Kotlin primitives (Int, String, Boolean, …) and lowercase names.
+// No edge is emitted for an empty or primitive type. The target is
+// `unresolved::<Type>`; the resolver lands it on a KindType / KindInterface
+// of the same name. Mirrors emitTSTypeUseEdges / emitPyTypeUseEdges.
+func emitKotlinTypeUseEdges(ownerID, typeText, filePath string, line int, result *parser.ExtractionResult) {
+	if ownerID == "" {
+		return
+	}
+	t := normalizeKotlinTypeName(typeText)
+	if t == "" {
+		return
+	}
+	result.Edges = append(result.Edges, &graph.Edge{
+		From:     ownerID,
+		To:       "unresolved::" + t,
+		Kind:     graph.EdgeTypedAs,
+		FilePath: filePath,
+		Line:     line,
+		Origin:   graph.OriginASTInferred,
+	})
+}
+
+// kotlinParamsList returns the function_value_parameters child of a
+// function_declaration, or nil when the function takes no parameters.
+func kotlinParamsList(funcNode *sitter.Node) *sitter.Node {
+	if funcNode == nil {
+		return nil
+	}
+	for i := 0; i < int(funcNode.NamedChildCount()); i++ {
+		c := funcNode.NamedChild(i)
+		if c != nil && c.Type() == "function_value_parameters" {
+			return c
+		}
+	}
+	return nil
+}
+
+// emitKotlinParamShape materialises one KindParam node per typed/untyped
+// parameter of a Kotlin function, plus an EdgeParamOf back to the owner
+// and (when the parameter carries a type annotation) an EdgeTypedAs to
+// the referenced type. Kotlin parameters are always `name: Type`, so the
+// name is the parameter's simple_identifier and the type is its
+// user_type / nullable_type child. Mirrors emitTSParamNodes /
+// emitPyParamNodes.
+func emitKotlinParamShape(ownerID string, funcNode *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
+	params := kotlinParamsList(funcNode)
+	if params == nil {
+		return
+	}
+	pos := 0
+	for i := 0; i < int(params.NamedChildCount()); i++ {
+		p := params.NamedChild(i)
+		if p == nil || p.Type() != "parameter" {
+			continue
+		}
+		var name, typeText string
+		for j := 0; j < int(p.NamedChildCount()); j++ {
+			c := p.NamedChild(j)
+			if c == nil {
+				continue
+			}
+			switch c.Type() {
+			case "simple_identifier":
+				if name == "" {
+					name = c.Content(src)
+				}
+			case "user_type", "nullable_type", "function_type":
+				if typeText == "" {
+					typeText = c.Content(src)
+				}
+			}
+		}
+		if name == "" || name == "_" {
+			continue
+		}
+		paramID := ownerID + "#param:" + name + "@" + strconv.Itoa(pos)
+		meta := map[string]any{"position": pos}
+		if typeText != "" {
+			meta["type"] = typeText
+		}
+		startLine := int(p.StartPoint().Row) + 1
+		if startLine == 0 {
+			startLine = declLine
+		}
+		result.Nodes = append(result.Nodes, &graph.Node{
+			ID:        paramID,
+			Kind:      graph.KindParam,
+			Name:      name,
+			FilePath:  filePath,
+			StartLine: startLine,
+			EndLine:   int(p.EndPoint().Row) + 1,
+			Language:  "kotlin",
+			Meta:      meta,
+		})
+		result.Edges = append(result.Edges, &graph.Edge{
+			From:     paramID,
+			To:       ownerID,
+			Kind:     graph.EdgeParamOf,
+			FilePath: filePath,
+			Line:     startLine,
+			Origin:   graph.OriginASTResolved,
+		})
+		emitKotlinTypeUseEdges(paramID, typeText, filePath, startLine, result)
+		pos++
+	}
+}
+
+// emitKotlinReturnEdges emits an EdgeReturns from ownerID to the function's
+// declared return type, when present and non-primitive. The return type is
+// the user_type / nullable_type that follows the function_value_parameters
+// (and precedes the function_body). Mirrors emitTSReturnEdges /
+// emitPyReturnEdges.
+func emitKotlinReturnEdges(ownerID string, funcNode *sitter.Node, src []byte, filePath string, line int, result *parser.ExtractionResult) {
+	if ownerID == "" || funcNode == nil {
+		return
+	}
+	pastParams := false
+	for i := 0; i < int(funcNode.ChildCount()); i++ {
+		child := funcNode.Child(i)
+		if child == nil {
+			continue
+		}
+		switch child.Type() {
+		case "function_value_parameters":
+			pastParams = true
+		case "user_type", "nullable_type":
+			if !pastParams {
+				continue
+			}
+			t := normalizeKotlinTypeName(child.Content(src))
+			if t == "" {
+				return
+			}
+			result.Edges = append(result.Edges, &graph.Edge{
+				From:     ownerID,
+				To:       "unresolved::" + t,
+				Kind:     graph.EdgeReturns,
+				FilePath: filePath,
+				Line:     line,
+				Origin:   graph.OriginASTInferred,
+				Meta:     map[string]any{"position": 0},
+			})
+			return
+		case "function_body":
+			// Body reached before a return-type annotation → no return type.
+			return
+		}
+	}
+}
+
+// emitKotlinFunctionShape wires the parameter-type and return-type edges
+// for one Kotlin function/method declaration onto ownerID. Variable
+// annotations are handled separately in the Extract post-pass (they need
+// the enclosing-function lookup over all declarations).
+func emitKotlinFunctionShape(ownerID string, funcNode *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
+	if funcNode == nil {
+		return
+	}
+	emitKotlinParamShape(ownerID, funcNode, src, filePath, declLine, result)
+	emitKotlinReturnEdges(ownerID, funcNode, src, filePath, declLine, result)
 }

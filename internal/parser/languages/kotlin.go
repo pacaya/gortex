@@ -92,6 +92,17 @@ type kotlinDeferredProperty struct {
 	endLine     int
 }
 
+// kotlinTypeUse buffers a variable/property annotation (`val x: T`,
+// `var x: T`) for the post-pass that emits EdgeTypedAs from the enclosing
+// function (or the file node when the annotation is top-level). The
+// package has no shared deferredTypeUse type, so this mirrors the TS
+// deferredTypeUse struct locally. typeText is the verbatim annotation
+// source; it is normalized at emit time by emitKotlinTypeUseEdges.
+type kotlinTypeUse struct {
+	typeText string
+	line     int
+}
+
 // kotlinLambdaScope records the parameters bound by one lambda literal
 // over the line span of its body. A use of such a parameter inside the
 // span is locally bound and must not be resolved against the outer type
@@ -127,6 +138,7 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 
 	var calls []kotlinDeferredCall
 	var props []kotlinDeferredProperty
+	var typeUses []kotlinTypeUse
 
 	parser.EachMatch(e.qAll, root, src, func(m parser.QueryResult) {
 		switch {
@@ -145,7 +157,8 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 			// also see the same property via prop.def below for top-level
 			// node emission and Tier 1 fallback.
 			name := m.Captures["tprop.name"].Text
-			typeName := normalizeKotlinTypeName(m.Captures["tprop.type"].Text)
+			rawType := m.Captures["tprop.type"].Text
+			typeName := normalizeKotlinTypeName(rawType)
 			if typeName != "" {
 				// Stash on the matching prop entry by appending a sentinel;
 				// we'll merge in the post-pass. Use a separate slice keyed
@@ -155,6 +168,14 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 					explicit: typeName,
 				})
 			}
+			// Buffer the annotation for a type-use edge: every `val x: T` /
+			// `var x: T` (local, property, or top-level) references type T.
+			// The owner (enclosing function, else the file node) is resolved
+			// in the post-pass once funcRanges is built.
+			typeUses = append(typeUses, kotlinTypeUse{
+				typeText: rawType,
+				line:     m.Captures["tprop.def"].StartLine + 1,
+			})
 
 		case m.Captures["prop.def"] != nil:
 			def := m.Captures["prop.def"]
@@ -274,6 +295,21 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 
 	// Resolve calls against funcRanges + tenv.
 	funcRanges := buildFuncRanges(result)
+
+	// Variable / property annotations (`val x: T` / `var x: T`) reference
+	// type T. Attribute each EdgeTypedAs to the enclosing function (so a
+	// find_usages of T lands on the function that uses it), falling back to
+	// the file node for top-level / class-body properties outside any
+	// function range. Parameter and return-type edges are emitted inline by
+	// emitKotlinFunctionShape; this post-pass covers the body/property case.
+	for _, tu := range typeUses {
+		ownerID := findEnclosingFunc(funcRanges, tu.line)
+		if ownerID == "" {
+			ownerID = fileID
+		}
+		emitKotlinTypeUseEdges(ownerID, tu.typeText, filePath, tu.line, result)
+	}
+
 	for _, c := range calls {
 		callerID := findEnclosingFunc(funcRanges, c.line)
 		if callerID == "" {
@@ -517,6 +553,7 @@ func (e *KotlinExtractor) emitFunction(m parser.QueryResult, filePath, fileID st
 			From: id, To: ownerID, Kind: graph.EdgeMemberOf, FilePath: filePath, Line: startLine1,
 		})
 		emitKotlinAnnotationEdges(kotlinCollectAnnotations(def.Node, src), id, filePath, result, annotationSeen)
+		emitKotlinFunctionShape(id, def.Node, src, filePath, startLine1, result)
 		if body := kotlinFunctionBody(def.Node); body != nil {
 			emitKotlinAsyncSpawns(id, body, src, filePath, result)
 		}
@@ -582,6 +619,7 @@ func (e *KotlinExtractor) emitFunction(m parser.QueryResult, filePath, fileID st
 		From: fileID, To: id, Kind: graph.EdgeDefines, FilePath: filePath, Line: startLine1,
 	})
 	emitKotlinAnnotationEdges(kotlinCollectAnnotations(def.Node, src), id, filePath, result, annotationSeen)
+	emitKotlinFunctionShape(id, def.Node, src, filePath, startLine1, result)
 	if body := kotlinFunctionBody(def.Node); body != nil {
 		emitKotlinAsyncSpawns(id, body, src, filePath, result)
 	}
