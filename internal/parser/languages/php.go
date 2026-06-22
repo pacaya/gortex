@@ -46,6 +46,13 @@ func (e *PHPExtractor) Extract(filePath string, src []byte) (*parser.ExtractionR
 
 	captureValueRefCandidates(result, root, filePath, src)
 	captureFnValueCandidates(result, root, filePath, src)
+
+	// Expression-site and inheritance-clause reference forms #143's
+	// type-use pass (typed property / param / return EdgeTypedAs) misses:
+	// instantiation, extends/implements, instanceof, static / const access,
+	// and PHP 8 attributes. Runs after the symbol walk so buildFuncRanges /
+	// buildPHPTypeRanges see every function / method / class node.
+	emitPHPReferenceForms(root, src, filePath, fileNode.ID, result)
 	return result, nil
 }
 
