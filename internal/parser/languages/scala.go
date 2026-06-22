@@ -50,6 +50,10 @@ func (e *ScalaExtractor) Extract(filePath string, src []byte) (*parser.Extractio
 	stampScopePkg(result, scalaPackageName(root, src))
 	captureValueRefCandidates(result, root, filePath, src)
 	captureFnValueCandidates(result, root, filePath, src)
+	// Emit construction / inheritance / type-test / static-access reference
+	// edges. Runs after node extraction so buildFuncRanges sees every
+	// function/method node when attributing expression-position references.
+	emitScalaReferenceForms(root, filePath, src, result)
 	return result, nil
 }
 
