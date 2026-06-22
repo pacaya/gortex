@@ -260,6 +260,11 @@ func (e *PythonExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 		emitPyTypeUseEdges(ownerID, tu.typeText, filePath, tu.line, result)
 	}
 
+	// Reference forms the call/annotation passes don't cover:
+	// instantiation, inheritance, isinstance/issubclass, static/class
+	// access, and decorator references to Capitalized type names.
+	emitPythonReferenceForms(root, src, filePath, fileID, funcRanges, result)
+
 	for _, c := range calls {
 		callerID := findEnclosingFunc(funcRanges, c.line)
 		if callerID == "" {
