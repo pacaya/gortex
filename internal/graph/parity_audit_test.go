@@ -183,14 +183,24 @@ func scanKindUsage(repoRoot string, declared []kindDecl) (map[string]int, error)
 		declaringFiles[d.Name] = d.Path
 	}
 
-	patterns := make(map[string]*regexp.Regexp, len(declared))
+	// One combined alternation rather than one regex per kind. Matching
+	// every .go file in the repo against ~100 separate \bName\b patterns
+	// is O(files × kinds) and grows past the CI timeout as both the tree
+	// and the schema grow; a single \b(?:Name1|Name2|…)\b scanned once per
+	// file is O(files). The \b anchors keep the identifiers as distinct as
+	// before — `EdgeReads` still does NOT match inside `EdgeReadsCol`,
+	// because the inner \b fails between two word characters and the
+	// engine falls through to the longer alternative.
+	names := make([]string, 0, len(declared))
+	seen := make(map[string]bool, len(declared))
 	for _, d := range declared {
-		// \b doesn't treat _ as a word boundary in Go's regexp, which
-		// is exactly what we want — `EdgeReads` must NOT match
-		// `EdgeReadsCol`. The regex is anchored by word boundary on
-		// both sides.
-		patterns[d.Name] = regexp.MustCompile(`\b` + regexp.QuoteMeta(d.Name) + `\b`)
+		if seen[d.Name] {
+			continue
+		}
+		seen[d.Name] = true
+		names = append(names, regexp.QuoteMeta(d.Name))
 	}
+	re := regexp.MustCompile(`\b(?:` + strings.Join(names, "|") + `)\b`)
 
 	usage := make(map[string]int, len(declared))
 
@@ -230,13 +240,18 @@ func scanKindUsage(repoRoot string, declared []kindDecl) (map[string]int, error)
 			return nil // unreadable files don't fail the audit
 		}
 		text := stripGoComments(string(data))
-		for name, re := range patterns {
+		found := make(map[string]bool)
+		for _, m := range re.FindAllString(text, -1) {
+			found[m] = true
+		}
+		for name := range found {
+			// A constant referenced only inside its own declaring file
+			// is not a real consumer — exclude it exactly as the
+			// per-pattern scan did.
 			if path == declaringFiles[name] {
 				continue
 			}
-			if re.MatchString(text) {
-				usage[name]++
-			}
+			usage[name]++
 		}
 		return nil
 	})
