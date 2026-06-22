@@ -12,7 +12,7 @@ import (
 // just the declarations that name it in a type position.
 //
 // Four forms, each emitted as an edge to `unresolved::<TypeName>` carrying
-// Meta["use_kind"], attributed to the enclosing function (or the file node
+// Meta["ref_context"], attributed to the enclosing function (or the file node
 // for top-level expressions):
 //
 //   - instantiate    `OkHttpClient()` / `OkHttpClient.Builder()` — Kotlin has
@@ -34,7 +34,7 @@ import (
 // (Int, String, …) and any lowercase name. Constructor callees that are bound
 // lambda parameters in scope are skipped — but those are lowercase by Kotlin
 // convention and already excluded by the capitalization gate. Edges are
-// deduped per (owner, type, line, use_kind).
+// deduped per (owner, type, line, ref_context).
 func emitKotlinReferenceForms(root *sitter.Node, src []byte, filePath, fileID string, funcRanges []funcRange, result *parser.ExtractionResult) {
 	if root == nil {
 		return
@@ -74,7 +74,7 @@ func emitKotlinReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 			// whose target isn't import-reachable — from dropping these as if
 			// they were name-only call guesses.
 			Origin: graph.OriginASTResolved,
-			Meta:   map[string]any{"use_kind": useKind},
+			Meta:   map[string]any{"ref_context": useKind},
 		})
 	}
 

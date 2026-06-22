@@ -32,12 +32,12 @@ import (
 //
 // Every edge is attributed to the enclosing function (findEnclosingFunc)
 // with the file node as the fallback owner, and carries
-// Meta["use_kind"] ∈ {instantiate, inherit, cast, static_access}.
+// Meta["ref_context"] ∈ {instantiate, inherit, cast, static_access}.
 func emitPythonReferenceForms(root *sitter.Node, src []byte, filePath, fileID string, funcRanges []funcRange, result *parser.ExtractionResult) {
 	if root == nil {
 		return
 	}
-	// Dedup per (owner, type, line, use_kind).
+	// Dedup per (owner, type, line, ref_context).
 	type refKey struct {
 		owner, typ, useKind string
 		line                int
@@ -69,7 +69,7 @@ func emitPythonReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 			FilePath: filePath,
 			Line:     line,
 			Origin:   graph.OriginASTResolved,
-			Meta:     map[string]any{"use_kind": useKind},
+			Meta:     map[string]any{"ref_context": useKind},
 		})
 	}
 
@@ -91,7 +91,7 @@ func emitPythonReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 // emitPyCallReference handles a `call` node. Two cases:
 //   - the callee is a Capitalized name → class instantiation.
 //   - the callee is `isinstance` / `issubclass` → the 2nd argument
-//     (possibly a tuple) names types under test (use_kind "cast").
+//     (possibly a tuple) names types under test (ref_context "cast").
 func emitPyCallReference(call *sitter.Node, src []byte, emit func(string, int, graph.EdgeKind, string)) {
 	fn := call.ChildByFieldName("function")
 	if fn == nil {

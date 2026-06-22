@@ -28,7 +28,7 @@ import (
 // graph edge for each, attributed to the enclosing function/method (file
 // node fallback). Constructions emit graph.EdgeInstantiates; the trait,
 // cast, and path-access forms emit graph.EdgeReferences carrying a
-// `use_kind` Meta tag (inherit / cast / static_access) so consumers can
+// `ref_context` Meta tag (inherit / cast / static_access) so consumers can
 // tell the reference role apart.
 //
 // All reference edges are stamped Origin = graph.OriginASTResolved. This
@@ -49,7 +49,7 @@ import (
 //   - The base extractor already owns let/param/return EdgeTypedAs, so
 //     this pass never re-emits a declaration-position type.
 //
-// Edges are de-duplicated per (owner, type, line, use_kind) so a single
+// Edges are de-duplicated per (owner, type, line, ref_context) so a single
 // source line contributes one edge per role.
 func emitRustReferenceForms(root *sitter.Node, funcRanges []funcRange, fileID, filePath string, src []byte, result *parser.ExtractionResult) {
 	if root == nil {
@@ -87,7 +87,7 @@ func emitRustReferenceForms(root *sitter.Node, funcRanges []funcRange, fileID, f
 		})
 	}
 
-	// emitRef appends an EdgeReferences carrying a use_kind role.
+	// emitRef appends an EdgeReferences carrying a ref_context role.
 	emitRef := func(ownerID, typeName, useKind string, line int) {
 		canon := canonicalizeRustTypeRef(typeName)
 		if canon == "" || isRustPrimitive(canon) || !isRustCapitalized(canon) {
@@ -105,7 +105,7 @@ func emitRustReferenceForms(root *sitter.Node, funcRanges []funcRange, fileID, f
 			FilePath: filePath,
 			Line:     line,
 			Origin:   graph.OriginASTResolved,
-			Meta:     map[string]any{"use_kind": useKind},
+			Meta:     map[string]any{"ref_context": useKind},
 		})
 	}
 

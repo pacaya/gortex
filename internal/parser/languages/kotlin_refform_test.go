@@ -6,9 +6,9 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 )
 
-// kotlinUseKindEdges returns the use_kind-tagged reference edges the Kotlin
+// kotlinUseKindEdges returns the ref_context-tagged reference edges the Kotlin
 // extractor emitted for src, keyed for assertion convenience. Each entry is
-// (kind, target, use_kind).
+// (kind, target, ref_context).
 type kotlinRefEdge struct {
 	kind    graph.EdgeKind
 	to      string
@@ -25,7 +25,7 @@ func extractKotlinRefEdges(t *testing.T, src string) []kotlinRefEdge {
 	for _, e := range res.Edges {
 		uk := ""
 		if e.Meta != nil {
-			uk, _ = e.Meta["use_kind"].(string)
+			uk, _ = e.Meta["ref_context"].(string)
 		}
 		out = append(out, kotlinRefEdge{kind: e.Kind, to: e.To, useKind: uk})
 	}
@@ -41,7 +41,7 @@ func hasRefEdge(edges []kotlinRefEdge, kind graph.EdgeKind, to, useKind string) 
 	return false
 }
 
-// countTo counts edges whose target equals `to`, regardless of kind/use_kind.
+// countTo counts edges whose target equals `to`, regardless of kind/ref_context.
 func countTo(edges []kotlinRefEdge, to string) int {
 	n := 0
 	for _, e := range edges {
@@ -63,7 +63,7 @@ fun build() {
 }
 `)
 	if !hasRefEdge(edges, graph.EdgeInstantiates, "unresolved::OkHttpClient", "instantiate") {
-		t.Fatalf("expected EdgeInstantiates -> unresolved::OkHttpClient (use_kind=instantiate); got %+v", edges)
+		t.Fatalf("expected EdgeInstantiates -> unresolved::OkHttpClient (ref_context=instantiate); got %+v", edges)
 	}
 	// The redundant constructor "call" edge must be suppressed.
 	for _, e := range edges {
@@ -149,7 +149,7 @@ class X : Bar(), Iface {
 }
 
 // TestKotlinReferenceForm_NoFalsePositives: a lowercase function call, a
-// lowercase receiver access, and a primitive type must emit NO use_kind edge.
+// lowercase receiver access, and a primitive type must emit NO ref_context edge.
 func TestKotlinReferenceForm_NoFalsePositives(t *testing.T) {
 	edges := extractKotlinRefEdges(t, `package p
 fun run(svc: Service) {
@@ -169,7 +169,7 @@ fun run(svc: Service) {
 			"unresolved::doThing", "unresolved::*.doThing",
 			"unresolved::Int", "unresolved::n", "unresolved::s",
 			"unresolved::svc", "unresolved::list", "unresolved::mutableListOf":
-			t.Fatalf("false positive: emitted use_kind edge %+v for a non-type reference", e)
+			t.Fatalf("false positive: emitted ref_context edge %+v for a non-type reference", e)
 		}
 	}
 	// Specifically: no instantiate edge for the lowercase `mutableListOf` call,

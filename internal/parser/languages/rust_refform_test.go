@@ -6,12 +6,12 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 )
 
-// refEdgeUseKind returns the use_kind Meta tag of a reference edge, or "".
+// refEdgeUseKind returns the ref_context Meta tag of a reference edge, or "".
 func refEdgeUseKind(e *graph.Edge) string {
 	if e.Meta == nil {
 		return ""
 	}
-	if v, ok := e.Meta["use_kind"].(string); ok {
+	if v, ok := e.Meta["ref_context"].(string); ok {
 		return v
 	}
 	return ""
@@ -35,7 +35,7 @@ func hasInstantiate(t *testing.T, edges []*graph.Edge, typ string) bool {
 }
 
 // hasRef reports whether an EdgeReferences to unresolved::<typ> with the
-// given use_kind exists, stamped OriginASTResolved.
+// given ref_context exists, stamped OriginASTResolved.
 func hasRef(t *testing.T, edges []*graph.Edge, typ, useKind string) bool {
 	t.Helper()
 	want := "unresolved::" + typ
@@ -218,7 +218,7 @@ func TestRustRefForm_Negatives(t *testing.T) {
 		case "unresolved::foo", "unresolved::i32", "unresolved::helper",
 			"unresolved::self", "unresolved::crate", "unresolved::util",
 			"unresolved::compute", "unresolved::bar", "unresolved::baz":
-			t.Errorf("unexpected reference-form edge %s → %s (use_kind=%q)", e.Kind, e.To, refEdgeUseKind(e))
+			t.Errorf("unexpected reference-form edge %s → %s (ref_context=%q)", e.Kind, e.To, refEdgeUseKind(e))
 		}
 	}
 }

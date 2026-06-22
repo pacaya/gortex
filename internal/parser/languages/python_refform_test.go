@@ -7,14 +7,14 @@ import (
 )
 
 // refEdge finds the first edge with the given kind whose To matches target
-// and (when useKind != "") whose Meta["use_kind"] matches.
+// and (when useKind != "") whose Meta["ref_context"] matches.
 func findRefEdge(edges []*graph.Edge, kind graph.EdgeKind, target, useKind string) *graph.Edge {
 	for _, e := range edges {
 		if e.Kind != kind || e.To != target {
 			continue
 		}
 		if useKind != "" {
-			if uk, _ := e.Meta["use_kind"].(string); uk != useKind {
+			if uk, _ := e.Meta["ref_context"].(string); uk != useKind {
 				continue
 			}
 		}
@@ -33,7 +33,7 @@ func hasEdgeTo(edges []*graph.Edge, target string) bool {
 }
 
 // TestPyRefForm_Instantiation: `HttpResponse(...)` emits an instantiates
-// edge to the class, stamped OriginASTResolved with use_kind=instantiate.
+// edge to the class, stamped OriginASTResolved with ref_context=instantiate.
 func TestPyRefForm_Instantiation(t *testing.T) {
 	src := `from django.http import HttpResponse
 
@@ -43,7 +43,7 @@ def view(request):
 	_, edges := runPyExtract(t, "app/views.py", src)
 	e := findRefEdge(edges, graph.EdgeInstantiates, "unresolved::HttpResponse", "instantiate")
 	if e == nil {
-		t.Fatalf("expected EdgeInstantiates -> unresolved::HttpResponse (use_kind=instantiate); edges=%v", edgeDump(edges))
+		t.Fatalf("expected EdgeInstantiates -> unresolved::HttpResponse (ref_context=instantiate); edges=%v", edgeDump(edges))
 	}
 	if e.Origin != graph.OriginASTResolved {
 		t.Errorf("instantiate edge Origin = %q, want OriginASTResolved", e.Origin)
@@ -68,7 +68,7 @@ def view(request):
 }
 
 // TestPyRefForm_Inheritance: `class V(HttpResponse):` emits a references
-// edge (use_kind=inherit), OriginASTResolved.
+// edge (ref_context=inherit), OriginASTResolved.
 func TestPyRefForm_Inheritance(t *testing.T) {
 	src := `from django.http import HttpResponse
 
@@ -78,7 +78,7 @@ class MyResponse(HttpResponse):
 	_, edges := runPyExtract(t, "app/r.py", src)
 	e := findRefEdge(edges, graph.EdgeReferences, "unresolved::HttpResponse", "inherit")
 	if e == nil {
-		t.Fatalf("expected EdgeReferences -> unresolved::HttpResponse (use_kind=inherit); edges=%v", edgeDump(edges))
+		t.Fatalf("expected EdgeReferences -> unresolved::HttpResponse (ref_context=inherit); edges=%v", edgeDump(edges))
 	}
 	if e.Origin != graph.OriginASTResolved {
 		t.Errorf("inherit edge Origin = %q, want OriginASTResolved (else cross_pkg_guard reverts it)", e.Origin)
@@ -99,7 +99,7 @@ class MyResponse(http.HttpResponse):
 }
 
 // TestPyRefForm_IsInstance: `isinstance(x, HttpResponse)` references the
-// 2nd argument as a type (use_kind=cast). Tuple second arg references each.
+// 2nd argument as a type (ref_context=cast). Tuple second arg references each.
 func TestPyRefForm_IsInstance(t *testing.T) {
 	src := `from django.http import HttpResponse, JsonResponse
 
@@ -111,7 +111,7 @@ def check(x):
 	_, edges := runPyExtract(t, "app/c.py", src)
 	e := findRefEdge(edges, graph.EdgeReferences, "unresolved::HttpResponse", "cast")
 	if e == nil {
-		t.Fatalf("expected EdgeReferences -> unresolved::HttpResponse (use_kind=cast); edges=%v", edgeDump(edges))
+		t.Fatalf("expected EdgeReferences -> unresolved::HttpResponse (ref_context=cast); edges=%v", edgeDump(edges))
 	}
 	if e.Origin != graph.OriginASTResolved {
 		t.Errorf("cast edge Origin = %q, want OriginASTResolved", e.Origin)
@@ -126,7 +126,7 @@ def check(x):
 }
 
 // TestPyRefForm_StaticAccess: `HttpResponse.status_code` emits a
-// references edge (use_kind=static_access) to the class.
+// references edge (ref_context=static_access) to the class.
 func TestPyRefForm_StaticAccess(t *testing.T) {
 	src := `from django.http import HttpResponse
 
@@ -136,7 +136,7 @@ def f():
 	_, edges := runPyExtract(t, "app/s.py", src)
 	e := findRefEdge(edges, graph.EdgeReferences, "unresolved::HttpResponse", "static_access")
 	if e == nil {
-		t.Fatalf("expected EdgeReferences -> unresolved::HttpResponse (use_kind=static_access); edges=%v", edgeDump(edges))
+		t.Fatalf("expected EdgeReferences -> unresolved::HttpResponse (ref_context=static_access); edges=%v", edgeDump(edges))
 	}
 	if e.Origin != graph.OriginASTResolved {
 		t.Errorf("static_access edge Origin = %q, want OriginASTResolved", e.Origin)
@@ -194,7 +194,7 @@ func TestPyRefForm_NegativeCases(t *testing.T) {
 		"unresolved::helper",
 	} {
 		for _, e := range edges {
-			if (e.Kind == graph.EdgeInstantiates || (e.Kind == graph.EdgeReferences && e.Meta["use_kind"] != nil)) && e.To == bad {
+			if (e.Kind == graph.EdgeInstantiates || (e.Kind == graph.EdgeReferences && e.Meta["ref_context"] != nil)) && e.To == bad {
 				t.Errorf("lowercase callee/method %q must not emit an instantiate/reference type edge (got kind=%s)", bad, e.Kind)
 			}
 		}
@@ -211,7 +211,7 @@ func TestPyRefForm_NegativeCases(t *testing.T) {
 func edgeDump(edges []*graph.Edge) []string {
 	out := make([]string, 0, len(edges))
 	for _, e := range edges {
-		uk, _ := e.Meta["use_kind"].(string)
+		uk, _ := e.Meta["ref_context"].(string)
 		out = append(out, string(e.Kind)+" "+e.From+" -> "+e.To+" ["+uk+"]")
 	}
 	return out

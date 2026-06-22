@@ -348,7 +348,7 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 	// (`OkHttpClient()`), casts / type-tests (`as`/`as?`/`is`/`!is`), static /
 	// companion / nested-type access (`OkHttpClient.Builder`), and supertype /
 	// interface inheritance (`class X : Bar(), Iface`). Each lands on the
-	// referenced type and carries Meta["use_kind"] so find_usages surfaces
+	// referenced type and carries Meta["ref_context"] so find_usages surfaces
 	// every mention of a type, not just its declaration sites.
 	emitKotlinReferenceForms(root, src, filePath, fileID, funcRanges, result)
 

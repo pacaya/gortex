@@ -40,7 +40,7 @@ import (
 // participate, Swift primitives are dropped via isSwiftPrimitive, and static
 // access only fires when the navigation head is a bare Capitalized identifier
 // (self / lowercase value receivers are excluded). Each (owner, type, line,
-// use_kind) tuple is emitted at most once. Owners are attributed to the
+// ref_context) tuple is emitted at most once. Owners are attributed to the
 // enclosing function (buildFuncRanges / findEnclosingFunc), else the enclosing
 // Swift type, else the file node.
 //

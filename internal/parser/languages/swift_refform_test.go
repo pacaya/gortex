@@ -8,7 +8,7 @@ import (
 
 // swiftRefEdge reports whether an edge exists from `from` to
 // "unresolved::"+typeName with the given kind and (for EdgeReferences) the
-// given use_kind, stamped OriginASTResolved so cross_pkg_guard leaves it alone.
+// given ref_context, stamped OriginASTResolved so cross_pkg_guard leaves it alone.
 func swiftRefEdge(edges []*graph.Edge, from, typeName string, kind graph.EdgeKind, useKind string) bool {
 	for _, e := range edges {
 		if e.Kind != kind || e.From != from || e.To != "unresolved::"+typeName {
@@ -29,7 +29,7 @@ func swiftRefEdge(edges []*graph.Edge, from, typeName string, kind graph.EdgeKin
 }
 
 // swiftHasRefTo reports whether any EdgeInstantiates / EdgeReferences edge
-// targets "unresolved::"+typeName, regardless of owner / use_kind. Used to
+// targets "unresolved::"+typeName, regardless of owner / ref_context. Used to
 // assert that primitives and excluded forms emit nothing.
 func swiftHasRefTo(edges []*graph.Edge, typeName string) bool {
 	for _, e := range edges {
@@ -73,7 +73,7 @@ func TestSwiftExtractor_Instantiation(t *testing.T) {
 func TestSwiftExtractor_InheritanceAndConformance(t *testing.T) {
 	// `class X: Base, Proto` references both a superclass and a conformed
 	// protocol; `struct S: Codable` references a protocol; `extension X: P`
-	// adds a conformance. Each lands an EdgeReferences use_kind=inherit
+	// adds a conformance. Each lands an EdgeReferences ref_context=inherit
 	// attributed to the declared type.
 	src := []byte(`class X: Base, Proto {
 }
@@ -100,7 +100,7 @@ extension X: Equatable {
 
 func TestSwiftExtractor_CastsAndTypeTests(t *testing.T) {
 	// `x as Foo`, `x as? Foo`, `x as! Foo` (as_expression) and `x is Bar`
-	// (check_expression) each reference the RHS type with use_kind=cast.
+	// (check_expression) each reference the RHS type with ref_context=cast.
 	src := []byte(`func check(x: Any) {
     let a = x as Foo
     let b = x as? Foo
@@ -128,7 +128,7 @@ func TestSwiftExtractor_CastsAndTypeTests(t *testing.T) {
 
 func TestSwiftExtractor_StaticAccess(t *testing.T) {
 	// `Foo.shared` / `Foo.Constant`: a navigation_expression whose head is a
-	// bare Capitalized identifier → EdgeReferences use_kind=static_access. A
+	// bare Capitalized identifier → EdgeReferences ref_context=static_access. A
 	// `self.x` head (lowercase / self receiver) emits nothing.
 	src := []byte(`func use() {
     let a = Manager.shared

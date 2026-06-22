@@ -18,16 +18,16 @@ import (
 //
 //   - INSTANTIATION  `new Foo()`, `new Foo[3]`, `new Outer.Inner()`,
 //     plus the generic arguments of `new ArrayList<Request>()` —
-//     graph.EdgeInstantiates, use_kind=instantiate.
+//     graph.EdgeInstantiates, ref_context=instantiate.
 //   - INHERITANCE    `class X extends Foo implements Bar, Baz` — the base
 //     extractor only stamps `scope_parent` meta (for the method-scope
 //     resolver), so the type reference for find_usages was missing.
-//     EdgeReferences, use_kind=inherit.
+//     EdgeReferences, ref_context=inherit.
 //   - CASTS / TYPE-TESTS  `(Foo) x`, `x instanceof Foo`, the pattern
-//     `x instanceof Foo f` — EdgeReferences, use_kind=cast.
+//     `x instanceof Foo f` — EdgeReferences, ref_context=cast.
 //   - STATIC / CONSTANT access  `Foo.CONST`, `Foo.staticMethod()`,
 //     `Foo.class`, and `@Foo` annotation references whose scope is a
-//     Capitalized type identifier — EdgeReferences, use_kind=static_access.
+//     Capitalized type identifier — EdgeReferences, ref_context=static_access.
 //
 // The references are attributed to the enclosing method (falling back to
 // the file node) via funcRanges. Every named type is canonicalized
@@ -73,7 +73,7 @@ func emitJavaReferenceForms(root *sitter.Node, src []byte, filePath, fileID stri
 			FilePath: filePath,
 			Line:     line,
 			Origin:   origin,
-			Meta:     map[string]any{"use_kind": useKind},
+			Meta:     map[string]any{"ref_context": useKind},
 		})
 	}
 

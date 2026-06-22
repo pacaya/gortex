@@ -7,7 +7,7 @@ import (
 )
 
 // refEdge finds the first edge with the given kind, target, and
-// (optional) use_kind. use_kind == "" matches any (or no) use_kind.
+// (optional) ref_context. ref_context == "" matches any (or no) ref_context.
 func refEdge(edges []*graph.Edge, kind graph.EdgeKind, to, useKind string) *graph.Edge {
 	for _, e := range edges {
 		if e.Kind != kind || e.To != to {
@@ -17,7 +17,7 @@ func refEdge(edges []*graph.Edge, kind graph.EdgeKind, to, useKind string) *grap
 			return e
 		}
 		if e.Meta != nil {
-			if uk, _ := e.Meta["use_kind"].(string); uk == useKind {
+			if uk, _ := e.Meta["ref_context"].(string); uk == useKind {
 				return e
 			}
 		}
@@ -26,13 +26,13 @@ func refEdge(edges []*graph.Edge, kind graph.EdgeKind, to, useKind string) *grap
 }
 
 // hasRefTo reports whether any edge of any kind targets unresolved::<name>
-// with the given use_kind — used by negative assertions.
+// with the given ref_context — used by negative assertions.
 func hasUseKindTo(edges []*graph.Edge, to, useKind string) bool {
 	for _, e := range edges {
 		if e.To != to || e.Meta == nil {
 			continue
 		}
-		if uk, _ := e.Meta["use_kind"].(string); uk == useKind {
+		if uk, _ := e.Meta["ref_context"].(string); uk == useKind {
 			return true
 		}
 	}
@@ -40,7 +40,7 @@ func hasUseKindTo(edges []*graph.Edge, to, useKind string) bool {
 }
 
 // TestJavaRefForm_Instantiation pins `new Foo()` / `new Foo[]` /
-// `new Outer.Inner()` → EdgeInstantiates (use_kind=instantiate), and
+// `new Outer.Inner()` → EdgeInstantiates (ref_context=instantiate), and
 // generic args of `new ArrayList<Request>()` → Request.
 func TestJavaRefForm_Instantiation(t *testing.T) {
 	src := `package app;
@@ -56,7 +56,7 @@ public class Factory {
 	_, edges := runJavaExtract(t, "app/Factory.java", src)
 
 	if e := refEdge(edges, graph.EdgeInstantiates, "unresolved::Foo", "instantiate"); e == nil {
-		t.Errorf("expected EdgeInstantiates -> Foo (use_kind=instantiate)")
+		t.Errorf("expected EdgeInstantiates -> Foo (ref_context=instantiate)")
 	} else if e.Origin != graph.OriginASTInferred {
 		t.Errorf("instantiate Origin = %q, want OriginASTInferred", e.Origin)
 	}
@@ -72,7 +72,7 @@ public class Factory {
 }
 
 // TestJavaRefForm_Inheritance pins `extends Foo` / `implements Bar, Baz`
-// → EdgeReferences (use_kind=inherit), stamped OriginASTResolved so the
+// → EdgeReferences (ref_context=inherit), stamped OriginASTResolved so the
 // cross-package guard never reverts them.
 func TestJavaRefForm_Inheritance(t *testing.T) {
 	src := `package app;
@@ -84,7 +84,7 @@ public class Worker extends Base implements Runnable, Closeable {
 	for _, want := range []string{"Base", "Runnable", "Closeable"} {
 		e := refEdge(edges, graph.EdgeReferences, "unresolved::"+want, "inherit")
 		if e == nil {
-			t.Errorf("expected EdgeReferences -> %s (use_kind=inherit)", want)
+			t.Errorf("expected EdgeReferences -> %s (ref_context=inherit)", want)
 			continue
 		}
 		if e.Origin != graph.OriginASTResolved {
@@ -94,7 +94,7 @@ public class Worker extends Base implements Runnable, Closeable {
 }
 
 // TestJavaRefForm_CastAndInstanceof pins `(Foo) x`, `x instanceof Foo`,
-// and the pattern `x instanceof Foo f` → EdgeReferences (use_kind=cast),
+// and the pattern `x instanceof Foo f` → EdgeReferences (ref_context=cast),
 // OriginASTResolved.
 func TestJavaRefForm_CastAndInstanceof(t *testing.T) {
 	src := `package app;
@@ -111,7 +111,7 @@ public class C {
 	for _, want := range []string{"Foo", "Bar", "Baz"} {
 		e := refEdge(edges, graph.EdgeReferences, "unresolved::"+want, "cast")
 		if e == nil {
-			t.Errorf("expected EdgeReferences -> %s (use_kind=cast)", want)
+			t.Errorf("expected EdgeReferences -> %s (ref_context=cast)", want)
 			continue
 		}
 		if e.Origin != graph.OriginASTResolved {
@@ -122,7 +122,7 @@ public class C {
 
 // TestJavaRefForm_StaticAccess pins `Foo.CONST`, `Foo.class`, and
 // `Foo.staticMethod()` whose scope is a Capitalized type → EdgeReferences
-// (use_kind=static_access). A `@Foo` annotation also references Foo.
+// (ref_context=static_access). A `@Foo` annotation also references Foo.
 func TestJavaRefForm_StaticAccess(t *testing.T) {
 	src := `package app;
 @Component
@@ -138,7 +138,7 @@ public class C {
 
 	for _, want := range []string{"Constants", "Foo", "Helper"} {
 		if refEdge(edges, graph.EdgeReferences, "unresolved::"+want, "static_access") == nil {
-			t.Errorf("expected EdgeReferences -> %s (use_kind=static_access)", want)
+			t.Errorf("expected EdgeReferences -> %s (ref_context=static_access)", want)
 		}
 	}
 	// @Component annotation → reference to Component.
@@ -173,7 +173,7 @@ public class C {
 		if e.Meta == nil {
 			continue
 		}
-		uk, _ := e.Meta["use_kind"].(string)
+		uk, _ := e.Meta["ref_context"].(string)
 		switch uk {
 		case "instantiate", "cast", "inherit", "static_access":
 			to := e.To
@@ -187,7 +187,7 @@ public class C {
 			}
 			c := to[0]
 			if !(c >= 'A' && c <= 'Z') {
-				t.Errorf("reference-form edge to non-Capitalized target %q (use_kind=%s) — capitalization gate leaked", e.To, uk)
+				t.Errorf("reference-form edge to non-Capitalized target %q (ref_context=%s) — capitalization gate leaked", e.To, uk)
 			}
 		}
 	}
