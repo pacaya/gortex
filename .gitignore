@@ -66,3 +66,6 @@ bench/store-bench/
 bench/unresolved-audit/
 bench/run-linux.sh
 bench/run-linux-rest.sh
+
+# Local CPU-profiling harness (hardcoded local paths; run manually, not in CI)
+internal/indexer/bench_vscode_test.go
