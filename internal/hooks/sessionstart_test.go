@@ -95,7 +95,7 @@ func TestRunSessionStart_DaemonReady_CwdContainsRepos(t *testing.T) {
 			TrackedRepos: []daemon.TrackedRepoStatus{
 				{Name: "gortex", Path: "/tmp/gortex"},
 				{Name: "cloud_web", Path: "/tmp/cloud_web"},
-				{Name: "project1", Path: "/tmp/project1"},
+				{Name: "project1", Path: "/opt/project1"}, // unrelated: NOT under cwd /tmp
 			},
 		}, nil
 	})
