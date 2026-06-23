@@ -102,6 +102,22 @@ func emitTSReferenceForms(root *sitter.Node, src []byte, filePath, fileID string
 // form names a type purely in import position with no other use edge.
 func emitTSTypeOnlyImportRefs(importNode *sitter.Node, src []byte, fileID string, kind graph.EdgeKind, refContext string, emit func(ownerID, name string, kind graph.EdgeKind, refContext string, line int)) {
 	stmtTypeOnly := tsImportStatementTypeOnly(importNode, src)
+	if stmtTypeOnly {
+		// Default type-only import: `import type App from "mod"` binds App as a
+		// type (a specifier-level `import { type X }` carries no default form).
+		if clause := findChildByType(importNode, "import_clause"); clause != nil {
+			for i := 0; i < int(clause.NamedChildCount()); i++ {
+				c := clause.NamedChild(i)
+				if c == nil || c.Type() != "identifier" {
+					continue
+				}
+				if name := strings.TrimSpace(c.Content(src)); name != "" && !isTSPrimitive(name) && isTSTypeName(name) {
+					emit(fileID, name, kind, refContext, int(c.StartPoint().Row)+1)
+				}
+				break
+			}
+		}
+	}
 	named := jsNamedImportsNode(importNode)
 	if named == nil {
 		return

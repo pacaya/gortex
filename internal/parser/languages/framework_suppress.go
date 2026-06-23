@@ -101,7 +101,75 @@ var (
 	// svelteHandlerRe matches a Svelte template binding `on:click={onClick}` or
 	// the Svelte 5 `onclick={onClick}` attribute form. Group 1 is the handler.
 	svelteHandlerRe = regexp.MustCompile(`on:?[\w-]+\s*=\s*\{\s*(\w+)`)
+	// composableDestructureRe matches a script-setup destructure of a Vue/Nuxt
+	// composable's return — `const { close, open: o } = useModal()`. Group 1 is
+	// the destructure body, group 2 the `use*` composable. Only `use`-prefixed
+	// callees qualify (the composable convention), keeping the binding precise.
+	composableDestructureRe = regexp.MustCompile(`(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(use[A-Z]\w*)\s*\(`)
 )
+
+// composableBinding records a template handler that is a composable-destructured
+// local: the original member it aliases and the composable it came from.
+type composableBinding struct {
+	original   string
+	composable string
+}
+
+// composableHandlerBindings maps each local name destructured from a `use*`
+// composable to its original member + composable, so a template handler that
+// references the (possibly renamed) local resolves to the composable member
+// instead of an unresolved bare name. `const { close: c } = useModal()` maps
+// c -> {original: "close", composable: "useModal"}.
+func composableHandlerBindings(src []byte) map[string]composableBinding {
+	out := map[string]composableBinding{}
+	for _, m := range composableDestructureRe.FindAllSubmatch(src, -1) {
+		composable := string(m[2])
+		for _, part := range strings.Split(string(m[1]), ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || strings.HasPrefix(part, "...") {
+				continue
+			}
+			// Drop a default value (`open = false`).
+			if i := strings.IndexByte(part, '='); i >= 0 {
+				part = strings.TrimSpace(part[:i])
+			}
+			orig, local := part, part
+			if i := strings.IndexByte(part, ':'); i >= 0 { // rename `orig: local`
+				orig = strings.TrimSpace(part[:i])
+				local = strings.TrimSpace(part[i+1:])
+			}
+			if !isSimpleJSIdent(local) || !isSimpleJSIdent(orig) {
+				continue
+			}
+			if _, ok := out[local]; !ok {
+				out[local] = composableBinding{original: orig, composable: composable}
+			}
+		}
+	}
+	return out
+}
+
+// isSimpleJSIdent reports whether s is a bare JS identifier (letters, digits,
+// `_`, `$`; not starting with a digit).
+func isSimpleJSIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '_' || c == '$':
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 // mineTemplateHandlers emits a callback reference edge from the component to
 // each event handler bound in its markup (@click / v-on / on:click), resolved
@@ -127,6 +195,10 @@ func mineTemplateHandlers(src []byte, filePath, componentID, lang string, result
 		}
 	}
 
+	// Composable-destructured handlers (`const { close: c } = useModal()` +
+	// `@click="c"`) bind to the composable member, not a top-level function.
+	bindings := composableHandlerBindings(src)
+
 	tmpl := templateBlockRe.ReplaceAllFunc(src, blankPreservingNewlines)
 	seen := map[string]bool{}
 	for _, m := range re.FindAllSubmatchIndex(tmpl, -1) {
@@ -137,15 +209,22 @@ func mineTemplateHandlers(src []byte, filePath, componentID, lang string, result
 		seen[handler] = true
 		to := "unresolved::" + handler
 		origin := graph.OriginTextMatched
+		meta := map[string]any{"ref_context": graph.RefContextCallback, "via": "template_handler"}
 		if id, ok := funcByName[handler]; ok {
 			to = id
 			origin = graph.OriginASTResolved
+		} else if b, ok := bindings[handler]; ok {
+			// Reference the composable's original member so the binding is
+			// traceable (`@click="c"` where c aliases useModal().close).
+			to = "unresolved::" + b.original
+			meta["via"] = "composable_handler"
+			meta["composable"] = b.composable
 		}
 		result.Edges = append(result.Edges, &graph.Edge{
 			From: componentID, To: to, Kind: graph.EdgeReferences,
 			FilePath: filePath, Line: 1 + strings.Count(string(tmpl[:m[0]]), "\n"),
 			Origin: origin,
-			Meta:   map[string]any{"ref_context": graph.RefContextCallback, "via": "template_handler"},
+			Meta:   meta,
 		})
 	}
 }

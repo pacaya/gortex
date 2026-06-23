@@ -190,3 +190,59 @@ func TestResolveRelativeImports_CQuotedInclude(t *testing.T) {
 	assert.Equal(t, "src/bar.h", quoted.To, "quoted include resolves to the local header")
 	assert.Equal(t, "unresolved::import::stdio.h", system.To, "system include stays external")
 }
+
+// cInclude builds a quoted #include import edge for the C-include tests.
+func cInclude(g graph.Store, from, rel string) *graph.Edge {
+	e := &graph.Edge{
+		From: from, To: "unresolved::import::" + rel, Kind: graph.EdgeImports,
+		Meta: map[string]any{"include_kind": "quoted"},
+	}
+	g.AddEdge(e)
+	return e
+}
+
+// TestResolveRelativeImports_CIncludeViaIncludeRoot pins the -I include-dir
+// search: a multi-segment include `foo/bar.h` not relative to the including
+// file still resolves to the uniquely-matching header reachable via an include
+// root.
+func TestResolveRelativeImports_CIncludeViaIncludeRoot(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "include/foo/bar.h", "c") // only reachable via `-Iinclude`
+	e := cInclude(g, "src/main.c", "foo/bar.h")
+
+	r := New(g)
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "include/foo/bar.h", e.To, "non-relative include resolves via include root")
+}
+
+// TestResolveRelativeImports_CIncludeAmbiguousRefused pins that an include
+// matching more than one root header is refused (no false edge).
+func TestResolveRelativeImports_CIncludeAmbiguousRefused(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "a/foo/bar.h", "c")
+	seedFile(g, "b/foo/bar.h", "c")
+	e := cInclude(g, "src/main.c", "foo/bar.h")
+
+	r := New(g)
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "unresolved::import::foo/bar.h", e.To, "ambiguous include must stay unresolved")
+}
+
+// TestResolveRelativeImports_CIncludeBareHeaderNotProbed pins the multi-segment
+// restriction: a single-segment `bar.h` not in the including dir is NOT
+// resolved via the include-root search (too ambiguous), staying external.
+func TestResolveRelativeImports_CIncludeBareHeaderNotProbed(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "vendor/bar.h", "c") // elsewhere, single-segment
+	e := cInclude(g, "src/main.c", "bar.h")
+
+	r := New(g)
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "unresolved::import::bar.h", e.To, "bare header is not probed across roots")
+}

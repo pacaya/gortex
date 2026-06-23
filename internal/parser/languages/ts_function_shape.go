@@ -31,6 +31,9 @@ func emitTSFunctionShape(ownerID string, declNode *sitter.Node, src []byte, file
 		emitTSReturnEdges(ownerID, rt, filePath, declLine, result)
 	}
 	emitTSGenericParamNodes(ownerID, declNode, src, filePath, declLine, result)
+	// Generic-constraint type references (`function f<T extends Foo>`) so a
+	// type named only as a bound is reachable by find_usages without an LSP.
+	emitTSConstraintRefs(declNode, ownerID, filePath, src, result)
 	if body := tsFunctionBody(declNode); body != nil {
 		emitTSAsyncSpawns(ownerID, body, src, filePath, result)
 		emitTSFieldAccess(ownerID, body, src, filePath, result)
@@ -857,30 +860,6 @@ func isTSPrimitive(t string) bool {
 	return false
 }
 
-// emitTSTypeRefEdges emits one EdgeTypedAs per named type in typeText
-// from ownerID to unresolved::<name>, tagged with use_kind so a
-// traversal can tell a cast (`x as Foo`) from an alias body
-// (`type Bar = Foo`) from an annotation. Decomposition is delegated to
-// tsTypeRefs (unions / intersections / arrays / generics handled,
-// primitives + container generics dropped). De-duplicated per name so a
-// position firing twice can't double-emit.
-func emitTSTypeRefEdges(ownerID, typeText, filePath string, line int, useKind string, result *parser.ExtractionResult) {
-	if ownerID == "" || typeText == "" {
-		return
-	}
-	for _, name := range tsTypeRefs(typeText) {
-		result.Edges = append(result.Edges, &graph.Edge{
-			From:     ownerID,
-			To:       "unresolved::" + name,
-			Kind:     graph.EdgeTypedAs,
-			FilePath: filePath,
-			Line:     line,
-			Origin:   graph.OriginASTInferred,
-			Meta:     map[string]any{"use_kind": useKind},
-		})
-	}
-}
-
 // emitTSCastTypeRefs walks a parsed TS/TSX file and emits a cast
 // type-reference edge for every type assertion:
 //
@@ -892,8 +871,8 @@ func emitTSTypeRefEdges(ownerID, typeText, filePath string, line int, useKind st
 // Each names the asserted type(s); the edge is EdgeTypedAs to
 // unresolved::<name> with use_kind:"cast", attributed to the enclosing
 // function (fallback: the file node). Decomposition (unions, generics,
-// arrays, primitive/container dropping) is delegated to tsTypeRefs via
-// emitTSTypeRefEdges. De-duplicated per (owner, name, line) so an
+// arrays, primitive/container dropping) is delegated to tsTypeRefs.
+// De-duplicated per (owner, name, line) so an
 // expression that a future query might also match elsewhere can't
 // double-emit.
 func emitTSCastTypeRefs(root *sitter.Node, src []byte, filePath, fileID string, funcRanges []funcRange, result *parser.ExtractionResult) {

@@ -23,6 +23,24 @@ var templateBuiltins = map[string]bool{
 	"Teleport": true, "Suspense": true, "KeepAlive": true, "Transition": true,
 	"TransitionGroup": true, "Component": true, "Slot": true, "Template": true,
 	"Fragment": true, "Code": true, "Debug": true, "Comment": true,
+	// Nuxt framework components — auto-registered, no component file.
+	"NuxtPage": true, "NuxtLayout": true, "NuxtLink": true, "NuxtLoadingIndicator": true,
+	"NuxtErrorBoundary": true, "NuxtWelcome": true, "NuxtClientFallback": true,
+	"NuxtRouteAnnouncer": true, "NuxtImg": true, "NuxtPicture": true, "NuxtIsland": true,
+	"ClientOnly": true, "DevOnly": true,
+}
+
+// stripNuxtLazyPrefix removes the Nuxt `Lazy` auto-import prefix so a
+// `<LazyBaseButton>` lazy-hydrated usage references the same `BaseButton`
+// component as `<BaseButton>`. Only strips when `Lazy` is followed by an
+// uppercase letter (a PascalCase component head), so a component genuinely
+// named `Lazy` or `Lazyload` is left intact.
+func stripNuxtLazyPrefix(name string) string {
+	const pfx = "Lazy"
+	if len(name) > len(pfx) && strings.HasPrefix(name, pfx) && unicode.IsUpper(rune(name[len(pfx)])) {
+		return name[len(pfx):]
+	}
+	return name
 }
 
 // mineTemplateComponentUsages scans the template region (everything outside
@@ -39,7 +57,7 @@ func mineTemplateComponentUsages(src []byte, filePath, componentID string, resul
 		if !isComponentTagName(raw) {
 			continue
 		}
-		name := componentRefName(raw)
+		name := stripNuxtLazyPrefix(componentRefName(raw))
 		if name == "" || templateBuiltins[name] {
 			continue
 		}

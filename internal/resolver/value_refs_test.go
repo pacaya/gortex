@@ -87,3 +87,40 @@ func TestValueRefShadowAndSelfPruned(t *testing.T) {
 
 	assert.Equal(t, 0, ResolveValueRefs(g), "shadowed and self reads must be pruned")
 }
+
+// TestValueRefInnerLocalShadowPruned pins the declarator-census shadow gate: an
+// inner-scope local (`let TIMEOUT` / `TIMEOUT := …`) materialised as a KindLocal
+// shadows the file-scope constant of the same name, so a candidate read inside
+// that scope must NOT be bound to the constant (it might read the local). A
+// second file with no shadowing local still binds, proving the gate is
+// shadow-specific, not a blanket drop.
+func TestValueRefInnerLocalShadowPruned(t *testing.T) {
+	g := graph.New()
+	// File a.go: file-scope const shadowed by an inner-scope local of the
+	// same name → the read must stay unbound.
+	g.AddNode(&graph.Node{
+		ID: "a.go::RETRY_LIMIT", Kind: graph.KindConstant, Name: "RETRY_LIMIT",
+		FilePath: "a.go", StartLine: 2, Language: "go",
+	})
+	g.AddNode(&graph.Node{
+		ID: "a.go::Run", Kind: graph.KindFunction, Name: "Run", FilePath: "a.go", StartLine: 5, Language: "go",
+	})
+	g.AddNode(&graph.Node{
+		ID: "a.go::Run#RETRY_LIMIT", Kind: graph.KindLocal, Name: "RETRY_LIMIT", FilePath: "a.go", StartLine: 6, Language: "go",
+	})
+	valueRefCandidate(g, "a.go::Run", "RETRY_LIMIT", "a.go", 7) // reads the inner local, not the const
+
+	// File b.go: same constant shape but no shadowing local → binds.
+	g.AddNode(&graph.Node{
+		ID: "b.go::RETRY_LIMIT", Kind: graph.KindConstant, Name: "RETRY_LIMIT",
+		FilePath: "b.go", StartLine: 2, Language: "go",
+	})
+	g.AddNode(&graph.Node{
+		ID: "b.go::Go", Kind: graph.KindFunction, Name: "Go", FilePath: "b.go", StartLine: 5, Language: "go",
+	})
+	valueRefCandidate(g, "b.go::Go", "RETRY_LIMIT", "b.go", 6) // binds to the const
+
+	assert.Equal(t, 1, ResolveValueRefs(g), "only the un-shadowed read should bind")
+	require.NotNil(t, readsEdge(g, "b.go::Go", "b.go::RETRY_LIMIT"), "un-shadowed read must bind to the constant")
+	assert.Nil(t, readsEdge(g, "a.go::Run", "a.go::RETRY_LIMIT"), "inner-local-shadowed read must stay unbound")
+}

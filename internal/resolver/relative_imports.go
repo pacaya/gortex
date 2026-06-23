@@ -39,9 +39,18 @@ func (r *Resolver) resolveRelativeImports() {
 	// materialises the set once at indexed cost; lookups become
 	// O(1) map hits.
 	fileIDs := make(map[string]struct{}, 1024)
+	// filesByBase indexes every KindFile by its basename so a non-relative
+	// C-family include (`foo/bar.h`) can be resolved against an include root
+	// without enumerating the whole file set per include (the `-I` search).
+	filesByBase := make(map[string][]string, 1024)
 	for n := range r.graph.NodesByKind(graph.KindFile) {
 		if n != nil && n.ID != "" {
 			fileIDs[n.ID] = struct{}{}
+			base := n.ID
+			if i := strings.LastIndex(n.ID, "/"); i >= 0 {
+				base = n.ID[i+1:]
+			}
+			filesByBase[base] = append(filesByBase[base], n.ID)
 		}
 	}
 	resolvePython := func(stem string) string {
@@ -68,6 +77,32 @@ func (r *Resolver) resolveRelativeImports() {
 				if _, ok := fileIDs[cand]; ok {
 					return cand
 				}
+			}
+		}
+		// Include-root (`-I`) search: a multi-segment include (`foo/bar.h`) that
+		// is not relative to the including file resolves to the uniquely-matching
+		// indexed header whose path ends with that suffix — i.e. reachable via
+		// some include directory (every repo dir is a candidate root, the same
+		// set a compile_commands.json `-I` list would name). Restricted to
+		// multi-segment paths and a unique match so an ambiguous bare header
+		// never binds a false edge.
+		if strings.Contains(rel, "/") {
+			base := rel
+			if i := strings.LastIndex(rel, "/"); i >= 0 {
+				base = rel[i+1:]
+			}
+			suffix := "/" + rel
+			match := ""
+			for _, cand := range filesByBase[base] {
+				if cand == rel || strings.HasSuffix(cand, suffix) {
+					if match != "" && match != cand {
+						return "" // ambiguous across include roots — refuse
+					}
+					match = cand
+				}
+			}
+			if match != "" {
+				return match
 			}
 		}
 		return ""

@@ -29,8 +29,9 @@ const (
 //
 // Precision gates: only distinctive names bind (>=3 chars with an uppercase
 // letter or underscore — the config-constant shape); a candidate whose name is
-// shadowed by a same-file parameter or field is dropped; a reader in a
-// generated file is skipped; self-reads are ignored. Unresolved candidates are
+// shadowed by a same-file parameter, field, or inner-scope local declarator is
+// dropped; a reader in a generated file is skipped; self-reads are ignored.
+// Unresolved candidates are
 // left as inert placeholders. Idempotent: re-targeting to the same constant is
 // a no-op and graph.EvictFile drops the edges on reindex.
 func ResolveValueRefs(g graph.Store) int {
@@ -39,7 +40,7 @@ func ResolveValueRefs(g graph.Store) int {
 	}
 	constByFile := map[string]map[string]string{}
 	shadowByFile := map[string]map[string]bool{}
-	for _, n := range nodesByKindsOrAll(g, graph.KindConstant, graph.KindVariable, graph.KindParam, graph.KindField) {
+	for _, n := range nodesByKindsOrAll(g, graph.KindConstant, graph.KindVariable, graph.KindParam, graph.KindField, graph.KindLocal) {
 		if n == nil || n.FilePath == "" {
 			continue
 		}
@@ -56,7 +57,14 @@ func ResolveValueRefs(g graph.Store) int {
 			if _, ok := m[n.Name]; !ok {
 				m[n.Name] = n.ID
 			}
-		case graph.KindParam, graph.KindField:
+		case graph.KindParam, graph.KindField, graph.KindLocal:
+			// Declarator census: any same-file parameter, field, or
+			// inner-scope local (`let X` / `:= X`) materialised by the
+			// per-grammar local-binding pass declares this name in a scope
+			// that shadows the file-scope constant. A candidate read of the
+			// name might resolve to that declarator, not the constant, so the
+			// file-level binding is dropped rather than mis-bound — the same
+			// coarse, conservative gate the param/field pruning already used.
 			s := shadowByFile[n.FilePath]
 			if s == nil {
 				s = map[string]bool{}

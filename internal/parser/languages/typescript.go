@@ -862,6 +862,9 @@ func (e *TypeScriptExtractor) emitClass(m parser.QueryResult, filePath, fileID s
 		detectTypeScriptORMModel(def.Node, src, id, name, filePath, result)
 		// Generic <T extends Y> on the class declaration.
 		emitTSGenericParamNodes(id, def.Node, src, filePath, def.StartLine+1, result)
+		// Generic-constraint type references (`class Store<T extends
+		// ExcalidrawElement>`) so a type named only as a bound is reachable.
+		emitTSConstraintRefs(def.Node, id, filePath, src, result)
 	}
 	return id
 }
@@ -892,6 +895,8 @@ func (e *TypeScriptExtractor) emitInterface(m parser.QueryResult, filePath, file
 	})
 	if def.Node != nil {
 		emitTSInterfaceMemberTypeRefs(def.Node, src, id, filePath, result)
+		// Generic-constraint type references (`interface Box<T extends Foo>`).
+		emitTSConstraintRefs(def.Node, id, filePath, src, result)
 	}
 }
 
@@ -911,40 +916,72 @@ func emitTSInterfaceMemberTypeRefs(ifaceNode *sitter.Node, src []byte, ifaceID, 
 	if body == nil {
 		return
 	}
-	seen := map[string]bool{}
 	for i := 0; i < int(body.NamedChildCount()); i++ {
 		member := body.NamedChild(i)
 		ctx := ""
 		switch member.Type() {
 		case "property_signature":
-			ctx = "field"
+			ctx = graph.RefContextField
 		case "method_signature":
-			ctx = "return_type"
+			ctx = graph.RefContextReturnType
 		default:
 			continue
 		}
 		line := int(member.StartPoint().Row) + 1
-		// Only the member's OWN type_annotation (property type / return type) —
-		// parameter types live inside formal_parameters, a separate child.
-		for j := 0; j < int(member.NamedChildCount()); j++ {
-			ta := member.NamedChild(j)
-			if ta.Type() != "type_annotation" {
-				continue
+		// Per-member dedup: each member that names a type is a distinct usage
+		// site — an interface whose N properties are each typed `AppState`
+		// references AppState N times — so the seen set is scoped to one
+		// member, not the whole interface.
+		seen := map[string]bool{}
+		emit := func(tname, refCtx string) {
+			tname = strings.TrimSpace(tname)
+			if tname == "" || seen[tname] {
+				return
 			}
-			walkNodes(ta, func(n *sitter.Node) {
-				if n.Type() != "type_identifier" {
-					return
-				}
-				tname := n.Content(src)
-				if tname == "" || seen[tname] {
-					return
-				}
-				seen[tname] = true
-				result.Edges = append(result.Edges, &graph.Edge{
-					From: ifaceID, To: "unresolved::" + tname, Kind: graph.EdgeReferences,
-					FilePath: filePath, Line: line, Meta: map[string]any{"ref_context": ctx},
-				})
+			seen[tname] = true
+			result.Edges = append(result.Edges, &graph.Edge{
+				From: ifaceID, To: "unresolved::" + tname, Kind: graph.EdgeReferences,
+				FilePath: filePath, Line: line, Meta: map[string]any{"ref_context": refCtx},
 			})
+		}
+		walkType := func(node *sitter.Node, refCtx string) {
+			walkNodes(node, func(n *sitter.Node) {
+				switch n.Type() {
+				case "type_identifier":
+					emit(n.Content(src), refCtx)
+				case "type_query":
+					// `typeof X` (e.g. `InstanceType<typeof App>["resetScene"]`)
+					// — the queried value is a plain identifier / member access,
+					// not a type_identifier; reference its (last) name so a
+					// component referenced only through a typeof query surfaces.
+					for k := 0; k < int(n.NamedChildCount()); k++ {
+						q := n.NamedChild(k)
+						if q == nil {
+							continue
+						}
+						switch q.Type() {
+						case "identifier":
+							emit(q.Content(src), refCtx)
+						case "member_expression", "nested_identifier":
+							emit(lastDottedSegment(q.Content(src)), refCtx)
+						}
+					}
+				}
+			})
+		}
+		for j := 0; j < int(member.NamedChildCount()); j++ {
+			child := member.NamedChild(j)
+			switch child.Type() {
+			case "type_annotation":
+				// The member's own type — a property type or a method's
+				// return type.
+				walkType(child, ctx)
+			case "formal_parameters":
+				// Method-signature parameter types
+				// (`mutate(el: ExcalidrawElement): void`) — distinct from the
+				// return type the type_annotation above covers.
+				walkType(child, graph.RefContextParameterType)
+			}
 		}
 	}
 }
@@ -990,15 +1027,20 @@ func (e *TypeScriptExtractor) emitTypeAlias(m parser.QueryResult, filePath, file
 		From: fileID, To: id, Kind: graph.EdgeDefines,
 		FilePath: filePath, Line: def.StartLine + 1,
 	})
-	// Alias-body type references: `type Bar = Foo | Baz` references Foo
-	// and Baz; `type Qux = NonDeleted<Foo>` references NonDeleted and
-	// Foo. Emit one EdgeTypedAs per named type on the RHS (the alias's
-	// own name is never a self-edge — it's not in the value text), so
-	// find_usages(Foo) surfaces the alias without an LSP.
+	// Alias-body type references: `type Bar = Foo | Baz` references Foo and
+	// Baz; `type Qux = NonDeleted<Foo>` references NonDeleted and Foo; and a
+	// structural body — `type Scene = { els: Foo[]; cb: (x: Bar) => void }` —
+	// references Foo and Bar deep inside the object / function type. An
+	// AST-subtree walk over every named type catches all of these (the text
+	// decomposer collapses an object-type literal to one non-identifier token
+	// and drops its members), so find_usages(Foo) surfaces the alias without an
+	// LSP. A generic constraint on the alias (`type T<K extends Foo> = …`)
+	// references Foo too.
 	if def.Node != nil {
 		if rhs := def.Node.ChildByFieldName("value"); rhs != nil {
-			emitTSTypeRefEdges(id, strings.TrimSpace(rhs.Content(src)), filePath, def.StartLine+1, "type_annotation", result)
+			emitTSTypeNodeRefs(rhs, id, filePath, "type_annotation", src, result)
 		}
+		emitTSConstraintRefs(def.Node, id, filePath, src, result)
 	}
 }
 

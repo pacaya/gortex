@@ -846,6 +846,19 @@ func (e *PHPExtractor) extractCallSites(
 						edge.Meta = map[string]any{"scope_kind": "parent"}
 					case "self", "static":
 						edge.Meta = map[string]any{"scope_kind": "self"}
+					default:
+						// Laravel facade (`Cache::get()`): the static call
+						// proxies to the backing service the facade returns.
+						// Stamp that class as the receiver type so the resolver
+						// binds the call to its method rather than a name-only
+						// match against an unrelated `get`.
+						if backing, ok := phpFacadeBackingClass(scope.Content(src)); ok {
+							if edge.Meta == nil {
+								edge.Meta = map[string]any{}
+							}
+							edge.Meta["receiver_type"] = backing
+							edge.Meta["facade"] = strings.TrimPrefix(scope.Content(src), "\\")
+						}
 					}
 				}
 			}
