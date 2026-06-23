@@ -335,6 +335,10 @@ func cppReturnType(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	rt := strings.TrimSpace(t.Content(src))
+	// Unwrap a smart-pointer / optional return (`unique_ptr<Widget>` → Widget)
+	// so a chained factory call (`make_widget()->draw()`) infers the pointee as
+	// the receiver, not the wrapper.
+	rt = graph.UnwrapCppSmartPointer(rt)
 	rt = strings.TrimPrefix(rt, "const ")
 	rt = strings.TrimRight(rt, " &*")
 	if i := strings.IndexByte(rt, '<'); i >= 0 {
@@ -437,6 +441,12 @@ func (e *CppExtractor) emitFunction(m parser.QueryResult, filePath, fileID strin
 	meta := map[string]any{}
 	if ns := enclosingCppNamespace(def.Node, src); ns != "" {
 		meta["scope_ns"] = ns
+	}
+	// Free-function return type (smart-pointer-unwrapped) seeds chained-factory
+	// receiver inference for a bare factory call (`make_widget()->draw()`), the
+	// same way addMethodFromNode seeds `Foo::make().x()`.
+	if rt := cppReturnType(def.Node, src); rt != "" {
+		meta["return_type"] = rt
 	}
 	stampCppSignature(meta, def.Node, src)
 	result.Nodes = append(result.Nodes, &graph.Node{
