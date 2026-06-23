@@ -98,6 +98,7 @@ const (
 	SynthRTKQuery          = "rtk-query"
 	SynthVuexDispatch      = "vuex-dispatch"
 	SynthCelery            = "celery-dispatch"
+	SynthSpringEvent       = "spring-event"
 	SynthGinMiddleware     = "gin-middleware"
 	SynthSvelteKitLoad     = "sveltekit-load"
 	SynthSpeculative       = "speculative-dispatch"
@@ -205,6 +206,9 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		// Celery task dispatch: `task.delay()` / `send_task("name")` →
 		// the decorator-gated task function. Typed tier.
 		synthFunc{name: SynthCelery, fn: ResolveCeleryCalls},
+		// Spring application events: publishEvent(new X()) → every
+		// @EventListener / ApplicationListener<X>, type-keyed fan-out.
+		synthFunc{name: SynthSpringEvent, fn: ResolveSpringEventCalls},
 		// Gin middleware-chain dispatcher → registered handlers. Bridges the
 		// `c.handlers[idx](c)` indirection so ServeHTTP→handler reachability
 		// flows; repo-scoped, gated on a dispatcher existing.

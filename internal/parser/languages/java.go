@@ -485,6 +485,8 @@ func (e *JavaExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 	// for the application.yml/.properties config-key graph.
 	mineSpringConfigReads(src, result)
 
+	captureSpringEvents(result, root, filePath, src)
+
 	return result, nil
 }
 
