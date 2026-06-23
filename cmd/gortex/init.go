@@ -61,13 +61,14 @@ var (
 	initSkillsMaxSkills int
 
 	// Non-interactive / reporting knobs
-	initYes         bool
-	initInteractive bool
-	initAgents      string
-	initAgentsSkip  string
-	initJSON        bool
-	initDryRun      bool
-	initForce       bool
+	initYes          bool
+	initInteractive  bool
+	initAgents       string
+	initAgentsSkip   string
+	initJSON         bool
+	initDryRun       bool
+	initDryRunIntake bool
+	initForce        bool
 )
 
 var initCmd = &cobra.Command{
@@ -103,6 +104,7 @@ func init() {
 	initCmd.Flags().StringVar(&initAgentsSkip, "agents-skip", "", "comma-separated list of agents to skip (composable with --agents)")
 	initCmd.Flags().BoolVar(&initJSON, "json", false, "emit a structured JSON report on stdout")
 	initCmd.Flags().BoolVar(&initDryRun, "dry-run", false, "plan writes without modifying disk")
+	initCmd.Flags().BoolVar(&initDryRunIntake, "dry-run-intake", false, "emit a privacy-safe corpus intake manifest and exit before parsing or writing")
 	initCmd.Flags().BoolVar(&initForce, "force", false, "overwrite keys we would otherwise preserve during a merge")
 
 	rootCmd.AddCommand(initCmd)
@@ -155,7 +157,7 @@ func runInit(cmd *cobra.Command, args []string) (err error) {
 	//   * Non-TTY or --yes: fall through to the legacy bufio prompt for
 	//     the single hooks question so CI scripts that piped a yes/no
 	//     line into `gortex init` keep working.
-	wantWizard := initInteractive || (!initYes && !initHooksOnly && progress.IsTTY(cmd.ErrOrStderr()) && isInteractive())
+	wantWizard := initInteractive || (!initDryRunIntake && !initYes && !initHooksOnly && progress.IsTTY(cmd.ErrOrStderr()) && isInteractive())
 	if wantWizard {
 		cancelled, err := runInitWizard(cmd, &cobraInitState{
 			rootPath: root,
@@ -179,6 +181,9 @@ func runInit(cmd *cobra.Command, args []string) (err error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return err
+	}
+	if initDryRunIntake {
+		return emitInitDryRunIntake(cmd, absRoot)
 	}
 
 	// Bind this directory as a single-project entry point so the MCP

@@ -179,11 +179,11 @@ func TestInitCreatesProjectMarker(t *testing.T) {
 // would silently bind the directory.
 func TestInitDryRunSkipsProjectMarker(t *testing.T) {
 	saved := struct {
-		yes, dryRun, json bool
-		agents            string
-	}{initYes, initDryRun, initJSON, initAgents}
+		yes, dryRun, json, dryRunIntake bool
+		agents                          string
+	}{initYes, initDryRun, initJSON, initDryRunIntake, initAgents}
 	t.Cleanup(func() {
-		initYes, initDryRun, initJSON = saved.yes, saved.dryRun, saved.json
+		initYes, initDryRun, initJSON, initDryRunIntake = saved.yes, saved.dryRun, saved.json, saved.dryRunIntake
 		initAgents = saved.agents
 	})
 
@@ -209,5 +209,57 @@ func TestInitDryRunSkipsProjectMarker(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(repo, ".gortex")); err == nil {
 		t.Fatal("dry-run wrote .gortex/ — must be planning-only")
+	}
+}
+
+func TestInitDryRunIntakeJSONDoesNotWrite(t *testing.T) {
+	saved := struct {
+		yes, dryRun, json, dryRunIntake bool
+		agents                          string
+	}{initYes, initDryRun, initJSON, initDryRunIntake, initAgents}
+	t.Cleanup(func() {
+		initYes, initDryRun, initJSON, initDryRunIntake = saved.yes, saved.dryRun, saved.json, saved.dryRunIntake
+		initAgents = saved.agents
+	})
+
+	repo := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte(strings.Repeat("x", 32)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initYes = true
+	initDryRunIntake = true
+	initDryRun = false
+	initJSON = false
+	initAgents = ""
+
+	var stdout, stderr bytes.Buffer
+	initCmd.SetOut(&stdout)
+	initCmd.SetErr(&stderr)
+	t.Cleanup(func() {
+		initCmd.SetOut(nil)
+		initCmd.SetErr(nil)
+	})
+
+	if err := runInit(initCmd, []string{repo}); err != nil {
+		t.Fatalf("runInit: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("non-JSON stdout: %v\n%s", err, stdout.String())
+	}
+	if report["schema_version"] != "gortex.index_intake.v1" {
+		t.Fatalf("unexpected schema: %v", report["schema_version"])
+	}
+	if report["raw_paths_included"] != false || report["raw_file_contents_included"] != false {
+		t.Fatalf("manifest must not include raw paths/content: %v", report)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".gortex")); err == nil {
+		t.Fatal("dry-run-intake wrote .gortex/ — must be inspection-only")
 	}
 }
