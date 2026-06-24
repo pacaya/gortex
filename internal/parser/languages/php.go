@@ -850,17 +850,29 @@ func (e *PHPExtractor) extractCallSites(
 					case "self", "static":
 						edge.Meta = map[string]any{"scope_kind": "self"}
 					default:
+						scopeName := scope.Content(src)
 						// Laravel facade (`Cache::get()`): the static call
 						// proxies to the backing service the facade returns.
 						// Stamp that class as the receiver type so the resolver
 						// binds the call to its method rather than a name-only
 						// match against an unrelated `get`.
-						if backing, ok := phpFacadeBackingClass(scope.Content(src)); ok {
+						if backing, ok := phpFacadeBackingClass(scopeName); ok {
 							if edge.Meta == nil {
 								edge.Meta = map[string]any{}
 							}
 							edge.Meta["receiver_type"] = backing
-							edge.Meta["facade"] = strings.TrimPrefix(scope.Content(src), "\\")
+							edge.Meta["facade"] = strings.TrimPrefix(scopeName, "\\")
+						} else if model, ok := phpEloquentModelCall(scopeName, name); ok {
+							// Eloquent finder (`User::find(1)`): the method lives on
+							// the inherited query builder, not the model, so bind
+							// the call to the model class node instead of an
+							// unresolvable `find`.
+							edge.To = "unresolved::" + model
+							if edge.Meta == nil {
+								edge.Meta = map[string]any{}
+							}
+							edge.Meta["eloquent_model"] = model
+							edge.Meta["eloquent_method"] = name
 						}
 					}
 				}

@@ -266,6 +266,130 @@ func (h *HTTPExtractor) extractRailsResourceRoutes(filePath, text string, lines 
 	return out
 }
 
+var (
+	laravelResourceRE = regexp.MustCompile(`Route::(resource|apiResource)\(\s*['"]([^'"]+)['"]\s*,\s*\\?([\w\\]+)::class\s*\)([^;\n]*)`)
+	laravelActionRE   = regexp.MustCompile(`['"](\w+)['"]`)
+	laravelOnlyRE     = regexp.MustCompile(`->only\(\s*\[([^\]]*)\]`)
+	laravelExceptRE   = regexp.MustCompile(`->except\(\s*\[([^\]]*)\]`)
+)
+
+// laravelResourceRoutes is the canonical RESTful 7-route expansion Laravel
+// generates for `Route::resource`. `apiResource` drops create + edit.
+var laravelResourceRoutes = []railsRESTRoute{
+	{"index", "GET", "", false},
+	{"create", "GET", "/create", false},
+	{"store", "POST", "", false},
+	{"show", "GET", "", true},
+	{"edit", "GET", "/edit", true},
+	{"update", "PUT", "", true},
+	{"destroy", "DELETE", "", true},
+}
+
+// laravelApiResourceSkip are the actions apiResource omits (no HTML form
+// views).
+var laravelApiResourceSkip = map[string]bool{"create": true, "edit": true}
+
+// extractLaravelResourceRoutes expands `Route::resource('users',
+// UserController::class)` / `apiResource` into the canonical RESTful routes,
+// binding each action to its controller method (receiver-aware) or stamping
+// the action + controller for the module-wide cross-file pass. `->only`/
+// `->except` filter the action set.
+func (h *HTTPExtractor) extractLaravelResourceRoutes(filePath, text string, lines []string, fileNodes []*graph.Node, lang string, tree *parser.ParseTree) []Contract {
+	var out []Contract
+	for _, m := range laravelResourceRE.FindAllStringSubmatchIndex(text, -1) {
+		kind := text[m[2]:m[3]]
+		name := text[m[4]:m[5]]
+		controller := laravelSimpleClass(text[m[6]:m[7]])
+		rest := ""
+		if m[8] >= 0 {
+			rest = text[m[8]:m[9]]
+		}
+		lineNum := lineAtOffset(lines, m[0])
+		isAPI := kind == "apiResource"
+		allowed := laravelActionFilter(rest)
+		base := "/" + name
+
+		for _, r := range laravelResourceRoutes {
+			if isAPI && laravelApiResourceSkip[r.action] {
+				continue
+			}
+			if allowed != nil && !allowed[r.action] {
+				continue
+			}
+			path := base
+			if r.member {
+				path += "/{id}"
+			}
+			path += r.suffix
+
+			normPath, origNames := NormalizeHTTPPathWithParams(path)
+			c := Contract{
+				ID:         fmt.Sprintf("http::%s::%s", r.method, normPath),
+				Type:       ContractHTTP,
+				Role:       RoleProvider,
+				FilePath:   filePath,
+				Line:       lineNum,
+				Confidence: 0.85,
+				Meta: map[string]any{
+					"method":           r.method,
+					"path":             normPath,
+					"framework":        "laravel",
+					"laravel_resource": name,
+				},
+			}
+			if len(origNames) > 0 {
+				c.Meta["path_param_names"] = origNames
+			}
+			if id := findMethodByNameAndReceiver(fileNodes, r.action, controller); id != "" {
+				c.SymbolID = id
+			} else {
+				c.Meta["handler_ident"] = r.action
+				c.Meta["handler_class"] = controller
+			}
+			EnrichHTTPContractWithTree(&c, lines, fileNodes, lang, tree)
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// laravelActionFilter reads a chained `->only([...])` / `->except([...])`
+// clause (Laravel uses quoted action names) and returns the allowed set, or
+// nil when every action is allowed.
+func laravelActionFilter(rest string) map[string]bool {
+	if mm := laravelOnlyRE.FindStringSubmatch(rest); mm != nil {
+		allowed := map[string]bool{}
+		for _, s := range laravelActionRE.FindAllStringSubmatch(mm[1], -1) {
+			allowed[s[1]] = true
+		}
+		return allowed
+	}
+	if mm := laravelExceptRE.FindStringSubmatch(rest); mm != nil {
+		excluded := map[string]bool{}
+		for _, s := range laravelActionRE.FindAllStringSubmatch(mm[1], -1) {
+			excluded[s[1]] = true
+		}
+		allowed := map[string]bool{}
+		for _, r := range laravelResourceRoutes {
+			if !excluded[r.action] {
+				allowed[r.action] = true
+			}
+		}
+		return allowed
+	}
+	return nil
+}
+
+// laravelSimpleClass strips a leading `\` and namespace from a PHP FQCN,
+// returning the bare class name.
+func laravelSimpleClass(fqcn string) string {
+	fqcn = strings.TrimPrefix(fqcn, "\\")
+	if i := strings.LastIndex(fqcn, "\\"); i >= 0 {
+		return fqcn[i+1:]
+	}
+	return fqcn
+}
+
 // railsActionFilter reads an only:/except: clause and returns the set of
 // allowed actions, or nil when every action is allowed.
 func railsActionFilter(rest string) map[string]bool {

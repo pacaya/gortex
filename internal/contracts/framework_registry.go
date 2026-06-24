@@ -204,6 +204,15 @@ func init() {
 		},
 	})
 	RegisterFrameworkRoutePass(&routePass{
+		name: "laravel-resources", langs: []string{"php"},
+		detect: func(_ string, src []byte) bool {
+			return bytes.Contains(src, []byte("Route::resource")) || bytes.Contains(src, []byte("Route::apiResource"))
+		},
+		run: func(h *HTTPExtractor, c *RouteExtractCtx) []Contract {
+			return h.extractLaravelResourceRoutes(c.FilePath, c.Text, c.Lines, c.FileNodes, c.Lang, c.Tree)
+		},
+	})
+	RegisterFrameworkRoutePass(&routePass{
 		name: "express-objects", langs: []string{"typescript", "javascript"},
 		detect: func(_ string, src []byte) bool { return bytes.Contains(src, []byte(".route(")) },
 		run: func(h *HTTPExtractor, c *RouteExtractCtx) []Contract {
