@@ -520,6 +520,58 @@ func routes(_ app: Application) throws {
 	}
 }
 
+// TestJoinRouterPrefixes_ActixCrossFileScope joins a web::scope("/api")
+// .configure(api_routes) mount in main.rs onto a resource the api_routes
+// config function registers in a sibling file.
+func TestJoinRouterPrefixes_ActixCrossFileScope(t *testing.T) {
+	files := srcMap{
+		"main.rs": `
+fn app() {
+    App::new().service(web::scope("/api").configure(api_routes));
+}
+`,
+		"api.rs": `
+fn api_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/users").route(web::get().to(list)));
+}
+async fn list() {}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected actix cross-file-scope-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}
+
+// TestJoinRouterPrefixes_ActixCrossFileScopeService joins a web::scope mounted
+// via .service(<path::fn>), confirming the path-qualified config reference is
+// keyed on its final segment.
+func TestJoinRouterPrefixes_ActixCrossFileScopeService(t *testing.T) {
+	files := srcMap{
+		"main.rs": `
+fn app() {
+    App::new().service(web::scope("/v2").service(users::routes));
+}
+`,
+		"users.rs": `
+fn routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/me").route(web::get().to(me)));
+}
+async fn me() {}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/v2/me"] {
+		t.Errorf("expected actix cross-file-scope-joined http::GET::/v2/me; got %v", keysOfBool(ids))
+	}
+}
+
 func TestJoinRouterPrefixes_Axum(t *testing.T) {
 	files := srcMap{
 		"main.rs": `
