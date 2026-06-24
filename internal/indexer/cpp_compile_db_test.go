@@ -76,6 +76,37 @@ func TestLoadCompileCommands_None(t *testing.T) {
 	assert.Empty(t, loadCompileCommands(root), "no compile_commands.json yields empty map")
 }
 
+// TestHeuristicIncludeDirs pins the no-compile-DB fallback: conventional roots
+// in priority order, followed by any other top-level dir directly containing a
+// C/C++ header; dirs without headers and dotfile dirs are skipped.
+func TestHeuristicIncludeDirs(t *testing.T) {
+	root := t.TempDir()
+	mk := func(parts ...string) {
+		require.NoError(t, os.MkdirAll(filepath.Join(append([]string{root}, parts...)...), 0o755))
+	}
+	wr := func(rel, body string) {
+		require.NoError(t, os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644))
+	}
+
+	mk("include", "proj") // conventional; header is nested, not direct
+	wr("include/proj/api.h", "// h")
+	mk("src") // conventional, exists
+	mk("thirdparty")
+	wr("thirdparty/lib.hpp", "// h") // non-conventional dir with a direct header
+	mk("docs")
+	wr("docs/readme.md", "x") // no header → ignored
+	mk(".git")
+	wr(".git/x.h", "x") // dotfile dir → skipped
+
+	got := heuristicIncludeDirs(root)
+	assert.Equal(t, []string{"include", "src", "thirdparty"}, got)
+}
+
+func TestHeuristicIncludeDirs_Empty(t *testing.T) {
+	assert.Nil(t, heuristicIncludeDirs(""))
+	assert.Empty(t, heuristicIncludeDirs(t.TempDir()), "no conventional roots and no header dirs")
+}
+
 // TestLoadCompileCommands_CacheAndClear pins the cache-and-invalidate contract:
 // a second load returns the cached include dirs even after the file changes on
 // disk, and clearing the cache (as an incremental reindex does) re-reads it —

@@ -124,6 +124,64 @@ func extractIncludeDirs(cc compileCommand, repoRoot string) []string {
 	return dirs
 }
 
+// heuristicIncludeDirs returns the conventional C/C++ include-root search path
+// for a repo that has no compile_commands.json: the conventional roots
+// (include / src / inc / api / lib) that actually exist, in priority order,
+// followed by any other top-level directory that directly contains a C/C++
+// header. Paths are repo-relative slash paths. Feeds the resolver's ordered
+// include probe so collisions still break deterministically without a DB.
+func heuristicIncludeDirs(repoRoot string) []string {
+	if repoRoot == "" {
+		return nil
+	}
+	var dirs []string
+	seen := map[string]bool{}
+	add := func(d string) {
+		if d != "" && !seen[d] {
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	for _, name := range []string{"include", "src", "inc", "api", "lib"} {
+		if fi, err := os.Stat(filepath.Join(repoRoot, name)); err == nil && fi.IsDir() {
+			add(name)
+		}
+	}
+	if entries, err := os.ReadDir(repoRoot); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			if dirHasHeader(filepath.Join(repoRoot, name)) {
+				add(name)
+			}
+		}
+	}
+	return dirs
+}
+
+// dirHasHeader reports whether dir directly contains a C/C++ header file.
+func dirHasHeader(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch filepath.Ext(e.Name()) {
+		case ".h", ".hpp", ".hh", ".hxx", ".h++":
+			return true
+		}
+	}
+	return false
+}
+
 // repoRelPath resolves p (relative to dir, or repoRoot when dir is empty)
 // against the repo root, returning a clean repo-relative slash path — or ""
 // when p resolves outside the repo (a toolchain / system path) or to the root

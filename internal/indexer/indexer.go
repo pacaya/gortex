@@ -969,28 +969,34 @@ func (idx *Indexer) populateCppIncludeDirs(forceReload bool) {
 	if forceReload {
 		clearCppIncludeDirCache(idx.rootPath)
 	}
-	tus := loadCompileCommands(idx.rootPath)
-	if len(tus) == 0 {
-		idx.resolver.SetCppIncludeDirs(nil)
-		return
-	}
 	prefix := ""
 	if idx.repoPrefix != "" {
 		prefix = idx.repoPrefix + "/"
 	}
+	prefixDirs := func(dirs []string) []string {
+		if prefix == "" || len(dirs) == 0 {
+			return dirs
+		}
+		pd := make([]string, len(dirs))
+		for i, d := range dirs {
+			pd[i] = prefix + d
+		}
+		return pd
+	}
+	tus := loadCompileCommands(idx.rootPath)
+	if len(tus) == 0 {
+		// No compile DB: fall back to the conventional include-root heuristic
+		// so the ordered probe still runs for repos without a compile DB.
+		idx.resolver.SetCppIncludeDirs(nil)
+		idx.resolver.SetCppFallbackIncludeDirs(prefixDirs(heuristicIncludeDirs(idx.rootPath)))
+		return
+	}
 	perFile := make(map[string][]string, len(tus))
 	for f, tu := range tus {
-		dirs := tu.includeDirs
-		if prefix != "" {
-			pd := make([]string, len(dirs))
-			for i, d := range dirs {
-				pd[i] = prefix + d
-			}
-			dirs = pd
-		}
-		perFile[prefix+f] = dirs
+		perFile[prefix+f] = prefixDirs(tu.includeDirs)
 	}
 	idx.resolver.SetCppIncludeDirs(perFile)
+	idx.resolver.SetCppFallbackIncludeDirs(nil)
 }
 
 // ResolveFilePath maps a graph file path (repo-relative in single-repo mode)

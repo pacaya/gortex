@@ -80,6 +80,12 @@ func (r *Resolver) resolveRelativeImports() {
 			}
 		}
 		sort.Strings(cppDirsUnion)
+	} else {
+		// No compile_commands.json: fall back to the heuristic include roots
+		// (conventional dirs + top-level header dirs, in their intrinsic
+		// priority order) so the ordered probe still runs and breaks
+		// collisions deterministically even without a compile DB.
+		cppDirsUnion = r.cppFallbackDirs
 	}
 	// resolveCInclude resolves a C-family include to an indexed file, returning
 	// the resolved file ID and the `-I` dir it was found under ("" for the
@@ -209,8 +215,14 @@ func (r *Resolver) resolveRelativeImports() {
 						if e.Meta == nil {
 							e.Meta = map[string]any{}
 						}
+						// A compile-DB dir is authoritative; the heuristic
+						// fallback set is consulted only when no DB exists.
+						via := "compile_db"
+						if len(r.cppIncludeDirs) == 0 {
+							via = "heuristic"
+						}
 						e.Meta["include_dir"] = incDir
-						e.Meta["resolved_via"] = "compile_db"
+						e.Meta["resolved_via"] = via
 					}
 				}
 			}

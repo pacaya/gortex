@@ -50,6 +50,12 @@ type Resolver struct {
 	// (deterministic, collision-breaking) before the suffix-unique fallback.
 	// Populated by the indexer via SetCppIncludeDirs before ResolveAll.
 	cppIncludeDirs map[string][]string
+	// cppFallbackDirs is the heuristic include-root search path used when a
+	// repo has no compile_commands.json: conventional dirs (include/src/inc/
+	// api/lib) plus top-level header dirs, in priority order. The ordered
+	// probe runs against it so collisions break deterministically even with
+	// no compile DB. Populated by the indexer via SetCppFallbackIncludeDirs.
+	cppFallbackDirs []string
 	// providesForIdx maps `provides_for: AbstractName` (from @Module
 	// useClass entries) → the set of concrete class names bound to it.
 	// Populated once at the start of ResolveAll; consulted in O(1) by
@@ -2027,6 +2033,15 @@ func (r *Resolver) clearProvidesForIndex() { r.providesForIdx = nil }
 // resolver on its suffix-unique heuristic.
 func (r *Resolver) SetCppIncludeDirs(perFile map[string][]string) {
 	r.cppIncludeDirs = perFile
+}
+
+// SetCppFallbackIncludeDirs installs the heuristic include-root search path
+// used for repos with no compile_commands.json (conventional dirs plus
+// top-level header dirs, in priority order). Consulted by the ordered probe
+// only when no per-file / compile-DB dirs exist. The indexer calls this before
+// ResolveAll; a nil/empty slice leaves the resolver on its suffix-unique net.
+func (r *Resolver) SetCppFallbackIncludeDirs(dirs []string) {
+	r.cppFallbackDirs = dirs
 }
 
 // buildReachabilityIndex walks all EdgeImports edges once and records,

@@ -343,3 +343,46 @@ func TestResolveRelativeImports_CIncludeSystemNonStdlibResolves(t *testing.T) {
 	assert.Equal(t, "include/proj/api.h", e.To, "non-stdlib angle include resolves via -I dir")
 	assert.Equal(t, "include", e.Meta["include_dir"])
 }
+
+// TestResolveRelativeImports_CIncludeViaHeuristicDir pins the no-compile-DB
+// fallback: an angle include resolves through the heuristic include root and is
+// stamped with its provenance.
+func TestResolveRelativeImports_CIncludeViaHeuristicDir(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "include/proj/api.h", "c")
+	e := &graph.Edge{
+		From: "src/main.c", To: "unresolved::import::proj/api.h", Kind: graph.EdgeImports,
+		Meta: map[string]any{"include_kind": "system"},
+	}
+	g.AddEdge(e)
+
+	r := New(g)
+	// No compile DB; the heuristic include/ root drives the ordered probe.
+	r.SetCppFallbackIncludeDirs([]string{"include"})
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "include/proj/api.h", e.To, "angle include resolves via the heuristic include root")
+	assert.Equal(t, "include", e.Meta["include_dir"])
+	assert.Equal(t, "heuristic", e.Meta["resolved_via"])
+}
+
+// TestResolveRelativeImports_CIncludeAngleSuffixFallback pins that with no
+// compile DB and no heuristic dirs, a single-match multi-segment angle include
+// still resolves through the suffix-unique net, unstamped.
+func TestResolveRelativeImports_CIncludeAngleSuffixFallback(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "weird/place/widget.h", "c") // non-conventional dir, single match
+	e := &graph.Edge{
+		From: "src/main.c", To: "unresolved::import::place/widget.h", Kind: graph.EdgeImports,
+		Meta: map[string]any{"include_kind": "system"},
+	}
+	g.AddEdge(e)
+
+	r := New(g)
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "weird/place/widget.h", e.To, "single-match header resolves via suffix-unique net")
+	assert.Nil(t, e.Meta["resolved_via"], "suffix fallback is not stamped")
+}
