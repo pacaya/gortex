@@ -30,13 +30,16 @@ var cppIncludeDirCache = newCppIncludeDirCache()
 // build*/compile_commands.json), reconstructing each TU's ordered include search
 // path (the `-I` / `-isystem` / `-iquote` dirs) normalized to repo-relative slash
 // paths, dropping directories outside the repo (toolchain / system). The result
-// is cached per repo root; clearCppIncludeDirCache invalidates it on reindex /
-// compile_commands.json change.
+// is cached per repo root, keyed on the newest compile_commands.json modtime: a
+// later edit to compile_commands.json (even with no other source change) is
+// re-read on the next load. clearCppIncludeDirCache also invalidates it on a full
+// reindex.
 func loadCompileCommands(repoRoot string) map[string]cppTU {
 	if repoRoot == "" {
 		return nil
 	}
-	if c, ok := cppIncludeDirCache.get(repoRoot); ok {
+	mtime := compileDBMtime(repoRoot)
+	if c, ok := cppIncludeDirCache.get(repoRoot, mtime); ok {
 		return c
 	}
 
@@ -59,8 +62,26 @@ func loadCompileCommands(repoRoot string) map[string]cppTU {
 		}
 	}
 
-	cppIncludeDirCache.put(repoRoot, out)
+	cppIncludeDirCache.put(repoRoot, out, mtime)
 	return out
+}
+
+// compileDBMtime returns the newest modtime (unix nanoseconds) across the
+// compile_commands.json files that loadCompileCommands reads for repoRoot, or 0
+// when none exist. It is the cache freshness key: when this exceeds the cached
+// entry's recorded mtime, the entry is reloaded.
+func compileDBMtime(repoRoot string) int64 {
+	var newest int64
+	for _, dbPath := range compileDBLocations(repoRoot) {
+		fi, err := os.Stat(dbPath)
+		if err != nil {
+			continue
+		}
+		if m := fi.ModTime().UnixNano(); m > newest {
+			newest = m
+		}
+	}
+	return newest
 }
 
 // clearCppIncludeDirCache drops the cached include-dir set for a repo root so
