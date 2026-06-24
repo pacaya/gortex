@@ -99,3 +99,62 @@ func TestCallbackGateIdempotent(t *testing.T) {
 	assert.Equal(t, 1, first)
 	assert.Equal(t, 1, second, "the bound edge re-derives identically; AddEdge dedupes")
 }
+
+// ungatedFnValueCandidateEdge is a qualified-path candidate the gate may resolve
+// cross-module.
+func ungatedFnValueCandidateEdge(from, name, file string, line int) *graph.Edge {
+	e := fnValueCandidateEdge(from, name, file, line)
+	e.Meta["fn_value_ungated"] = true
+	return e
+}
+
+// TestCallbackGateSameFileTier pins the high-confidence tier for a same-file
+// binding.
+func TestCallbackGateSameFileTier(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "a.go::handler", Kind: graph.KindFunction, Name: "handler", FilePath: "a.go", Language: "go"})
+	g.AddNode(&graph.Node{ID: "a.go::register", Kind: graph.KindFunction, Name: "register", FilePath: "a.go", Language: "go"})
+	g.AddEdge(fnValueCandidateEdge("a.go::register", "handler", "a.go", 4))
+
+	assert.Equal(t, 1, ResolveFnValueCallbacks(g))
+	e := boundCallbackEdge(g, "a.go::register", "a.go::handler")
+	require.NotNil(t, e)
+	assert.Equal(t, 0.6, e.Confidence, "same-file binding rides the high-confidence tier")
+}
+
+// TestCallbackGateCrossModuleUngated pins that a qualified-path (ungated)
+// candidate binds to a uniquely-named function cross-module at a lower tier.
+func TestCallbackGateCrossModuleUngated(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "lib.rs::process", Kind: graph.KindFunction, Name: "process", FilePath: "lib.rs", Language: "rust"})
+	g.AddNode(&graph.Node{ID: "main.rs::run", Kind: graph.KindFunction, Name: "run", FilePath: "main.rs", Language: "rust"})
+	g.AddEdge(ungatedFnValueCandidateEdge("main.rs::run", "process", "main.rs", 3))
+
+	assert.Equal(t, 1, ResolveFnValueCallbacks(g))
+	e := boundCallbackEdge(g, "main.rs::run", "lib.rs::process")
+	require.NotNil(t, e, "cross-module ungated candidate binds")
+	assert.Equal(t, 0.45, e.Confidence, "cross-module binding rides the lower tier")
+}
+
+// TestCallbackGateCrossModuleAmbiguousDropped pins that an ungated candidate
+// matching more than one function anywhere is refused.
+func TestCallbackGateCrossModuleAmbiguousDropped(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "a.rs::process", Kind: graph.KindFunction, Name: "process", FilePath: "a.rs", Language: "rust"})
+	g.AddNode(&graph.Node{ID: "b.rs::process", Kind: graph.KindFunction, Name: "process", FilePath: "b.rs", Language: "rust"})
+	g.AddNode(&graph.Node{ID: "main.rs::run", Kind: graph.KindFunction, Name: "run", FilePath: "main.rs", Language: "rust"})
+	g.AddEdge(ungatedFnValueCandidateEdge("main.rs::run", "process", "main.rs", 3))
+
+	assert.Equal(t, 0, ResolveFnValueCallbacks(g), "ambiguous cross-module candidate dropped")
+}
+
+// TestCallbackGateNonUngatedStaysSameFile pins that a non-ungated candidate is
+// never resolved cross-module even when a unique match exists elsewhere.
+func TestCallbackGateNonUngatedStaysSameFile(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "lib.go::process", Kind: graph.KindFunction, Name: "process", FilePath: "lib.go", Language: "go"})
+	g.AddNode(&graph.Node{ID: "main.go::run", Kind: graph.KindFunction, Name: "run", FilePath: "main.go", Language: "go"})
+	g.AddEdge(fnValueCandidateEdge("main.go::run", "process", "main.go", 3)) // not ungated
+
+	assert.Equal(t, 0, ResolveFnValueCallbacks(g), "non-ungated candidate never binds cross-module")
+}

@@ -59,7 +59,18 @@ func ResolveFnValueCallbacks(g graph.Store) int {
 		if name == "" || isFnValueNonTarget(name) {
 			continue
 		}
+		// Same-file scope is the high-confidence default. A qualified-path
+		// candidate the capture marked `fn_value_ungated` (e.g. a Rust `m::f`
+		// path) may bind cross-module — to a uniquely-named function in the
+		// repo — at a lower confidence so min_tier filtering segregates it.
 		target := resolveFnValueName(g, e.FilePath, name)
+		conf := 0.6
+		if target == "" {
+			if ungated, _ := e.Meta["fn_value_ungated"].(bool); ungated {
+				target = resolveFnValueCrossModule(g, name)
+				conf = 0.45
+			}
+		}
 		if target == "" || target == e.From {
 			// Unbound (a local / param / undefined name) or a self-reference
 			// (a function's own declaration token): reject rather than
@@ -72,8 +83,8 @@ func ResolveFnValueCallbacks(g graph.Store) int {
 			Kind:            graph.EdgeReferences,
 			FilePath:        e.FilePath,
 			Line:            e.Line,
-			Confidence:      0.6,
-			ConfidenceLabel: graph.ConfidenceLabelFor(graph.EdgeReferences, 0.6),
+			Confidence:      conf,
+			ConfidenceLabel: graph.ConfidenceLabelFor(graph.EdgeReferences, conf),
 			Origin:          graph.OriginASTInferred,
 			Meta: map[string]any{
 				"via":             fnValueRegistrationVia,
@@ -109,6 +120,27 @@ func resolveFnValueName(g graph.Store, filePath, name string) string {
 		}
 	}
 	return ""
+}
+
+// resolveFnValueCrossModule binds a qualified-path function value to a
+// uniquely-named function/method anywhere in the repo, refusing on ambiguity
+// (more than one definition of the name). The same-file path is preferred by
+// the caller; this is the cross-module fallback for an explicit path value.
+func resolveFnValueCrossModule(g graph.Store, name string) string {
+	match := ""
+	for _, n := range g.FindNodesByName(name) {
+		if n == nil {
+			continue
+		}
+		if n.Kind != graph.KindFunction && n.Kind != graph.KindMethod {
+			continue
+		}
+		if match != "" && match != n.ID {
+			return "" // ambiguous across modules — drop
+		}
+		match = n.ID
+	}
+	return match
 }
 
 // isFnValueNonTarget reports whether name is a literal/keyword/builtin that
