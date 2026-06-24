@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/zzet/gortex/internal/excludes"
 	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/parser"
 	sitter "github.com/zzet/gortex/internal/parser/tsitter"
@@ -294,25 +295,14 @@ func (e *DartExtractor) extractMethods(
 	})
 }
 
-// dartGeneratedSuffixes are the conventional code-generator output suffixes in
-// the Dart ecosystem (build_runner, freezed, protobuf, json_serializable,
-// auto_route, injectable). Files ending in one are machine-emitted boilerplate.
-var dartGeneratedSuffixes = []string{
-	".g.dart", ".freezed.dart", ".pb.dart", ".pbenum.dart",
-	".pbjson.dart", ".pbserver.dart", ".config.dart", ".gr.dart",
-}
-
-// dartIsGenerated reports whether a Dart file path is a code-generator output.
+// dartIsGenerated reports whether a Dart file path is a code-generator output
+// (build_runner, freezed, protobuf, json_serializable, auto_route, injectable).
 // Such files mirror hand-written declarations and only add duplicate,
 // machine-managed symbols, so they are indexed as a bare (generated-marked)
-// file node without their symbols.
+// file node without their symbols. Delegates to the shared excludes set so the
+// Dart suffixes stay in one source of truth.
 func dartIsGenerated(filePath string) bool {
-	for _, suf := range dartGeneratedSuffixes {
-		if strings.HasSuffix(filePath, suf) {
-			return true
-		}
-	}
-	return false
+	return excludes.IsGenerated(filePath)
 }
 
 // dartMethodReturnType returns a Dart method's declared return type — the type
