@@ -99,7 +99,8 @@ func ResolveStoreFactoryCalls(g graph.Store) int {
 }
 
 // pickStoreAction disambiguates action candidates for a call: prefer the
-// candidate in the caller's file, then a unique binding match, then a
+// candidate defined in the same file as the `useXStore` getter the call's
+// store binding resolves to, then the candidate in the caller's file, then a
 // singleton. Returns nil when the choice is ambiguous (never guesses).
 func pickStoreAction(g graph.Store, call *graph.Edge, cands []*graph.Node) *graph.Node {
 	switch len(cands) {
@@ -108,9 +109,29 @@ func pickStoreAction(g graph.Store, call *graph.Edge, cands []*graph.Node) *grap
 	case 1:
 		return cands[0]
 	}
-	// Multiple stores share this binding name across files. Prefer the one in
-	// the caller's file; if the caller's file imports exactly one candidate's
-	// file, prefer that; otherwise it's ambiguous.
+	// Multiple stores reuse this binding name across files. The strongest
+	// signal is the store DEFINITION file: the call's `store_binding` names a
+	// `useXStore` getter, which lives in exactly one file. Prefer the candidate
+	// action defined there — it is the store the binding actually refers to,
+	// regardless of where the call sits.
+	binding, _ := call.Meta["store_binding"].(string)
+	if getterFile := storeGetterFile(g, binding); getterFile != "" {
+		var inGetterFile *graph.Node
+		for _, c := range cands {
+			if c.FilePath == getterFile {
+				if inGetterFile != nil {
+					inGetterFile = nil // two candidates in the getter's file: no win
+					break
+				}
+				inGetterFile = c
+			}
+		}
+		if inGetterFile != nil {
+			return inGetterFile
+		}
+	}
+	// No definition-file signal. Fall back to the caller's file: prefer the
+	// candidate co-located with the call; otherwise it's ambiguous.
 	callerFile := ""
 	if cn := g.GetNode(call.From); cn != nil {
 		callerFile = cn.FilePath
@@ -125,4 +146,34 @@ func pickStoreAction(g graph.Store, call *graph.Edge, cands []*graph.Node) *grap
 		}
 	}
 	return sameFile
+}
+
+// storeGetterFile returns the file that defines the `useXStore` getter named by
+// binding — the variable/function/const a `defineStore` / `create` call is
+// assigned to. The getter is the store DEFINITION anchor, so its file pins which
+// store a binding refers to even when the same binding name is reused across
+// files. Returns "" when no getter, or more than one, carries the name (no
+// unambiguous definition site).
+func storeGetterFile(g graph.Store, binding string) string {
+	if g == nil || binding == "" {
+		return ""
+	}
+	file := ""
+	for _, n := range nodesByKindsOrAll(g, graph.KindVariable, graph.KindFunction, graph.KindConstant) {
+		if n == nil || n.Name != binding || n.FilePath == "" {
+			continue
+		}
+		// A getter node anchors a store: it is the assignment target of the
+		// factory call, never itself a store-factory action.
+		if n.Meta != nil {
+			if _, isAction := n.Meta["store_factory"]; isAction {
+				continue
+			}
+		}
+		if file != "" && file != n.FilePath {
+			return "" // binding defined in two files: ambiguous
+		}
+		file = n.FilePath
+	}
+	return file
 }

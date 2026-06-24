@@ -32,6 +32,13 @@ const (
 	// dispatchByteParen is the original disambiguator: an identifier whose next
 	// non-whitespace source byte is '(' or '`' is a callee, not a value.
 	dispatchByteParen fnRefDispatch = iota
+	// astCalleeField additionally rejects a token that is the callee child of a
+	// call node in the parse tree, catching calls the byte heuristic misses
+	// because a non-'(' token sits between the name and its '(' — optional
+	// chaining `f?.()`, non-null `f!()`, generic instantiation `f<T>()`. It only
+	// ever classifies more tokens as calls than dispatchByteParen, never fewer,
+	// so it strictly tightens precision (fewer spurious value candidates).
+	astCalleeField
 )
 
 func (s fnRefSpec) matchesIDNode(t string) bool {
@@ -81,6 +88,36 @@ func fnRefSpecFor(lang string) fnRefSpec {
 			unwrapForms: map[string]string{"exprUnary": "address_of", "unary_expression": "address_of"},
 			dispatch:    dispatchByteParen,
 		}
+	case "javascript", "typescript", "tsx":
+		// `el.addEventListener('x', this.onX)` / `setTimeout(mod.tick)` — a
+		// member value whose property names a same-file fn. AST dispatch rejects
+		// `f?.()` / `f!()` / `f<T>()` calls the byte heuristic would miss.
+		return fnRefSpec{
+			idNodeTypes: []string{"identifier", "member_expression"},
+			dispatch:    astCalleeField,
+		}
+	case "python":
+		// `signal.connect(self.on_change)` — an attribute value whose trailing
+		// attribute names the fn.
+		return fnRefSpec{
+			idNodeTypes: []string{"identifier", "attribute"},
+			dispatch:    astCalleeField,
+		}
+	case "csharp":
+		// `list.ForEach(this.Handle)` — a member-access value.
+		return fnRefSpec{
+			idNodeTypes: []string{"identifier", "member_access_expression"},
+			dispatch:    astCalleeField,
+		}
+	case "java", "c", "cpp", "dart":
+		// Bare-identifier value idiom; AST dispatch tightens the call check
+		// (Java `method_invocation`, C/Dart `call_expression`).
+		return fnRefSpec{idNodeTypes: []string{"identifier"}, dispatch: astCalleeField}
+	case "php", "ruby":
+		// First-class refs are dominated by the special forms (PHP string
+		// callables, Ruby `method(:sym)` / `&:sym`); the bare path stays on the
+		// byte heuristic.
+		return fnRefSpec{idNodeTypes: []string{"identifier"}, dispatch: dispatchByteParen}
 	}
 	return defaultFnRefSpec
 }
@@ -99,8 +136,67 @@ func fnRefNodeName(n *sitter.Node, src []byte) string {
 		if field := n.ChildByFieldName("field"); field != nil {
 			return field.Content(src)
 		}
+	case "member_expression":
+		if prop := n.ChildByFieldName("property"); prop != nil {
+			return prop.Content(src)
+		}
+	case "attribute":
+		if attr := n.ChildByFieldName("attribute"); attr != nil {
+			return attr.Content(src)
+		}
+	case "member_access_expression":
+		if name := n.ChildByFieldName("name"); name != nil {
+			return name.Content(src)
+		}
 	}
 	return n.Content(src)
+}
+
+// qualifiedFnRefNodeTypes are the value-position node types that name a function
+// through a path / member access rather than a bare leaf — the forms a spec may
+// resolve cross-module (ungated) when the trailing name is not file-local.
+var qualifiedFnRefNodeTypes = map[string]bool{
+	"scoped_identifier":        true,
+	"selector_expression":      true,
+	"member_expression":        true,
+	"attribute":                true,
+	"member_access_expression": true,
+}
+
+func isQualifiedFnRefNode(t string) bool { return qualifiedFnRefNodeTypes[t] }
+
+// nodeIsCallCallee reports whether n sits in callee position of a call node —
+// the `function` / `name` child of a call/invocation — across the grammars the
+// fn-value walk targets. Used by astCalleeField dispatch to reject calls whose
+// `(` is separated from the callee by `?.`, `!`, or `<T>`.
+func nodeIsCallCallee(n *sitter.Node) bool {
+	p := n.Parent()
+	if p == nil {
+		return false
+	}
+	var callee *sitter.Node
+	switch p.Type() {
+	case "call_expression", "call", "invocation_expression":
+		callee = p.ChildByFieldName("function")
+	case "method_invocation":
+		callee = p.ChildByFieldName("name")
+	}
+	if callee == nil {
+		return false
+	}
+	return callee.StartByte() == n.StartByte() && callee.EndByte() == n.EndByte()
+}
+
+// fnRefStartsCall reports whether the value-position node n is actually the
+// callee of a call (so not a function-as-value). It always applies the original
+// byte heuristic and, under astCalleeField dispatch, additionally consults the
+// parse tree so modern call syntax (`f?.()`, `f!()`, `f<T>()`) is not mistaken
+// for a value reference.
+func fnRefStartsCall(spec fnRefSpec, n *sitter.Node, src []byte) bool {
+	if spec.dispatch == astCalleeField && nodeIsCallCallee(n) {
+		return true
+	}
+	return byteAfterIdentStartsCall(src, int(n.EndByte()))
 }
 
 // fnRefForm reports the wrapper form (address_of / eta) a captured node sits in

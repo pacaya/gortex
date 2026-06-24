@@ -102,10 +102,13 @@ func ResolveGoFrameRoutes(g graph.Store) int {
 }
 
 // goframePickMethod selects the handler for a route from the methods of a
-// request type: a bound controller (addonRoot) wins, then a method in the
+// request type: candidates are first narrowed to the route's request-struct
+// package (so a same-named request type in another package can never claim the
+// route), then a bound controller (addonRoot) wins, then a method in the
 // route's directory, then a unique match.
 func goframePickMethod(g graph.Store, route *graph.Edge, cands []*graph.Node) *graph.Node {
 	cands = sameBoundaryCandidates(g, route.From, cands)
+	cands = goframeSamePackage(route, cands)
 	if len(cands) == 0 {
 		return nil
 	}
@@ -146,6 +149,35 @@ func goframePickMethod(g graph.Store, route *graph.Edge, cands []*graph.Node) *g
 		return cands[0]
 	}
 	return nil
+}
+
+// goframeSamePackage narrows candidates to those whose request-struct package
+// matches the route's. A route materialised from `pkg.CreateReq` must bind only
+// to a handler taking `*pkg.CreateReq` — never to a same-named `CreateReq` in
+// another package. The package qualifier is the extractor's `goframe_request_pkg`
+// stamp; when the route carries none (a same-package, bare-name binding the
+// extractor could not qualify), candidates pass through unfiltered so existing
+// single-package resolution is never weakened.
+func goframeSamePackage(route *graph.Edge, cands []*graph.Node) []*graph.Node {
+	routePkg := ""
+	if route.Meta != nil {
+		routePkg, _ = route.Meta["goframe_request_pkg"].(string)
+	}
+	if routePkg == "" {
+		return cands
+	}
+	out := make([]*graph.Node, 0, len(cands))
+	for _, c := range cands {
+		if c == nil || c.Meta == nil {
+			continue
+		}
+		// A candidate with no package qualifier cannot be proven to belong to
+		// the route's package, so it is excluded once the route is qualified.
+		if cp, _ := c.Meta["goframe_request_pkg"].(string); cp == routePkg {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func goframeDir(path string) string {

@@ -9,13 +9,15 @@ import (
 // Vapor (server-side Swift) directory-convention name-resolution. A fallback
 // for the references sourcekit-lsp leaves unresolved: a `*Controller` binds to
 // /Controllers/, a `*Middleware` to /Middleware/. Fluent models are bare
-// PascalCase (`final class User: Model`) and resolve to /Models/ through the
-// shared SwiftUI model fallback, so they are not re-handled here. The
+// PascalCase (`final class User: Model`) and resolve to /Models/; that case is
+// gated on the resolved definition actually living under a /Models/ directory
+// so a built-in or unrelated same-named type is never mis-bound. The
 // `*ViewController` shape is left to the UIKit pass.
 
 var (
 	vaporControllerDirs = []string{"/Controllers/", "/Controller/"}
 	vaporMiddlewareDirs = []string{"/Middleware/", "/Middlewares/"}
+	vaporModelDirs      = []string{"/Models/", "/Model/"}
 )
 
 // ResolveVaporRefs binds residual unresolved Vapor references to their
@@ -35,7 +37,7 @@ func ResolveVaporRefs(g graph.Store) int {
 			if name == "" || strings.ContainsRune(name, '.') {
 				continue
 			}
-			dirs, ok := vaporDirsFor(name)
+			dirs, modelOnly, ok := vaporDirsFor(name)
 			if !ok {
 				continue
 			}
@@ -49,6 +51,15 @@ func ResolveVaporRefs(g graph.Store) int {
 			targetID, conf := ResolveByConvention(g, name, "", dirs, fromFile)
 			if targetID == "" {
 				continue
+			}
+			if modelOnly {
+				// A bare-PascalCase model binds only when its definition
+				// actually lives under a /Models/ directory, so a built-in
+				// or unrelated same-named type is never mis-bound.
+				tn := g.GetNode(targetID)
+				if tn == nil || !swiftUIPathHasDir(tn.FilePath, vaporModelDirs) {
+					continue
+				}
 			}
 			oldTo := e.To
 			e.To = targetID
@@ -66,14 +77,19 @@ func ResolveVaporRefs(g graph.Store) int {
 	return resolved
 }
 
-// vaporDirsFor classifies a Vapor reference name into its convention dirs. A
-// `*ViewController` is excluded — that is the UIKit pass's shape.
-func vaporDirsFor(name string) ([]string, bool) {
+// vaporDirsFor classifies a Vapor reference name into its convention dirs;
+// modelOnly marks the bare-PascalCase Fluent-model fallback, which is
+// additionally gated on the resolved definition living under a /Models/
+// directory. A `*ViewController` is excluded — that is the UIKit pass's shape.
+func vaporDirsFor(name string) (dirs []string, modelOnly bool, ok bool) {
 	switch {
 	case strings.HasSuffix(name, "Controller") && !strings.HasSuffix(name, "ViewController"):
-		return vaporControllerDirs, true
+		return vaporControllerDirs, false, true
 	case strings.HasSuffix(name, "Middleware"):
-		return vaporMiddlewareDirs, true
+		return vaporMiddlewareDirs, false, true
 	}
-	return nil, false
+	if c := name[0]; c >= 'A' && c <= 'Z' {
+		return vaporModelDirs, true, true
+	}
+	return nil, false, false
 }

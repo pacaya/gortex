@@ -50,6 +50,33 @@ func TestResolveVaporRefs_ViewControllerLeftToUIKit(t *testing.T) {
 	require.Equal(t, 0, ResolveVaporRefs(g))
 }
 
+func TestResolveVaporRefs_FluentModelBindsToModelsDir(t *testing.T) {
+	g := graph.New()
+	const route = "Sources/App/routes.swift::routes"
+	g.AddNode(&graph.Node{ID: route, Kind: graph.KindFunction, Name: "routes", FilePath: "Sources/App/routes.swift", Language: "swift"})
+	convNode(g, "Sources/App/Models/User.swift::User", "Sources/App/Models/User.swift", "User")
+
+	g.AddEdge(&graph.Edge{From: route, To: "unresolved::User", Kind: graph.EdgeReferences, FilePath: "Sources/App/routes.swift"})
+
+	require.Equal(t, 1, ResolveVaporRefs(g))
+	assert.NotNil(t, synthVaporEdge(g, graph.EdgeReferences, route, "Sources/App/Models/User.swift::User"),
+		"bare-PascalCase model binds to its /Models/ definition")
+}
+
+func TestResolveVaporRefs_ModelOutsideModelsDirLeftAlone(t *testing.T) {
+	// A bare-PascalCase ref whose sole candidate is not under /Models/ must
+	// not be bound — the model gate guards against mis-binding a built-in or
+	// unrelated same-named type.
+	g := graph.New()
+	const route = "Sources/App/routes.swift::routes"
+	g.AddNode(&graph.Node{ID: route, Kind: graph.KindFunction, Name: "routes", FilePath: "Sources/App/routes.swift", Language: "swift"})
+	convNode(g, "Sources/App/Helpers/Token.swift::Token", "Sources/App/Helpers/Token.swift", "Token")
+
+	g.AddEdge(&graph.Edge{From: route, To: "unresolved::Token", Kind: graph.EdgeReferences, FilePath: "Sources/App/routes.swift"})
+
+	require.Equal(t, 0, ResolveVaporRefs(g))
+}
+
 func TestResolveVaporRefs_AmbiguousLeftAlone(t *testing.T) {
 	g := graph.New()
 	const route = "Sources/App/r.swift::r"

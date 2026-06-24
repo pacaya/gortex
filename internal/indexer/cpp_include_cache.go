@@ -26,6 +26,11 @@ type cppIncludeCacheEntry struct {
 	key   string
 	tus   map[string]cppTU
 	bytes int64
+	// mtime is the newest modtime (unix nanoseconds) across the compile_commands.json
+	// files this entry was built from. A lookup whose on-disk files are newer than
+	// this is treated as a miss, so an isolated edit to compile_commands.json is
+	// picked up on the next load without a full reindex.
+	mtime int64
 }
 
 // newCppIncludeDirCache builds the cache, reading GORTEX_RESOLVER_CACHE_MAX_MB
@@ -41,22 +46,30 @@ func newCppIncludeDirCache() *cppIncludeDirCacheT {
 }
 
 // get returns the cached include-dir set for root, promoting it to
-// most-recently-used. The second return is false on a miss.
-func (c *cppIncludeDirCacheT) get(root string) (map[string]cppTU, bool) {
+// most-recently-used. diskMtime is the newest modtime currently on disk across
+// the compile_commands.json files for root; an entry whose recorded mtime is
+// older is treated as stale (a miss) so an edited compile_commands.json is
+// re-read on the next load without a full reindex. The second return is false on
+// a miss.
+func (c *cppIncludeDirCacheT) get(root string, diskMtime int64) (map[string]cppTU, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el, ok := c.m[root]
 	if !ok {
 		return nil, false
 	}
+	e := el.Value.(*cppIncludeCacheEntry)
+	if diskMtime > e.mtime {
+		return nil, false
+	}
 	c.ll.MoveToFront(el)
-	return el.Value.(*cppIncludeCacheEntry).tus, true
+	return e.tus, true
 }
 
-// put stores the include-dir set for root, evicting least-recently-used
-// entries until within the memory budget (at least the just-stored entry is
-// retained).
-func (c *cppIncludeDirCacheT) put(root string, tus map[string]cppTU) {
+// put stores the include-dir set for root along with the modtime it was built
+// from, evicting least-recently-used entries until within the memory budget (at
+// least the just-stored entry is retained).
+func (c *cppIncludeDirCacheT) put(root string, tus map[string]cppTU, mtime int64) {
 	sz := cppTUMapBytes(tus)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -65,11 +78,12 @@ func (c *cppIncludeDirCacheT) put(root string, tus map[string]cppTU) {
 		c.curBytes += sz - e.bytes
 		e.tus = tus
 		e.bytes = sz
+		e.mtime = mtime
 		c.ll.MoveToFront(el)
 		c.evictLocked()
 		return
 	}
-	el := c.ll.PushFront(&cppIncludeCacheEntry{key: root, tus: tus, bytes: sz})
+	el := c.ll.PushFront(&cppIncludeCacheEntry{key: root, tus: tus, bytes: sz, mtime: mtime})
 	c.m[root] = el
 	c.curBytes += sz
 	c.evictLocked()

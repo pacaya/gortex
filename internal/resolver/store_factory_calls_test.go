@@ -97,6 +97,36 @@ func TestResolveStoreFactoryCalls_Idempotent(t *testing.T) {
 	}
 }
 
+// storeGetter adds the `useXStore` getter node a `defineStore`/`create` call is
+// assigned to — the store DEFINITION anchor. It is NOT a store-factory action.
+func storeGetter(g *graph.Graph, id, file, name string) {
+	g.AddNode(&graph.Node{ID: id, Kind: graph.KindConstant, Name: name, FilePath: file})
+}
+
+func TestResolveStoreFactoryCalls_DefinitionFilePrefersGetterStore(t *testing.T) {
+	// Two stores in DIFFERENT files both reuse the binding name `useUserStore`
+	// and both define `login`, so the candidate list collides on (binding,
+	// member). The User store's getter is defined in user.ts; a
+	// useUserStore().login() call — from a component in neither store file —
+	// must bind to user.ts's login, never the other store's.
+	g := graph.New()
+	storeGetter(g, "user.ts::useUserStore", "user.ts", "useUserStore")
+	storeAction(g, "user.ts::useUserStore.login@5", "user.ts", "useUserStore", "login")
+	storeAction(g, "legacy.ts::useUserStore.login@5", "legacy.ts", "useUserStore", "login")
+	storeCall(g, "Login.vue::submit", "Login.vue", "useUserStore", "login")
+
+	ResolveStoreFactoryCalls(g)
+	var bound string
+	for _, e := range g.GetOutEdges("Login.vue::submit") {
+		if e.Kind == graph.EdgeCalls && e.Meta["synthesized_by"] == SynthStoreFactory {
+			bound = e.To
+		}
+	}
+	if bound != "user.ts::useUserStore.login@5" {
+		t.Fatalf("useUserStore().login() bound to %q (want user.ts login defined beside the getter)", bound)
+	}
+}
+
 func TestResolveStoreFactoryCalls_PiniaGetterDisambiguates(t *testing.T) {
 	// Two stores each define `login`, keyed by their getter name. A
 	// useUserStore-bound call must reach the user store's login, never the

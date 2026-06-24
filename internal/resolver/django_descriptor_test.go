@@ -67,6 +67,20 @@ func TestClaimingResolver_GenericTierClaimsResidualRef(t *testing.T) {
 	assert.True(t, bound, "the unresolved ref was rebound before external-call synthesis")
 }
 
+// The Django descriptor resolver must stay wired into the default claiming
+// registry — a drift fence so it cannot be silently dropped and quietly stop
+// claiming Django's named-class references. Asserts membership by Name()
+// directly, independent of any one resolver's functional behaviour.
+func TestDefaultClaimingResolvers_IncludesDjangoDescriptor(t *testing.T) {
+	names := map[string]bool{}
+	for _, r := range defaultClaimingResolvers() {
+		require.NotNil(t, r, "registered claiming resolvers are non-nil")
+		names[r.Name()] = true
+	}
+	require.True(t, names[SynthDjangoDescriptor],
+		"DjangoDescriptorResolver must be registered in defaultClaimingResolvers (got %v)", names)
+}
+
 func djangoIter(g *graph.Graph, id, file, class string) {
 	g.AddNode(&graph.Node{ID: id, Kind: graph.KindMethod, Name: "__iter__", FilePath: file, Language: "python",
 		Meta: map[string]any{"receiver": class}})

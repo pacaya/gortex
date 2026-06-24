@@ -26,15 +26,15 @@ func TestCppIncludeDirCache_Eviction(t *testing.T) {
 	mk := func(f string) map[string]cppTU {
 		return map[string]cppTU{f: {file: f, includeDirs: []string{"inc"}}}
 	}
-	c.put("repoA", mk("a.c"))
-	c.put("repoB", mk("b.c"))
-	c.put("repoC", mk("c.c"))
+	c.put("repoA", mk("a.c"), 0)
+	c.put("repoB", mk("b.c"), 0)
+	c.put("repoC", mk("c.c"), 0)
 
-	_, okA := c.get("repoA")
+	_, okA := c.get("repoA", 0)
 	assert.False(t, okA, "least-recently-used repoA evicted under the budget")
-	_, okB := c.get("repoB")
+	_, okB := c.get("repoB", 0)
 	assert.True(t, okB, "repoB retained")
-	_, okC := c.get("repoC")
+	_, okC := c.get("repoC", 0)
 	assert.True(t, okC, "most-recently-used repoC retained")
 }
 
@@ -47,14 +47,14 @@ func TestCppIncludeDirCache_GetPromotes(t *testing.T) {
 	mk := func(f string) map[string]cppTU {
 		return map[string]cppTU{f: {file: f, includeDirs: []string{"inc"}}}
 	}
-	c.put("repoA", mk("a.c"))
-	c.put("repoB", mk("b.c"))
-	c.get("repoA")            // promote A ahead of B
-	c.put("repoC", mk("c.c")) // evicts the now-LRU repoB
+	c.put("repoA", mk("a.c"), 0)
+	c.put("repoB", mk("b.c"), 0)
+	c.get("repoA", 0)            // promote A ahead of B
+	c.put("repoC", mk("c.c"), 0) // evicts the now-LRU repoB
 
-	_, okA := c.get("repoA")
+	_, okA := c.get("repoA", 0)
 	assert.True(t, okA, "promoted repoA survives")
-	_, okB := c.get("repoB")
+	_, okB := c.get("repoB", 0)
 	assert.False(t, okB, "repoB evicted as least-recently-used")
 }
 
@@ -63,10 +63,25 @@ func TestCppIncludeDirCache_GetPromotes(t *testing.T) {
 func TestCppIncludeDirCache_UnboundedKeepsAll(t *testing.T) {
 	c := newCppIncludeDirCache() // maxBytes 0
 	for _, r := range []string{"r1", "r2", "r3"} {
-		c.put(r, map[string]cppTU{r: {file: r}})
+		c.put(r, map[string]cppTU{r: {file: r}}, 0)
 	}
 	for _, r := range []string{"r1", "r2", "r3"} {
-		_, ok := c.get(r)
+		_, ok := c.get(r, 0)
 		assert.True(t, ok, "unbounded cache retains %s", r)
 	}
+}
+
+// TestCppIncludeDirCache_MtimeStaleMiss pins the freshness check: a get whose
+// disk modtime exceeds the entry's recorded mtime is a miss, while an equal or
+// older modtime is a hit.
+func TestCppIncludeDirCache_MtimeStaleMiss(t *testing.T) {
+	c := newCppIncludeDirCache()
+	c.put("repo", map[string]cppTU{"a.c": {file: "a.c"}}, 100)
+
+	_, ok := c.get("repo", 100)
+	assert.True(t, ok, "equal modtime is a hit")
+	_, ok = c.get("repo", 50)
+	assert.True(t, ok, "older modtime is a hit")
+	_, ok = c.get("repo", 200)
+	assert.False(t, ok, "newer modtime is a stale miss")
 }

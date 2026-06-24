@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,15 +117,26 @@ func TestLoadCompileCommands_CacheAndClear(t *testing.T) {
 	path := filepath.Join(root, "compile_commands.json")
 	t.Cleanup(func() { clearCppIncludeDirCache(root) })
 
+	// write replaces the DB body while preserving its modtime, so this test
+	// isolates the explicit-clear path from the mtime-keyed reload (covered by
+	// TestLoadCompileCommands_MtimeReload).
 	write := func(incDir string) {
+		var keep time.Time
+		if fi, err := os.Stat(path); err == nil {
+			keep = fi.ModTime()
+		}
 		body := `[{"directory":"` + root + `","file":"src/main.c","command":"cc -I` + incDir + ` -c src/main.c"}]`
 		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		if !keep.IsZero() {
+			require.NoError(t, os.Chtimes(path, keep, keep))
+		}
 	}
 
 	write("inc1")
 	require.Equal(t, []string{"inc1"}, loadCompileCommands(root)["src/main.c"].includeDirs)
 
-	// Editing the DB on disk is not observed until the cache is invalidated.
+	// Editing the DB on disk (without bumping its modtime) is not observed until
+	// the cache is invalidated.
 	write("inc2")
 	assert.Equal(t, []string{"inc1"}, loadCompileCommands(root)["src/main.c"].includeDirs,
 		"second load returns the cached result")
@@ -133,4 +145,34 @@ func TestLoadCompileCommands_CacheAndClear(t *testing.T) {
 	clearCppIncludeDirCache(root)
 	assert.Equal(t, []string{"inc2"}, loadCompileCommands(root)["src/main.c"].includeDirs,
 		"after clear the edited -I dir is picked up")
+}
+
+// TestLoadCompileCommands_MtimeReload pins the mtime-keyed invalidation: editing
+// only compile_commands.json (changing an -I dir) and re-loading picks up the new
+// include dir without any explicit cache clear / full reindex — the cache reloads
+// because the file's modtime advanced.
+func TestLoadCompileCommands_MtimeReload(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "compile_commands.json")
+	t.Cleanup(func() { clearCppIncludeDirCache(root) })
+
+	write := func(incDir string, mtime time.Time) {
+		body := `[{"directory":"` + root + `","file":"src/main.c","command":"cc -I` + incDir + ` -c src/main.c"}]`
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+		require.NoError(t, os.Chtimes(path, mtime, mtime))
+	}
+
+	t0 := time.Now().Add(-time.Hour)
+	write("inc1", t0)
+	require.Equal(t, []string{"inc1"}, loadCompileCommands(root)["src/main.c"].includeDirs)
+
+	// Edit only compile_commands.json, advancing its modtime. No clearCppIncludeDirCache
+	// call — the next load must observe the newer file and re-read it.
+	write("inc2", t0.Add(time.Minute))
+	assert.Equal(t, []string{"inc2"}, loadCompileCommands(root)["src/main.c"].includeDirs,
+		"a newer compile_commands.json is re-read without an explicit cache clear")
+
+	// A subsequent load with no further edit is served from the (now-warm) cache.
+	assert.Equal(t, []string{"inc2"}, loadCompileCommands(root)["src/main.c"].includeDirs,
+		"unchanged compile_commands.json stays cached")
 }

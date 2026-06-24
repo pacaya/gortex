@@ -129,3 +129,90 @@ func keys(m map[string]map[string]any) []string {
 	}
 	return []string{strings.Join(out, ",")}
 }
+
+// TestFnRefSpecFor_MemberValueForms pins the broadened per-language table: the
+// member/attribute value forms and the astCalleeField dispatch tier.
+func TestFnRefSpecFor_MemberValueForms(t *testing.T) {
+	js := fnRefSpecFor("javascript")
+	if !js.matchesIDNode("member_expression") || js.dispatch != astCalleeField {
+		t.Error("javascript spec should match member_expression with astCalleeField dispatch")
+	}
+	if !fnRefSpecFor("python").matchesIDNode("attribute") {
+		t.Error("python spec should match attribute")
+	}
+	if !fnRefSpecFor("csharp").matchesIDNode("member_access_expression") {
+		t.Error("csharp spec should match member_access_expression")
+	}
+	if fnRefSpecFor("java").dispatch != astCalleeField {
+		t.Error("java spec should use astCalleeField dispatch")
+	}
+	for _, nt := range []string{"member_expression", "attribute", "member_access_expression", "scoped_identifier", "selector_expression"} {
+		if !isQualifiedFnRefNode(nt) {
+			t.Errorf("%s should be a qualified fn-ref node", nt)
+		}
+	}
+	if isQualifiedFnRefNode("identifier") {
+		t.Error("bare identifier is not a qualified fn-ref node")
+	}
+}
+
+// TestFnValueCapture_JSMemberValue pins capture of a same-file function passed
+// by value through a member expression (`bus.onReady`), gated on the file
+// declaring `onReady`. The called member `subscribe` must not be captured.
+func TestFnValueCapture_JSMemberValue(t *testing.T) {
+	src := []byte(`function onReady() {}
+
+function setup(bus) {
+  bus.subscribe(bus.onReady);
+}
+`)
+	res, err := NewJavaScriptExtractor().Extract("app.js", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := fnValueCands(res)
+	if _, ok := cands["onReady"]; !ok {
+		t.Fatalf("JS member-expression method value not captured (got: %v)", keys(cands))
+	}
+	if _, bad := cands["subscribe"]; bad {
+		t.Error("the called member `subscribe` must not be captured")
+	}
+}
+
+// TestFnValueCapture_ASTCalleeRejectsOptionalCall pins the astCalleeField
+// precision win: `tick?.()` is a call (the callee child of a call node), so the
+// byte heuristic's would-be value candidate is rejected.
+func TestFnValueCapture_ASTCalleeRejectsOptionalCall(t *testing.T) {
+	src := []byte(`function tick() {}
+
+function run() {
+  tick?.();
+}
+`)
+	res, err := NewJavaScriptExtractor().Extract("app.js", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, bad := fnValueCands(res)["tick"]; bad {
+		t.Error("optional-call `tick?.()` must not be captured as a function value")
+	}
+}
+
+// TestFnValueCapture_PythonAttributeValue pins capture of a same-file function
+// passed by value through a non-self attribute (`mod.on_change`).
+func TestFnValueCapture_PythonAttributeValue(t *testing.T) {
+	src := []byte(`def on_change():
+    pass
+
+def setup(signal, mod):
+    signal.connect(mod.on_change)
+`)
+	res, err := NewPythonExtractor().Extract("app.py", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := fnValueCands(res)
+	if _, ok := cands["on_change"]; !ok {
+		t.Fatalf("Python attribute method value not captured (got: %v)", keys(cands))
+	}
+}

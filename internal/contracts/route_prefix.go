@@ -61,6 +61,7 @@ var routePrefixFrameworks = map[string]bool{
 	"axum":          true, // axum Router .nest mounts
 	"fiber":         true, // gin/echo uppercase verbs label as fiber; same .Group model
 	"vapor":         true, // Vapor .grouped(...) route groups
+	"actix":         true, // Actix web::scope(...) cross-file config mounts
 }
 
 // vaporGroupedRE matches a Vapor route-group binding
@@ -68,6 +69,12 @@ var routePrefixFrameworks = map[string]bool{
 // Group 1 is the new group var, group 2 the parent receiver, group 3 the
 // (one or more) path-segment string literals.
 var vaporGroupedRE = regexp.MustCompile(`\b(?:let|var)\s+(\w+)\s*=\s*([\w.]+)\.grouped\(\s*("[^"]*"(?:\s*,\s*"[^"]*")*)`)
+
+// vaporClosureGroupRE matches the closure-block route-group form
+// `app.group("api") {` / `routes.group("v1") { g in`. Routes registered
+// inside the brace block inherit the group prefix. Group 1 is the (one or
+// more) path-segment string literals.
+var vaporClosureGroupRE = regexp.MustCompile(`\.group\(\s*("[^"]*"(?:\s*,\s*"[^"]*")*)\s*\)\s*\{`)
 
 // vaporRouteReceiverRE recovers the receiver variable a Vapor route is declared
 // on — `api` in `api.get("users", use: list)`.
@@ -172,6 +179,21 @@ var axumNestRE = regexp.MustCompile(`\.nest\(\s*"([^"]+)"\s*,\s*(\w+)\s*\)`)
 // axumLetBindingRE recovers the router variable a route chain is bound to,
 // e.g. `let api = Router::new().route("/users", get(list));` → "api".
 var axumLetBindingRE = regexp.MustCompile(`let\s+(\w+)\s*=`)
+
+// --- Actix / Rust ----------------------------------------------------------
+
+// actixScopeConfigRE matches a cross-file Actix scope mount,
+// `web::scope("/api").configure(api_routes)` /
+// `web::scope("/api").service(users::routes)`. Group 1 is the scope prefix,
+// group 2 the config-function reference the scope mounts (possibly
+// path-qualified). The config function — defined in another file — registers
+// the routes that inherit the scope prefix.
+var actixScopeConfigRE = regexp.MustCompile(`web::scope\(\s*"([^"]+)"\s*\)\s*\.(?:configure|service)\(\s*([\w:]+)\s*\)`)
+
+// actixFnDefRE matches a Rust function definition `fn api_routes(` / `pub fn
+// api_routes(`. Group 1 is the function name. Used to recover the enclosing
+// config function a route is declared in.
+var actixFnDefRE = regexp.MustCompile(`\bfn\s+(\w+)\s*\(`)
 
 // --- Spring / Rails / Laravel block-scoped prefixes ------------------------
 
@@ -302,6 +324,16 @@ func JoinRouterPrefixes(reg *Registry, scanFiles []string, srcFor func(filePath 
 		// axum: app.nest("/api", api_router)
 		for _, m := range axumNestRE.FindAllStringSubmatch(text, -1) {
 			prefix, child := cleanPrefix(m[1]), m[2]
+			if _, ok := f.mountPrefix[child]; !ok {
+				f.mountPrefix[child] = prefix
+			}
+		}
+
+		// Actix: web::scope("/api").configure(api_routes) — the mounted
+		// config function (in this or another file) registers the routes
+		// that inherit the scope prefix.
+		for _, m := range actixScopeConfigRE.FindAllStringSubmatch(text, -1) {
+			prefix, child := cleanPrefix(m[1]), lastPathSeg(m[2])
 			if _, ok := f.mountPrefix[child]; !ok {
 				f.mountPrefix[child] = prefix
 			}
@@ -561,13 +593,25 @@ func prefixForRoute(
 		// carries its own .Group / .grouped prefix, parents contribute theirs
 		// via the mount chain.
 		varName := routeReceiver(c, framework, srcFor)
-		if varName == "" {
-			return ""
+		mount, self := "", ""
+		if varName != "" {
+			mount = chainPrefix(varName, map[string]bool{})
+			if ps, ok := globalSelf[varName]; ok && !selfConflict[varName] {
+				self = ps
+			}
 		}
-		mount := chainPrefix(varName, map[string]bool{})
-		self := ""
-		if ps, ok := globalSelf[varName]; ok && !selfConflict[varName] {
-			self = ps
+		if framework == "vapor" {
+			// Vapor's closure-block group form `app.group("api") { ... }`
+			// binds no group var, so its prefix is recovered by balancing
+			// braces upward from the route line over the enclosing blocks.
+			closure := vaporClosureGroupPrefix(c, srcFor)
+			joined := joinPaths(closure, mount, self)
+			if joined != "" {
+				return joined
+			}
+			if varName == "" {
+				return ""
+			}
 		}
 		return joinPaths(mount, self)
 	case "axum":
@@ -577,6 +621,16 @@ func prefixForRoute(
 			return ""
 		}
 		return chainPrefix(varName, map[string]bool{})
+	case "actix":
+		// actix: a route's enclosing config function is mounted under a
+		// web::scope(...) prefix (possibly in another file). Single-file
+		// inline scopes are already joined by the extractor, so this only
+		// adds the cross-file scope-config mount prefix.
+		fnName := routeReceiver(c, framework, srcFor)
+		if fnName == "" {
+			return ""
+		}
+		return chainPrefix(fnName, map[string]bool{})
 	case "nestjs":
 		// Class-level @Controller('cats') prefix, found by scanning
 		// upward from the route line for the nearest preceding
@@ -603,6 +657,11 @@ func prefixForRoute(
 // on, by re-reading the contract's source line. Returns "" when the
 // line can't be read or no receiver is found.
 func routeReceiver(c Contract, framework string, srcFor func(filePath string) []byte) string {
+	// Actix's receiver is the enclosing config function, recovered by
+	// scanning upward over multiple lines rather than from the route line.
+	if framework == "actix" {
+		return actixEnclosingFn(c, srcFor)
+	}
 	line := sourceLine(srcFor(c.FilePath), c.Line)
 	if line == "" {
 		return ""
@@ -634,6 +693,37 @@ func routeReceiver(c Contract, framework string, srcFor func(filePath string) []
 		}
 	}
 	return ""
+}
+
+// actixEnclosingFn scans upward from an Actix route line for the nearest
+// enclosing `fn <name>(` definition and returns that function name, or "" when
+// the route sits outside any function. The function name is the "router var"
+// the cross-file scope-config mount keys on.
+func actixEnclosingFn(c Contract, srcFor func(filePath string) []byte) string {
+	src := srcFor(c.FilePath)
+	if src == nil {
+		return ""
+	}
+	lines := strings.Split(string(src), "\n")
+	idx := c.Line - 1
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	for i := idx; i >= 0; i-- {
+		if m := actixFnDefRE.FindStringSubmatch(lines[i]); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// lastPathSeg returns the final `::`-separated segment of a Rust path, e.g.
+// "users::routes" -> "routes", "routes" -> "routes".
+func lastPathSeg(ref string) string {
+	if i := strings.LastIndex(ref, "::"); i >= 0 {
+		return ref[i+2:]
+	}
+	return ref
 }
 
 // springClassPrefix scans upward from a Spring route line for the
@@ -733,6 +823,47 @@ func laravelGroupPrefix(c Contract, srcFor func(filePath string) []byte) string 
 				// Enclosing open brace: prepend its prefix clause, if any.
 				if m := laravelPrefixRE.FindStringSubmatch(line); m != nil {
 					parts = append([]string{cleanPrefix(m[1])}, parts...)
+				}
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return joinPaths(parts...)
+}
+
+// vaporClosureGroupPrefix walks upward from a Vapor route line, balancing
+// braces, and joins the prefixes of every enclosing
+// `app.group("api") { ... }` / `routes.group("v1") { g in ... }` closure
+// block. Returns "" when the route sits in no group closure.
+func vaporClosureGroupPrefix(c Contract, srcFor func(filePath string) []byte) string {
+	src := srcFor(c.FilePath)
+	if src == nil {
+		return ""
+	}
+	lines := strings.Split(string(src), "\n")
+	idx := c.Line - 1
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	depth := 0
+	var parts []string
+	for i := idx - 1; i >= 0; i-- {
+		line := lines[i]
+		for j := len(line) - 1; j >= 0; j-- {
+			switch line[j] {
+			case '}':
+				depth++
+			case '{':
+				if depth > 0 {
+					depth--
+					continue
+				}
+				// Enclosing open brace at depth 0: prepend its group
+				// prefix when the brace opens a `.group(...)` closure.
+				if m := vaporClosureGroupRE.FindStringSubmatch(line); m != nil {
+					parts = append([]string{vaporGroupSegments(m[1])}, parts...)
 				}
 			}
 		}

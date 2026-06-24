@@ -76,6 +76,57 @@ func TestResolveGoFrameRoutes_AddonRootTiebreak(t *testing.T) {
 	assert.Nil(t, synthGoFrameCall(g, "route::goframe::POST::/users", "b/ctrl.go::OtherCtrl.Create"))
 }
 
+// goframeRoutePkg adds a route whose request struct is qualified by its
+// declaring package (the `goframe_request_pkg` stamp the extractor derives from
+// the struct file's package clause).
+func goframeRoutePkg(g *graph.Graph, routeID, file, method, path, reqType, pkg string) {
+	g.AddNode(&graph.Node{ID: routeID, Kind: graph.KindContract, Name: method + " " + path, FilePath: file,
+		Meta: map[string]any{"type": "http", "method": method, "path": path, "framework": "goframe",
+			"goframe_request_type": reqType, "goframe_request_pkg": pkg}})
+	g.AddEdge(&graph.Edge{From: routeID, To: "unresolved::*." + reqType, Kind: graph.EdgeCalls, FilePath: file,
+		Meta: map[string]any{"via": goframeRouteVia, "goframe_request_type": reqType,
+			"goframe_request_pkg": pkg, "goframe_route": routeID}})
+}
+
+// goframeMethodPkg adds a handler whose request param is qualified
+// (`*pkg.CreateReq`), so the resolver can join by (package, type), never by a
+// bare same-named type across packages.
+func goframeMethodPkg(g *graph.Graph, id, file, reqType, pkg string, bound bool) {
+	meta := map[string]any{"goframe_request_type": reqType, "goframe_request_pkg": pkg}
+	if bound {
+		meta["goframe_bound"] = true
+	}
+	g.AddNode(&graph.Node{ID: id, Kind: graph.KindMethod, Name: lastSeg(id), FilePath: file, Language: "go", Meta: meta})
+}
+
+func TestResolveGoFrameRoutes_CrossPackageSameTypeName(t *testing.T) {
+	// Two packages each declare their own `CreateReq` request struct (each
+	// tagged via g.Meta) and a handler for it. The req struct (route source)
+	// and the controller live in different directories — the realistic GoFrame
+	// layout (api/ vs controller/) — so the same-directory tiebreak cannot
+	// disambiguate. Each route must bind to ITS OWN package's handler; a route
+	// must never cross-bind to the other package's same-named handler.
+	g := graph.New()
+	// Package a: route declared in package "a", handler takes *a.CreateReq.
+	goframeRoutePkg(g, "route::goframe::POST::/a/create", "a/api/create.go", "POST", "/a/create", "CreateReq", "a")
+	goframeMethodPkg(g, "a/controller/create.go::ACtrl.Create", "a/controller/create.go", "CreateReq", "a", false)
+	// Package b: route declared in package "b", handler takes *b.CreateReq.
+	goframeRoutePkg(g, "route::goframe::POST::/b/create", "b/api/create.go", "POST", "/b/create", "CreateReq", "b")
+	goframeMethodPkg(g, "b/controller/create.go::BCtrl.Create", "b/controller/create.go", "CreateReq", "b", false)
+
+	ResolveGoFrameRoutes(g)
+
+	assert.NotNil(t, synthGoFrameCall(g, "route::goframe::POST::/a/create", "a/controller/create.go::ACtrl.Create"),
+		"package a's route binds to package a's handler")
+	assert.Nil(t, synthGoFrameCall(g, "route::goframe::POST::/a/create", "b/controller/create.go::BCtrl.Create"),
+		"package a's route must NOT cross-bind to package b's handler")
+
+	assert.NotNil(t, synthGoFrameCall(g, "route::goframe::POST::/b/create", "b/controller/create.go::BCtrl.Create"),
+		"package b's route binds to package b's handler")
+	assert.Nil(t, synthGoFrameCall(g, "route::goframe::POST::/b/create", "a/controller/create.go::ACtrl.Create"),
+		"package b's route must NOT cross-bind to package a's handler")
+}
+
 func TestResolveGoFrameRoutes_NoHandlerStaysPlaceholder(t *testing.T) {
 	g := graph.New()
 	goframeRoute(g, "route::goframe::GET::/x", "r.go", "GET", "/x", "XReq")

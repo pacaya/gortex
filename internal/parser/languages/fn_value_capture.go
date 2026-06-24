@@ -109,7 +109,7 @@ func captureFnValueCandidates(result *parser.ExtractionResult, root *sitter.Node
 			if !typeQualified && !funcs[refName] {
 				return
 			}
-			if byteAfterIdentStartsCall(src, int(n.EndByte())) {
+			if fnRefStartsCall(spec, n, src) {
 				return
 			}
 			line := int(n.StartPoint().Row) + 1
@@ -149,12 +149,12 @@ func captureFnValueCandidates(result *parser.ExtractionResult, root *sitter.Node
 			// only when it is an explicit qualified path (e.g. Rust `m::f`) —
 			// a bare identifier that is not a same-file function is a local /
 			// param / builtin and is dropped to avoid flooding the gate.
-			if !spec.ungated || n.Type() != "scoped_identifier" {
+			if !spec.ungated || !isQualifiedFnRefNode(n.Type()) {
 				return
 			}
 			ungated = true
 		}
-		if byteAfterIdentStartsCall(src, int(n.EndByte())) {
+		if fnRefStartsCall(spec, n, src) {
 			return // callee of a call (incl. tagged template), not a value use
 		}
 		line := int(n.StartPoint().Row) + 1

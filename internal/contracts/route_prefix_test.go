@@ -452,6 +452,126 @@ Route::prefix('admin')->group(function () {
 	}
 }
 
+// TestJoinRouterPrefixes_VaporGrouped joins the assignment route-group form
+// `let api = app.grouped("api")` onto a route declared on that group var.
+func TestJoinRouterPrefixes_VaporGrouped(t *testing.T) {
+	files := srcMap{
+		"routes.swift": `
+func routes(_ app: Application) throws {
+    let api = app.grouped("api")
+    api.get("users") { req in "ok" }
+}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected vapor-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}
+
+// TestJoinRouterPrefixes_VaporClosureGroup joins the closure-block route-group
+// form `app.group("api") { ... }` onto a route declared inside the brace block.
+func TestJoinRouterPrefixes_VaporClosureGroup(t *testing.T) {
+	files := srcMap{
+		"routes.swift": `
+func routes(_ app: Application) throws {
+    app.group("api") {
+        app.get("users") { req in "ok" }
+    }
+}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected vapor closure-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}
+
+// TestJoinRouterPrefixes_VaporClosureGroupNested chains nested closure groups
+// and leaves a sibling route outside the block unprefixed.
+func TestJoinRouterPrefixes_VaporClosureGroupNested(t *testing.T) {
+	files := srcMap{
+		"routes.swift": `
+func routes(_ app: Application) throws {
+    routes.group("v1") { g in
+        g.group("admin") { a in
+            a.post("ban") { req in "ok" }
+        }
+    }
+    app.get("health") { req in "ok" }
+}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::POST::/v1/admin/ban"] {
+		t.Errorf("expected nested vapor closure-joined http::POST::/v1/admin/ban; got %v", keysOfBool(ids))
+	}
+	if !ids["http::GET::/health"] {
+		t.Errorf("expected unscoped route to stay http::GET::/health; got %v", keysOfBool(ids))
+	}
+}
+
+// TestJoinRouterPrefixes_ActixCrossFileScope joins a web::scope("/api")
+// .configure(api_routes) mount in main.rs onto a resource the api_routes
+// config function registers in a sibling file.
+func TestJoinRouterPrefixes_ActixCrossFileScope(t *testing.T) {
+	files := srcMap{
+		"main.rs": `
+fn app() {
+    App::new().service(web::scope("/api").configure(api_routes));
+}
+`,
+		"api.rs": `
+fn api_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/users").route(web::get().to(list)));
+}
+async fn list() {}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/api/users"] {
+		t.Errorf("expected actix cross-file-scope-joined http::GET::/api/users; got %v", keysOfBool(ids))
+	}
+}
+
+// TestJoinRouterPrefixes_ActixCrossFileScopeService joins a web::scope mounted
+// via .service(<path::fn>), confirming the path-qualified config reference is
+// keyed on its final segment.
+func TestJoinRouterPrefixes_ActixCrossFileScopeService(t *testing.T) {
+	files := srcMap{
+		"main.rs": `
+fn app() {
+    App::new().service(web::scope("/v2").service(users::routes));
+}
+`,
+		"users.rs": `
+fn routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(web::resource("/me").route(web::get().to(me)));
+}
+async fn me() {}
+`,
+	}
+	reg := NewRegistry()
+	extractInto(t, reg, files, "svc", "svc")
+	JoinRouterPrefixes(reg, files.paths(), files.reader())
+	ids := idSet(reg)
+	if !ids["http::GET::/v2/me"] {
+		t.Errorf("expected actix cross-file-scope-joined http::GET::/v2/me; got %v", keysOfBool(ids))
+	}
+}
+
 func TestJoinRouterPrefixes_Axum(t *testing.T) {
 	files := srcMap{
 		"main.rs": `

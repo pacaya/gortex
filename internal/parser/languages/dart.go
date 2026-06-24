@@ -447,8 +447,17 @@ func (e *DartExtractor) extractTopLevelVariables(
 					continue
 				}
 				seen[id] = true
+				// A static_final_declaration is a `const` / `final` / `static
+				// final` binding — immutable by grammar. A distinctive-named one
+				// is a Dart value constant; kind it as KindConstant so
+				// value-reference impact analysis reaches its readers (mirrors
+				// the Scala/Ruby constant handling).
+				declKind := graph.KindVariable
+				if isDistinctiveConstName(name) {
+					declKind = graph.KindConstant
+				}
 				result.Nodes = append(result.Nodes, &graph.Node{
-					ID: id, Kind: graph.KindVariable, Name: name,
+					ID: id, Kind: declKind, Name: name,
 					FilePath: filePath, StartLine: startLine, EndLine: int(decl.EndPoint().Row) + 1,
 					Language: "dart",
 				})

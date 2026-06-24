@@ -86,6 +86,55 @@ func TestGoFrame_RouteNodeAndMethodTagging(t *testing.T) {
 	}
 }
 
+func TestGoFrame_RequestPackageStamped(t *testing.T) {
+	// A request struct's declaring package qualifies its route, and a handler's
+	// pointer param carries that package — bare for a same-package param, the
+	// qualifier for a cross-package `*api.CreateReq`. Both sides must agree so
+	// the resolver can join across packages without colliding on the bare name.
+	src := "package api\n" +
+		"type CreateReq struct {\n" +
+		"\tg.Meta `path:\"/users\" method:\"POST\"`\n" +
+		"}\n" +
+		"type CreateRes struct{}\n" +
+		"type SameCtrl struct{}\n" +
+		"func (c *SameCtrl) Same(ctx context.Context, req *CreateReq) (*CreateRes, error) { return nil, nil }\n" +
+		"type CrossCtrl struct{}\n" +
+		"func (c *CrossCtrl) Cross(ctx context.Context, req *other.CreateReq) (*CreateRes, error) { return nil, nil }\n"
+	res, err := NewGoExtractor().Extract("api/user.go", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	route := goframeRouteNode(res.Nodes, "POST", "/users")
+	if route == nil {
+		t.Fatalf("no POST /users route node materialised")
+	}
+	if pkg, _ := route.Meta["goframe_request_pkg"].(string); pkg != "api" {
+		t.Errorf("route request pkg = %q (want api)", pkg)
+	}
+
+	same := goframeMethodNode(res.Nodes, "Same")
+	if same == nil {
+		t.Fatalf("same-package handler Same not tagged")
+	}
+	// A bare `*CreateReq` param inherits the file's package.
+	if pkg, _ := same.Meta["goframe_request_pkg"].(string); pkg != "api" {
+		t.Errorf("Same request pkg = %q (want api, the file package)", pkg)
+	}
+
+	cross := goframeMethodNode(res.Nodes, "Cross")
+	if cross == nil {
+		t.Fatalf("cross-package handler Cross not tagged")
+	}
+	// A qualified `*other.CreateReq` param carries its own package qualifier.
+	if rt, _ := cross.Meta["goframe_request_type"].(string); rt != "CreateReq" {
+		t.Errorf("Cross request type = %q (want CreateReq)", rt)
+	}
+	if pkg, _ := cross.Meta["goframe_request_pkg"].(string); pkg != "other" {
+		t.Errorf("Cross request pkg = %q (want other, the param qualifier)", pkg)
+	}
+}
+
 func TestGoFrame_NonRequestStructIgnored(t *testing.T) {
 	// A plain struct without an embedded g.Meta tag is not a route.
 	src := "package m\n" +

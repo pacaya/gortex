@@ -34,6 +34,12 @@ func captureGoFrameRoutes(result *parser.ExtractionResult, root *sitter.Node, fi
 		}
 	}
 
+	// The file's own package — the qualifier of a request struct declared here.
+	// A handler in another package refers to it as `*<pkg>.CreateReq`, so this
+	// name pins which package a route's request type belongs to and prevents a
+	// same-named struct in another package from claiming the route.
+	filePkg := goframePackageName(root, src)
+
 	// Controllers bound via `g.Bind(new(Ctrl))` — the addonRoot tiebreak set.
 	bound := goframeBoundControllers(root, src)
 
@@ -53,18 +59,24 @@ func captureGoFrameRoutes(result *parser.ExtractionResult, root *sitter.Node, fi
 		}
 		reqType := nameNode.Content(src)
 		routeID := "route::goframe::" + method + "::" + path
+		nodeMeta := map[string]any{
+			"type": "http", "role": "provider", "method": method, "path": path,
+			"framework": "goframe", "goframe_request_type": reqType,
+		}
+		edgeMeta := map[string]any{"via": goframeRouteViaTag, "goframe_request_type": reqType, "goframe_route": routeID}
+		if filePkg != "" {
+			nodeMeta["goframe_request_pkg"] = filePkg
+			edgeMeta["goframe_request_pkg"] = filePkg
+		}
 		result.Nodes = append(result.Nodes, &graph.Node{
 			ID: routeID, Kind: graph.KindContract, Name: method + " " + path,
 			FilePath: filePath, StartLine: int(n.StartPoint().Row) + 1, Language: "go",
-			Meta: map[string]any{
-				"type": "http", "role": "provider", "method": method, "path": path,
-				"framework": "goframe", "goframe_request_type": reqType,
-			},
+			Meta:     nodeMeta,
 		})
 		result.Edges = append(result.Edges, &graph.Edge{
 			From: routeID, To: "unresolved::*." + reqType, Kind: graph.EdgeCalls,
 			FilePath: filePath, Line: int(n.StartPoint().Row) + 1,
-			Meta: map[string]any{"via": goframeRouteViaTag, "goframe_request_type": reqType, "goframe_route": routeID},
+			Meta:     edgeMeta,
 		})
 	})
 
@@ -73,9 +85,14 @@ func captureGoFrameRoutes(result *parser.ExtractionResult, root *sitter.Node, fi
 		if n.Type() != "method_declaration" {
 			return
 		}
-		name, recvType, reqType, ok := goframeMethodParts(n, src)
+		name, recvType, reqType, reqPkg, ok := goframeMethodParts(n, src)
 		if !ok {
 			return
+		}
+		// A bare `*CreateReq` param names a struct in this file's package; a
+		// qualified `*api.CreateReq` carries its own package qualifier.
+		if reqPkg == "" {
+			reqPkg = filePkg
 		}
 		line := int(n.StartPoint().Row) + 1
 		for _, nd := range methodByLine[line] {
@@ -86,6 +103,9 @@ func captureGoFrameRoutes(result *parser.ExtractionResult, root *sitter.Node, fi
 				nd.Meta = map[string]any{}
 			}
 			nd.Meta["goframe_request_type"] = reqType
+			if reqPkg != "" {
+				nd.Meta["goframe_request_pkg"] = reqPkg
+			}
 			if bound[recvType] {
 				nd.Meta["goframe_bound"] = true
 			}
@@ -193,9 +213,10 @@ func goframeTagValue(tag, key string) string {
 }
 
 // goframeMethodParts reads a method_declaration: name, receiver type, the
-// request-struct type of its pointer parameter, and whether it has the
-// GoFrame handler shape (a pointer request parameter + a result list).
-func goframeMethodParts(md *sitter.Node, src []byte) (name, recvType, reqType string, ok bool) {
+// request-struct type of its pointer parameter (plus its package qualifier, ""
+// for a same-package bare type), and whether it has the GoFrame handler shape
+// (a pointer request parameter + a result list).
+func goframeMethodParts(md *sitter.Node, src []byte) (name, recvType, reqType, reqPkg string, ok bool) {
 	var plists []*sitter.Node
 	var nameNode *sitter.Node
 	for i := 0; i < int(md.NamedChildCount()); i++ {
@@ -213,14 +234,31 @@ func goframeMethodParts(md *sitter.Node, src []byte) (name, recvType, reqType st
 		}
 	}
 	if nameNode == nil || len(plists) < 3 {
-		return "", "", "", false // need receiver + params + results
+		return "", "", "", "", false // need receiver + params + results
 	}
 	recvType = goframePointedType(plists[0], src)
-	reqType = goframeLastPointerParamType(plists[1], src)
+	reqType, reqPkg = goframeLastPointerParamType(plists[1], src)
 	if reqType == "" {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
-	return nameNode.Content(src), recvType, reqType, true
+	return nameNode.Content(src), recvType, reqType, reqPkg, true
+}
+
+// goframePackageName returns the file's package name from its package_clause.
+func goframePackageName(root *sitter.Node, src []byte) string {
+	pkg := ""
+	goframeWalk(root, func(n *sitter.Node) {
+		if pkg != "" || n.Type() != "package_clause" {
+			return
+		}
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			if c := n.NamedChild(i); c != nil && c.Type() == "package_identifier" {
+				pkg = strings.TrimSpace(c.Content(src))
+				return
+			}
+		}
+	})
+	return pkg
 }
 
 // goframePointedType returns the (pointer-stripped) type name of a
@@ -236,20 +274,20 @@ func goframePointedType(plist *sitter.Node, src []byte) string {
 	return ""
 }
 
-// goframeLastPointerParamType returns the pointed-to type of the last
-// pointer-typed parameter (the GoFrame request struct).
-func goframeLastPointerParamType(plist *sitter.Node, src []byte) string {
-	last := ""
+// goframeLastPointerParamType returns the pointed-to type (and its package
+// qualifier, "" when unqualified) of the last pointer-typed parameter — the
+// GoFrame request struct.
+func goframeLastPointerParamType(plist *sitter.Node, src []byte) (typeName, pkg string) {
 	for i := 0; i < int(plist.NamedChildCount()); i++ {
 		pd := plist.NamedChild(i)
 		if pd == nil || pd.Type() != "parameter_declaration" {
 			continue
 		}
-		if t := goframePointerParamType(pd, src); t != "" {
-			last = t
+		if t, p := goframePointerParamType(pd, src); t != "" {
+			typeName, pkg = t, p
 		}
 	}
-	return last
+	return typeName, pkg
 }
 
 // goframeParamTypeName returns the type identifier of a parameter,
@@ -268,18 +306,37 @@ func goframeParamTypeName(pd *sitter.Node, src []byte) string {
 	return ""
 }
 
-// goframePointerParamType returns the pointed-to type identifier of a
-// pointer parameter, or "".
-func goframePointerParamType(pd *sitter.Node, src []byte) string {
+// goframePointerParamType returns the pointed-to type identifier of a pointer
+// parameter and its package qualifier. A bare `*CreateReq` yields ("CreateReq",
+// ""); a qualified `*api.CreateReq` yields ("CreateReq", "api"). Returns "" for
+// a non-pointer or otherwise unrecognised parameter.
+func goframePointerParamType(pd *sitter.Node, src []byte) (typeName, pkg string) {
 	t := pd.ChildByFieldName("type")
 	if t == nil || t.Type() != "pointer_type" || t.NamedChildCount() == 0 {
-		return ""
+		return "", ""
 	}
 	inner := t.NamedChild(0)
-	if inner != nil && inner.Type() == "type_identifier" {
-		return inner.Content(src)
+	if inner == nil {
+		return "", ""
 	}
-	return ""
+	switch inner.Type() {
+	case "type_identifier":
+		return inner.Content(src), ""
+	case "qualified_type":
+		// `pkg.Type` — the package qualifier pins which package the request
+		// struct belongs to across packages.
+		name := inner.ChildByFieldName("name")
+		pkgNode := inner.ChildByFieldName("package")
+		if name == nil {
+			return "", ""
+		}
+		p := ""
+		if pkgNode != nil {
+			p = strings.TrimSpace(pkgNode.Content(src))
+		}
+		return name.Content(src), p
+	}
+	return "", ""
 }
 
 // goframeBoundControllers collects controller types registered via
