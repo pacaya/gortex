@@ -44,6 +44,12 @@ type Resolver struct {
 	logger       *zap.Logger
 	dirIndex     map[string][]*graph.Node
 	lastDirIndex map[string][]*graph.Node
+	// cppIncludeDirs maps a repo-relative C/C++ source file to its ordered
+	// include search path (the `-I` / `-isystem` dirs from compile_commands.json),
+	// so a quoted/angle include resolves against the real compiler dir set
+	// (deterministic, collision-breaking) before the suffix-unique fallback.
+	// Populated by the indexer via SetCppIncludeDirs before ResolveAll.
+	cppIncludeDirs map[string][]string
 	// providesForIdx maps `provides_for: AbstractName` (from @Module
 	// useClass entries) → the set of concrete class names bound to it.
 	// Populated once at the start of ResolveAll; consulted in O(1) by
@@ -2013,6 +2019,15 @@ func (r *Resolver) buildProvidesForIndex() {
 }
 
 func (r *Resolver) clearProvidesForIndex() { r.providesForIdx = nil }
+
+// SetCppIncludeDirs installs the per-source-file C/C++ include search path
+// (repo-relative `-I` dirs from compile_commands.json) the relative-import
+// resolver uses to bind quoted/angle includes against the real compiler dir
+// set. The indexer calls this before ResolveAll; a nil/empty map leaves the
+// resolver on its suffix-unique heuristic.
+func (r *Resolver) SetCppIncludeDirs(perFile map[string][]string) {
+	r.cppIncludeDirs = perFile
+}
 
 // buildReachabilityIndex walks all EdgeImports edges once and records,
 // for each caller file, the set of directories of imported (indexed)

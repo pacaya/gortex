@@ -246,3 +246,59 @@ func TestResolveRelativeImports_CIncludeBareHeaderNotProbed(t *testing.T) {
 
 	assert.Equal(t, "unresolved::import::bar.h", e.To, "bare header is not probed across roots")
 }
+
+// TestResolveRelativeImports_CIncludeViaCompileDB pins the compile_commands.json
+// path: a generated header reachable only via a declared `-I` dir binds to that
+// file and records the include dir it was found under.
+func TestResolveRelativeImports_CIncludeViaCompileDB(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "gen/include/proj/api.h", "c") // generated, reachable via -Igen/include
+	e := cInclude(g, "src/main.c", "proj/api.h")
+
+	r := New(g)
+	r.SetCppIncludeDirs(map[string][]string{"src/main.c": {"gen/include"}})
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "gen/include/proj/api.h", e.To, "include binds via the declared -I dir")
+	assert.Equal(t, "gen/include", e.Meta["include_dir"])
+	assert.Equal(t, "compile_db", e.Meta["resolved_via"])
+}
+
+// TestResolveRelativeImports_CIncludeCollisionFirstIncludeWins pins that a
+// basename collision the suffix search would refuse is broken deterministically
+// by the translation unit's `-I` order (authoritative): the first declared dir
+// containing the header wins.
+func TestResolveRelativeImports_CIncludeCollisionFirstIncludeWins(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/app.c", "c")
+	seedFile(g, "inc1/config.h", "c")
+	seedFile(g, "inc2/config.h", "c")
+	e := cInclude(g, "src/app.c", "config.h")
+
+	r := New(g)
+	r.SetCppIncludeDirs(map[string][]string{"src/app.c": {"inc1", "inc2"}})
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "inc1/config.h", e.To, "first -I dir wins the basename collision")
+	assert.Equal(t, "compile_db", e.Meta["resolved_via"])
+}
+
+// TestResolveRelativeImports_CIncludeFallbackToSuffix pins that when the
+// importing TU is absent from compile_commands.json the resolver falls back to
+// the suffix-unique behavior — resolving without stamping a compile-DB origin.
+func TestResolveRelativeImports_CIncludeFallbackToSuffix(t *testing.T) {
+	g := graph.New()
+	seedFile(g, "src/main.c", "c")
+	seedFile(g, "gen/include/proj/api.h", "c")
+	e := cInclude(g, "src/main.c", "proj/api.h")
+
+	r := New(g)
+	// compile_commands.json present, but this source has no TU entry of its own;
+	// the union dir does not contain the header → suffix-unique fallback resolves.
+	r.SetCppIncludeDirs(map[string][]string{"other/x.c": {"third/inc"}})
+	r.resolveRelativeImports()
+
+	assert.Equal(t, "gen/include/proj/api.h", e.To, "falls back to suffix-unique match")
+	assert.Nil(t, e.Meta["resolved_via"], "suffix fallback is not stamped compile_db")
+}
