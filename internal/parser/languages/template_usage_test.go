@@ -165,6 +165,51 @@ func TestTemplateExpr_SvelteRuneSuppressed(t *testing.T) {
 	}
 }
 
+func TestTemplateExpr_AstroMultiLineMapBlock(t *testing.T) {
+	// A helper called only inside an Astro multi-line `{collection.map(() => (...))}`
+	// render block must resolve — the open-brace span is captured in one pass and
+	// the frontmatter is not double-scanned.
+	src := []byte(`---
+function fmt(p) { return p }
+const posts = []
+---
+<ul>
+{posts.map((p) => (
+  <li>{fmt(p)}</li>
+))}
+</ul>
+`)
+	res, err := NewAstroExtractor().Extract("Page.astro", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const comp = "Page.astro::Page"
+	e := templateExprCall(res.Edges, comp, "fmt")
+	if e == nil {
+		t.Fatalf("expected a template_expr call to fmt from the multi-line map block")
+	}
+	if e.Line != 7 {
+		t.Errorf("fmt call line = %d (want 7, the actual call site inside the span)", e.Line)
+	}
+	// The `.map(` is a method call, not a free function.
+	if templateExprCall(res.Edges, comp, "map") != nil {
+		t.Errorf("posts.map must not emit a template_expr call to map")
+	}
+	// Frontmatter is delegated TS — its own `fmt` definition must not be
+	// re-scanned as a markup call (only one template_expr fmt edge, from L7).
+	count := 0
+	for _, ed := range res.Edges {
+		if ed.Kind == graph.EdgeCalls && ed.To == "unresolved::fmt" && ed.Meta != nil {
+			if v, _ := ed.Meta["via"].(string); v == "template_expr" {
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 template_expr fmt call (no frontmatter double-scan), got %d", count)
+	}
+}
+
 func TestTemplateMustacheSpans_MultiLine(t *testing.T) {
 	// A group that opens on one line and closes several lines later is one span.
 	b := []byte("a {posts.map((p) => (\n  fmt(p)\n))} b")
