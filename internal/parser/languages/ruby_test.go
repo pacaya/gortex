@@ -84,10 +84,10 @@ DEFAULT_HOST = "localhost"
 	result, err := e.Extract("config.rb", src)
 	require.NoError(t, err)
 
-	vars := nodesOfKind(result.Nodes, graph.KindVariable)
-	require.Len(t, vars, 2)
+	consts := nodesOfKind(result.Nodes, graph.KindConstant)
+	require.Len(t, consts, 2)
 
-	names := []string{vars[0].Name, vars[1].Name}
+	names := []string{consts[0].Name, consts[1].Name}
 	assert.Contains(t, names, "MAX_RETRIES")
 	assert.Contains(t, names, "DEFAULT_HOST")
 }

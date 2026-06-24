@@ -53,10 +53,10 @@ const qRubyAll = `
 // the section markers that flip subsequent method visibility and (in their
 // bare form) excluded from the bare-call surface so they don't read as calls.
 var rubyVisibilityMarkers = map[string]string{
-	"private":         VisibilityPrivate,
-	"protected":       VisibilityProtected,
-	"public":          VisibilityPublic,
-	"module_function": VisibilityPrivate,
+	"private":              VisibilityPrivate,
+	"protected":            VisibilityProtected,
+	"public":               VisibilityPublic,
+	"module_function":      VisibilityPrivate,
 	"private_class_method": VisibilityPrivate,
 }
 
@@ -531,7 +531,7 @@ func (e *RubyExtractor) emitConstant(m parser.QueryResult, filePath, fileID stri
 	}
 	seen[id] = true
 	result.Nodes = append(result.Nodes, &graph.Node{
-		ID: id, Kind: graph.KindVariable, Name: name,
+		ID: id, Kind: graph.KindConstant, Name: name,
 		FilePath: filePath, StartLine: def.StartLine + 1, EndLine: def.EndLine + 1,
 		Language: "ruby",
 	})

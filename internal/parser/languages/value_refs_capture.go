@@ -42,7 +42,7 @@ func captureValueRefCandidates(result *parser.ExtractionResult, root *sitter.Nod
 	}
 	seen := map[string]bool{}
 	walkNodes(root, func(n *sitter.Node) {
-		if n.Type() != "identifier" {
+		if !isValueRefIdentNode(n.Type()) {
 			return
 		}
 		name := n.Content(src)
@@ -65,6 +65,18 @@ func captureValueRefCandidates(result *parser.ExtractionResult, root *sitter.Nod
 			Meta: map[string]any{"via": "value_ref_candidate", "name": name},
 		})
 	})
+}
+
+// isValueRefIdentNode reports whether a node type is a value-position
+// identifier leaf the constant-read scan should consider. Beyond the common
+// `identifier`, Kotlin and Swift use `simple_identifier` and PHP a bare `name`,
+// so a constant read in those grammars is captured too.
+func isValueRefIdentNode(t string) bool {
+	switch t {
+	case "identifier", "simple_identifier", "name", "constant":
+		return true
+	}
+	return false
 }
 
 // isDistinctiveConstName mirrors the resolver's distinctive-name gate: at least

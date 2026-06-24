@@ -357,19 +357,25 @@ func (e *ScalaExtractor) emitScalaField(member *sitter.Node, src []byte, filePat
 	seen[id] = true
 	line := int(member.StartPoint().Row) + 1
 	meta := map[string]any{"receiver": ownerName}
+	memberKind := graph.KindField
 	if t := member.Type(); t == "var_definition" || t == "var_declaration" {
 		meta["mutable"] = true
 	} else {
 		// A `val` is an immutable value — mark it so value-reference analysis
-		// can treat it as a stable value rather than mutable state.
+		// can treat it as a stable value rather than mutable state. A
+		// distinctive-named immutable val is a Scala value constant; kind it
+		// as KindConstant so value-reference impact analysis reaches its readers.
 		meta["immutable"] = true
+		if isDistinctiveConstName(name) {
+			memberKind = graph.KindConstant
+		}
 	}
 	typ := scalaTypeAnnotation(member, src)
 	if typ != "" {
 		meta["field_type"] = typ
 	}
 	result.Nodes = append(result.Nodes, &graph.Node{
-		ID: id, Kind: graph.KindField, Name: name,
+		ID: id, Kind: memberKind, Name: name,
 		FilePath: filePath, StartLine: line, EndLine: int(member.EndPoint().Row) + 1,
 		Language: "scala", Meta: meta,
 	})
