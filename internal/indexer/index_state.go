@@ -43,6 +43,26 @@ func (idx *Indexer) persistRepoIndexState(diskTarget graph.Store, rootAbs, works
 	}
 }
 
+// reconcileRepoIndexState re-stamps the per-repo freshness row at the
+// current HEAD after the git-watcher catches the index up to a new
+// commit. The full (re)index is otherwise the only writer of this row,
+// so without this the row keeps the SHA from the last full index and
+// `gortex repos` reports the repo stale even though the in-memory graph
+// already reflects HEAD. The Merkle baseline (WorkspaceFP) from that
+// last full index is preserved — the incremental reconcile diffs against
+// it but never rebuilds it. No-op on backends without durable index
+// state (the in-memory graph is not a RepoIndexStateWriter).
+func (idx *Indexer) reconcileRepoIndexState(rootAbs string) {
+	prevFP := ""
+	if r, ok := graph.Store(idx.graph).(graph.RepoIndexStateReader); ok {
+		if prev, found, _ := r.GetRepoIndexState(idx.repoPrefix); found {
+			prevFP = prev.WorkspaceFP
+		}
+	}
+	nodes, edges := idx.repoNodeEdgeCount()
+	idx.persistRepoIndexState(nil, rootAbs, prevFP, nodes, edges)
+}
+
 // repoHeadAndDirty returns the working tree's current commit SHA and
 // whether it has uncommitted changes. Best-effort: a non-git directory or
 // any git error yields ("", false) — freshness provenance never blocks

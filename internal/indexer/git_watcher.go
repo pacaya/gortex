@@ -305,6 +305,12 @@ func (gw *GitWatcher) reconcile(trigger string) {
 	drained := gw.drained
 	gw.mu.Unlock()
 
+	// Re-stamp the on-disk freshness row at the new HEAD. The graph now
+	// reflects this commit, but the persisted repo_index_state row is
+	// otherwise written only by a full (re)index — leave it and
+	// `gortex repos` keeps reporting the repo stale after every commit.
+	gw.indexer.reconcileRepoIndexState(gw.repoPath)
+
 	gw.logger.Info("git-watcher: reconciled ref change",
 		zap.String("from", oldSHA[:min(len(oldSHA), 12)]),
 		zap.String("to", newSHA[:min(len(newSHA), 12)]),
