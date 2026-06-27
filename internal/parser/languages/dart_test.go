@@ -428,3 +428,33 @@ class App {
 	}
 	assert.True(t, sawBuild, "the real method build should still be emitted")
 }
+
+func TestDartExtractor_FactoryChainReceiver(t *testing.T) {
+	src := []byte("Widget builder() { return Widget(); }\n" +
+		"void run() {\n" +
+		"  builder().withX().build();\n" +
+		"}\n")
+	res, err := NewDartExtractor().Extract("w.dart", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var build *graph.Edge
+	seen := map[string]int{}
+	for _, e := range res.Edges {
+		if e.Kind == graph.EdgeCalls {
+			seen[e.To]++
+			if e.To == "unresolved::*.build" {
+				build = e
+			}
+		}
+	}
+	if build == nil {
+		t.Fatal("build() call edge not found")
+	}
+	if got, _ := build.Meta["receiver_expr"].(string); got != "builder().withX()" {
+		t.Errorf("receiver_expr = %q, want builder().withX()", got)
+	}
+	if seen["unresolved::*.build"] != 1 {
+		t.Errorf("build() emitted %d times, want exactly 1 (no double-count)", seen["unresolved::*.build"])
+	}
+}

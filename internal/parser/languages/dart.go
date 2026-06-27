@@ -71,6 +71,7 @@ func (e *DartExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 
 	// Call sites.
 	e.extractCalls(root, src, filePath, result, imports)
+	e.mineDartFactoryChains(root, src, filePath, result)
 
 	// Cross-file type-usage edges for declaration-position types (fields,
 	// parameters, return types, typed locals) — runs after the symbol
@@ -830,4 +831,65 @@ func extractDartImportURI(text string) string {
 		return text[start+1 : start+1+end]
 	}
 	return ""
+}
+
+// mineDartFactoryChains emits a member call per chained `.method(...)` whose
+// receiver is itself a call -- a factory chain like builder().withX().build().
+// extractCalls anchors on the leading identifier and stops at the first call,
+// so these inner segments are otherwise dropped. Gated on a call-bearing
+// receiver (so plain recv.method() is left to extractCalls, not double-counted)
+// and carries the receiver text through the shared chained-receiver walker.
+func (e *DartExtractor) mineDartFactoryChains(root *sitter.Node, src []byte, filePath string, result *parser.ExtractionResult) {
+	funcRanges := buildFuncRanges(result)
+	if len(funcRanges) == 0 {
+		return
+	}
+	walkNodes(root, func(node *sitter.Node) {
+		if node.Type() != "identifier" {
+			return
+		}
+		if p := node.Parent(); p != nil {
+			switch p.Type() {
+			case "unconditional_assignable_selector", "conditional_assignable_selector", "selector":
+				return
+			}
+		}
+		var pending *sitter.Node
+		for sib := node.NextSibling(); sib != nil; sib = sib.NextSibling() {
+			if sib.Type() != "selector" {
+				break
+			}
+			var assignable *sitter.Node
+			hasArgs := false
+			for j := 0; j < int(sib.ChildCount()); j++ {
+				switch sib.Child(j).Type() {
+				case "argument_part", "arguments":
+					hasArgs = true
+				case "unconditional_assignable_selector", "conditional_assignable_selector":
+					assignable = sib.Child(j)
+				}
+			}
+			if assignable != nil {
+				pending = assignable
+				continue
+			}
+			if hasArgs && pending != nil {
+				if id := firstIdentifierChild(pending); id != nil {
+					receiver := strings.TrimSpace(string(src[node.StartByte():pending.StartByte()]))
+					if strings.Contains(receiver, "(") {
+						line := int(pending.StartPoint().Row) + 1
+						if callerID := findEnclosingFunc(funcRanges, line); callerID != "" {
+							edge := &graph.Edge{
+								From: callerID, To: "unresolved::*." + id.Content(src),
+								Kind: graph.EdgeCalls, FilePath: filePath, Line: line,
+							}
+							stampFactoryChainReceiver(edge, receiver, resolveChainType(receiver, nil, result))
+							result.Edges = append(result.Edges, edge)
+						}
+					}
+				}
+				pending = nil
+			}
+		}
+	})
 }
