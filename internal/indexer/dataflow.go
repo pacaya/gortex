@@ -102,7 +102,11 @@ func (idx *Indexer) materializeDataflowParamsForFile(graphPath string, fileEdges
 	// A synthetic From can be shared across files, so restrict the rewrite
 	// to edges this file actually emitted: every arg_of / returns_to edge
 	// carries its call-site FilePath, so the filter keeps the set exactly
-	// the file's own.
+	// the file's own. Collect the file's arg_of / returns_to edges plus the
+	// distinct callees the arg_of rewrites target, so the per-callee param
+	// lookup is batched once instead of re-fetched per argument.
+	var argEdges, retEdges []*graph.Edge
+	callees := make(map[string]struct{})
 	for _, edges := range g.GetOutEdgesByNodeIDs(froms) {
 		for _, e := range edges {
 			if e == nil || e.FilePath != graphPath {
@@ -110,34 +114,58 @@ func (idx *Indexer) materializeDataflowParamsForFile(graphPath string, fileEdges
 			}
 			switch e.Kind {
 			case graph.EdgeArgOf:
-				rewriteArgOf(g, e)
+				argEdges = append(argEdges, e)
+				if callee, _, ok := argOfRewriteTarget(e); ok {
+					callees[callee] = struct{}{}
+				}
 			case graph.EdgeReturnsTo:
-				rewriteReturnsTo(g, e)
+				retEdges = append(retEdges, e)
 			}
 		}
 	}
+	paramIdx := buildParamPositionIndex(g, callees)
+	for _, e := range argEdges {
+		rewriteArgOfIndexed(g, e, paramIdx)
+	}
+	for _, e := range retEdges {
+		rewriteReturnsTo(g, e)
+	}
+}
+
+// argOfRewriteTarget reports whether an arg_of edge is a rewrite
+// candidate and, if so, the resolved callee id and the argument
+// position. An edge already pointing at a param node, or still
+// pointing at an unresolved / external stub, is not a candidate. Shared
+// by the per-edge (rewriteArgOf) and indexed (rewriteArgOfIndexed) paths
+// so the guard lives in one place.
+func argOfRewriteTarget(e *graph.Edge) (calleeID string, pos int, ok bool) {
+	if e == nil || e.Meta == nil {
+		return "", 0, false
+	}
+	pos, ok = argPositionFromMeta(e.Meta)
+	if !ok {
+		return "", 0, false
+	}
+	to := e.To
+	if strings.Contains(to, "#param:") {
+		return "", 0, false
+	}
+	if strings.HasPrefix(to, "unresolved::") || strings.HasPrefix(to, "external::") {
+		return "", 0, false
+	}
+	return to, pos, true
 }
 
 // rewriteArgOf walks the resolved callee's incoming param_of edges
 // and lifts the edge target from the function node to the param
 // node at the recorded position. Edges that already point at a
-// param node are left alone.
+// param node are left alone. Used by the whole-graph (cold) pass; the
+// per-file pass uses the batched rewriteArgOfIndexed instead.
 func rewriteArgOf(g graph.Store, e *graph.Edge) {
-	if e == nil || e.Meta == nil {
-		return
-	}
-	pos, ok := argPositionFromMeta(e.Meta)
+	calleeID, pos, ok := argOfRewriteTarget(e)
 	if !ok {
 		return
 	}
-	to := e.To
-	if strings.Contains(to, "#param:") {
-		return
-	}
-	if strings.HasPrefix(to, "unresolved::") || strings.HasPrefix(to, "external::") {
-		return
-	}
-	calleeID := to
 	paramID := paramNodeAtPosition(g, calleeID, pos)
 	if paramID == "" {
 		return
@@ -146,6 +174,87 @@ func rewriteArgOf(g graph.Store, e *graph.Edge) {
 	g.RemoveEdge(e.From, oldTo, e.Kind)
 	e.To = paramID
 	g.AddEdge(e)
+}
+
+// rewriteArgOfIndexed is rewriteArgOf with the callee→position→param
+// lookup served from a prebuilt index instead of a per-edge
+// paramNodeAtPosition (which re-fetched the callee's entire in-edge list
+// once per argument). Same rewrite, same guards.
+func rewriteArgOfIndexed(g graph.Store, e *graph.Edge, paramIdx map[string]map[int]string) {
+	calleeID, pos, ok := argOfRewriteTarget(e)
+	if !ok {
+		return
+	}
+	m := paramIdx[calleeID]
+	if m == nil {
+		return
+	}
+	paramID := m[pos]
+	if paramID == "" {
+		return
+	}
+	oldTo := e.To
+	g.RemoveEdge(e.From, oldTo, e.Kind)
+	e.To = paramID
+	g.AddEdge(e)
+}
+
+// buildParamPositionIndex maps each callee id to its argument
+// position → param-node-id table, built from two batched queries
+// (in-edges of all callees, then the param nodes those edges point
+// from). It replaces a per-arg_of-edge paramNodeAtPosition, which
+// re-fetched a popular callee's whole in-edge list once per argument —
+// the dominant cost of the per-file dataflow pass on a large file. The
+// position is read from the param node's Meta exactly as
+// paramNodeAtPosition does, with the first param at a position winning.
+func buildParamPositionIndex(g graph.Store, callees map[string]struct{}) map[string]map[int]string {
+	if len(callees) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(callees))
+	for id := range callees {
+		ids = append(ids, id)
+	}
+	inEdges := g.GetInEdgesByNodeIDs(ids)
+	type ownerParam struct{ owner, param string }
+	var pairs []ownerParam
+	paramSet := make(map[string]struct{})
+	for owner, edges := range inEdges {
+		for _, e := range edges {
+			if e != nil && e.Kind == graph.EdgeParamOf && e.From != "" {
+				pairs = append(pairs, ownerParam{owner: owner, param: e.From})
+				paramSet[e.From] = struct{}{}
+			}
+		}
+	}
+	if len(pairs) == 0 {
+		return nil
+	}
+	paramIDs := make([]string, 0, len(paramSet))
+	for id := range paramSet {
+		paramIDs = append(paramIDs, id)
+	}
+	nodes := g.GetNodesByIDs(paramIDs)
+	idx := make(map[string]map[int]string, len(inEdges))
+	for _, pr := range pairs {
+		n := nodes[pr.param]
+		if n == nil || n.Kind != graph.KindParam {
+			continue
+		}
+		pos, ok := intFromMeta(n.Meta, "position")
+		if !ok {
+			continue
+		}
+		m := idx[pr.owner]
+		if m == nil {
+			m = make(map[int]string)
+			idx[pr.owner] = m
+		}
+		if _, exists := m[pos]; !exists {
+			m[pos] = n.ID
+		}
+	}
+	return idx
 }
 
 // rewriteReturnsTo lifts the placeholder From by joining on the
