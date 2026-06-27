@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"time"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -69,6 +70,21 @@ type walkedFile struct {
 	lang      string
 	size      int64
 	mtimeNano int64
+}
+
+// sortBySizeDesc orders walked files largest-first, in place, so the
+// parse worker pool starts the biggest files before the long tail of
+// small ones. Dispatching the largest file last would make the whole
+// index block on it after every other worker has drained; starting it
+// first overlaps its parse with the rest and cuts tail-latency variance.
+// The sort is stable, so equal-size files keep their walk order and the
+// dispatch order stays deterministic. It is a pure permutation of the
+// slice — the set of files (and therefore the resulting graph) is
+// unchanged; only the order in which they reach the workers differs.
+func sortBySizeDesc(files []walkedFile) {
+	sort.SliceStable(files, func(i, j int) bool {
+		return files[i].size > files[j].size
+	})
 }
 
 // Files above this threshold are large enough that reading several of

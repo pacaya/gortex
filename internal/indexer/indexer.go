@@ -2644,6 +2644,17 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 		wg.Wait()
 	}
 
+	// Dispatch the largest files first. Both dispatch paths below
+	// consume this slice in order: the plain path feeds it straight to
+	// the worker pool, and the streaming-flush path carves it into
+	// chunks from the front. Feeding the biggest file to the workers
+	// first lets its long parse overlap with the tail of small files,
+	// instead of the whole index waiting on a large file that would
+	// otherwise be dispatched last. The sort is stable and a pure
+	// permutation, so the set of indexed files and the resulting graph
+	// are identical — only the dispatch order changes.
+	sortBySizeDesc(files)
+
 	// Streaming-flush path: above shadowMaxFileCount with a
 	// BulkLoader-capable backend, we can't fit the whole shadow in
 	// RAM but we can still amortise the per-file disk-write cost by

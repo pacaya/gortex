@@ -2,11 +2,13 @@ package indexer
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
@@ -192,4 +194,144 @@ func TestIndex_ParseFailedSkipTelemetry(t *testing.T) {
 	require.NotNil(t, n, "a full-index parse failure must leave a visible skip node")
 	require.Equal(t, graph.KindFile, n.Kind)
 	require.Equal(t, "parse_failed", n.Meta["skip_reason"])
+}
+
+func walkedFilePaths(fs []walkedFile) []string {
+	out := make([]string, len(fs))
+	for i, f := range fs {
+		out[i] = f.path
+	}
+	return out
+}
+
+// TestSortBySizeDesc pins the cold-index dispatch ordering: the walked
+// slice must come out largest-first, equal sizes must keep their input
+// order (stable), and the sort must be a pure permutation — never adding
+// or dropping a file.
+func TestSortBySizeDesc(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       []walkedFile
+		wantPath []string
+	}{
+		{
+			name:     "empty",
+			in:       []walkedFile{},
+			wantPath: []string{},
+		},
+		{
+			name:     "single",
+			in:       []walkedFile{{path: "a", size: 10}},
+			wantPath: []string{"a"},
+		},
+		{
+			name: "unsorted becomes descending",
+			in: []walkedFile{
+				{path: "small", size: 1},
+				{path: "big", size: 100},
+				{path: "mid", size: 50},
+			},
+			wantPath: []string{"big", "mid", "small"},
+		},
+		{
+			name: "already descending stays put",
+			in: []walkedFile{
+				{path: "big", size: 100},
+				{path: "mid", size: 50},
+				{path: "small", size: 1},
+			},
+			wantPath: []string{"big", "mid", "small"},
+		},
+		{
+			name: "equal sizes keep input order (stable)",
+			in: []walkedFile{
+				{path: "first", size: 42},
+				{path: "second", size: 42},
+				{path: "third", size: 42},
+			},
+			wantPath: []string{"first", "second", "third"},
+		},
+		{
+			name: "ties within mixed sizes keep input order",
+			in: []walkedFile{
+				{path: "tie-a", size: 10},
+				{path: "huge", size: 999},
+				{path: "tie-b", size: 10},
+				{path: "tie-c", size: 10},
+				{path: "mid", size: 50},
+			},
+			wantPath: []string{"huge", "mid", "tie-a", "tie-b", "tie-c"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := append([]walkedFile(nil), tc.in...)
+
+			sortBySizeDesc(tc.in)
+
+			assert.Equal(t, tc.wantPath, walkedFilePaths(tc.in), "dispatch order")
+
+			// Sizes must be non-increasing across the whole slice.
+			for i := 1; i < len(tc.in); i++ {
+				assert.GreaterOrEqual(t, tc.in[i-1].size, tc.in[i].size,
+					"sizes must be non-increasing at index %d", i)
+			}
+
+			// Pure permutation: identical multiset of files before and
+			// after, so the sort can never change which files get indexed.
+			assert.ElementsMatch(t, walkedFilePaths(before), walkedFilePaths(tc.in),
+				"sort must not add or drop files")
+		})
+	}
+}
+
+// TestColdIndexLargestFirstKeepsGraphIdentical confirms the size-first
+// dispatch only reorders work: a cold index over a fixture whose lexical
+// walk order differs from its size order produces a complete, identical
+// graph run-to-run. aaa.go is tiny and walked first; zzz.go is the
+// largest and walked last, so the descending-size sort dispatches them
+// in the opposite order from the walk.
+func TestColdIndexLargestFirstKeepsGraphIdentical(t *testing.T) {
+	mkFixture := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "aaa.go"),
+			"package p\n\nfunc Tiny() {}\n")
+		writeFile(t, filepath.Join(dir, "mmm.go"),
+			"package p\n\nfunc Mid() string { return \"x\" }\n")
+		// Deliberately the largest file: walked last, dispatched first.
+		var b strings.Builder
+		b.WriteString("package p\n\n")
+		for i := 0; i < 200; i++ {
+			fmt.Fprintf(&b, "func Big%d() int { return %d }\n", i, i)
+		}
+		writeFile(t, filepath.Join(dir, "zzz.go"), b.String())
+		return dir
+	}
+
+	index := func(t *testing.T) *IndexResult {
+		t.Helper()
+		g := graph.New()
+		idx := newTestIndexer(g)
+		res, err := idx.Index(mkFixture(t))
+		require.NoError(t, err)
+		// Every file survived the reordering.
+		assert.Equal(t, 3, res.FileCount)
+		// Symbols from both the first-walked tiny file and the
+		// last-walked large file are present.
+		assert.NotEmpty(t, g.FindNodesByName("Tiny"))
+		assert.NotEmpty(t, g.FindNodesByName("Big0"))
+		assert.NotEmpty(t, g.FindNodesByName("Big199"))
+		return res
+	}
+
+	a := index(t)
+	b := index(t)
+
+	assert.Equal(t, a.FileCount, b.FileCount)
+	assert.Equal(t, a.NodeCount, b.NodeCount,
+		"cold-index node count must be identical regardless of dispatch order")
+	assert.Equal(t, a.EdgeCount, b.EdgeCount,
+		"cold-index edge count must be identical regardless of dispatch order")
 }
