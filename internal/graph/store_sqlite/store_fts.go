@@ -1,6 +1,7 @@
 package store_sqlite
 
 import (
+	"database/sql"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -52,11 +53,14 @@ const ftsInsertChunkRows = 300
 
 // UpsertSymbolFTS records (or replaces) the pre-tokenised text for
 // nodeID. FTS5 offers no UPSERT on a table with UNINDEXED columns, so
-// the write is delete-then-insert: drop any prior row for nodeID, then
-// insert the new tokens. The repo_prefix is derived from the owning
-// node (nodes.repo_prefix) so the per-repo staleness wipe in
-// BulkUpsertSymbolFTS can scope by prefix; if the node is absent the
-// prefix defaults to "".
+// the write is delete-then-insert. The delete targets the prior row's
+// FTS5 docid (rowid), looked up from the symbol_fts_rowid sidecar —
+// node_id is UNINDEXED, so "DELETE … WHERE node_id = ?" would full-scan
+// the whole index once per symbol, which is quadratic over a file's
+// symbols on the per-edit reindex hot path. The repo_prefix is derived
+// from the owning node (nodes.repo_prefix) so the per-repo staleness
+// wipe in BulkUpsertSymbolFTS can scope by prefix; if the node is absent
+// the prefix defaults to "".
 func (s *Store) UpsertSymbolFTS(nodeID, tokens string) error {
 	if nodeID == "" {
 		return nil
@@ -65,19 +69,45 @@ func (s *Store) UpsertSymbolFTS(nodeID, tokens string) error {
 	defer s.writeMu.Unlock()
 
 	var repoPrefix string
-	row := s.db.QueryRow(`SELECT repo_prefix FROM nodes WHERE id = ?`, nodeID)
 	// A missing node (or a scan error) leaves repoPrefix == "" — the
 	// row is still indexable, it just won't be reachable by a per-repo
 	// prefix wipe. The graph.Store contract has no error channel for
 	// the indexer's incremental writes, so we don't surface this.
-	_ = row.Scan(&repoPrefix)
+	_ = s.db.QueryRow(`SELECT repo_prefix FROM nodes WHERE id = ?`, nodeID).Scan(&repoPrefix)
 
-	if _, err := s.db.Exec(`DELETE FROM symbol_fts WHERE node_id = ?`, nodeID); err != nil {
+	// Delete the prior row by its docid (O(log n)) instead of by node_id
+	// (full FTS scan). A missing map entry means no prior row to drop —
+	// the sidecar is kept in lockstep with symbol_fts by every writer and
+	// backfilled at Open for databases built before it existed, so a miss
+	// here is a genuinely new symbol, not a stale row we're leaking.
+	var oldRowid int64
+	switch err := s.db.QueryRow(
+		`SELECT fts_rowid FROM symbol_fts_rowid WHERE node_id = ?`, nodeID,
+	).Scan(&oldRowid); err {
+	case nil:
+		if _, err := s.db.Exec(`DELETE FROM symbol_fts WHERE rowid = ?`, oldRowid); err != nil {
+			return err
+		}
+	case sql.ErrNoRows:
+		// new symbol — nothing to delete
+	default:
+		return err
+	}
+
+	res, err := s.db.Exec(
+		`INSERT INTO symbol_fts (node_id, repo_prefix, tokens) VALUES (?, ?, ?)`,
+		nodeID, repoPrefix, tokens,
+	)
+	if err != nil {
+		return err
+	}
+	newRowid, err := res.LastInsertId()
+	if err != nil {
 		return err
 	}
 	if _, err := s.db.Exec(
-		`INSERT INTO symbol_fts (node_id, repo_prefix, tokens) VALUES (?, ?, ?)`,
-		nodeID, repoPrefix, tokens,
+		`INSERT OR REPLACE INTO symbol_fts_rowid (node_id, repo_prefix, fts_rowid) VALUES (?, ?, ?)`,
+		nodeID, repoPrefix, newRowid,
 	); err != nil {
 		return err
 	}
@@ -142,6 +172,12 @@ func (s *Store) BulkUpsertSymbolFTS(repoPrefix string, items []graph.SymbolFTSIt
 	if _, err := tx.Exec(`DELETE FROM symbol_fts WHERE repo_prefix = ?`, repoPrefix); err != nil {
 		return err
 	}
+	// Drop this repo's rowid-map entries in lockstep with the symbol_fts
+	// wipe so the two never diverge; they are rebuilt from the freshly
+	// inserted rows below.
+	if _, err := tx.Exec(`DELETE FROM symbol_fts_rowid WHERE repo_prefix = ?`, repoPrefix); err != nil {
+		return err
+	}
 
 	for start := 0; start < len(items); start += ftsInsertChunkRows {
 		end := minInt(start+ftsInsertChunkRows, len(items))
@@ -162,11 +198,51 @@ func (s *Store) BulkUpsertSymbolFTS(repoPrefix string, items []graph.SymbolFTSIt
 		}
 	}
 
+	// Rebuild the rowid map for this repo from the rows just inserted. A
+	// full multi-row INSERT only exposes the last docid, so we read the
+	// docids back in one pass (a linear filter over the UNINDEXED
+	// repo_prefix column — the cold/bulk path, not the per-edit hot path).
+	if _, err := tx.Exec(
+		`INSERT OR REPLACE INTO symbol_fts_rowid (node_id, repo_prefix, fts_rowid)
+		 SELECT node_id, repo_prefix, rowid FROM symbol_fts WHERE repo_prefix = ?`,
+		repoPrefix,
+	); err != nil {
+		return err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	commit = true
 	return nil
+}
+
+// backfillSymbolFTSRowidMap populates symbol_fts_rowid from symbol_fts for
+// a database built before the sidecar existed. Without it, the first
+// incremental UpsertSymbolFTS for an already-indexed symbol would find no
+// map entry, skip the delete, and leak a duplicate FTS row. It is a
+// one-time cost: skipped once the map has any row (steady state) or when
+// the FTS index is empty (a fresh DB the bulk path will populate with the
+// map maintained inline). Runs at Open, before any reader or writer.
+func backfillSymbolFTSRowidMap(db *sql.DB) error {
+	var mapped bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM symbol_fts_rowid)`).Scan(&mapped); err != nil {
+		return err
+	}
+	if mapped {
+		return nil
+	}
+	var hasFTS bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM symbol_fts)`).Scan(&hasFTS); err != nil {
+		return err
+	}
+	if !hasFTS {
+		return nil
+	}
+	_, err := db.Exec(
+		`INSERT OR REPLACE INTO symbol_fts_rowid (node_id, repo_prefix, fts_rowid)
+		 SELECT node_id, repo_prefix, rowid FROM symbol_fts`)
+	return err
 }
 
 // BuildSymbolIndex is a no-op for FTS5: the index is maintained

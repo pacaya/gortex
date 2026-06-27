@@ -263,15 +263,31 @@ CREATE INDEX IF NOT EXISTS blame_by_repo ON blame_enrichment(repo_prefix) WHERE 
 -- symbol_fts is the FTS5 full-text index over pre-tokenised symbol
 -- names. It replaces the multi-GB in-heap Bleve/BM25 index with an
 -- on-disk inverted index the SymbolSearcher / SymbolBundleSearcher
--- query through. A standard (NOT contentless) FTS5 table so we can
--- DELETE individual rows by node_id without an external content
--- shadow. node_id is the join key back to nodes.id; repo_prefix is
+-- query through. A standard (NOT contentless) FTS5 table; individual
+-- rows are deleted by their FTS5 docid via the symbol_fts_rowid sidecar
+-- below (node_id is UNINDEXED, so a DELETE keyed on it would full-scan
+-- the index). node_id is the join key back to nodes.id; repo_prefix is
 -- carried UNINDEXED so per-repo staleness wipes (DELETE … WHERE
 -- repo_prefix = ?) hit a literal column without a separate b-tree.
 -- Only "tokens" is indexed for matching. IF NOT EXISTS makes this
 -- idempotent on every Open, so an existing .sqlite gains the vtable
 -- on its next open + reindex.
 CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(node_id UNINDEXED, repo_prefix UNINDEXED, tokens);
+
+-- symbol_fts_rowid maps a node_id to the rowid (FTS5 docid) of its row in
+-- symbol_fts. node_id is UNINDEXED in the FTS5 vtable, so deleting a node's
+-- prior row with "DELETE … WHERE node_id = ?" full-scans the entire index
+-- once PER symbol — quadratic on the per-edit reindex hot path. This sidecar
+-- turns the delete into an O(log n) docid delete ("WHERE rowid = ?", the FTS5
+-- docid IS indexed). One row per indexed symbol, keyed by node_id (the join
+-- key back to nodes.id); repo_prefix scopes the per-repo wipe that
+-- BulkUpsertSymbolFTS performs in lockstep with symbol_fts. WITHOUT ROWID:
+-- the PK index IS the table, like file_mtimes / clone_shingles.
+CREATE TABLE IF NOT EXISTS symbol_fts_rowid (
+    node_id     TEXT PRIMARY KEY,
+    repo_prefix TEXT NOT NULL DEFAULT '',
+    fts_rowid   INTEGER NOT NULL
+) WITHOUT ROWID;
 
 -- content_fts is the FTS5 full-text index over CONTENT (data_class=
 -- "content") section bodies — text / pdf / pptx / xlsx chunks. It is

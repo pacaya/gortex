@@ -286,6 +286,15 @@ func openWith(path string, current int, migrations []schemaMigration, allowRebui
 		return nil, fmt.Errorf("sqlite node columns: %w", err)
 	}
 
+	// Backfill the FTS rowid sidecar for databases built before it existed,
+	// so the first incremental UpsertSymbolFTS on an already-indexed symbol
+	// can do its O(log n) docid delete instead of leaking a duplicate row.
+	// One-time; a no-op once the map is populated or the FTS index is empty.
+	if err := backfillSymbolFTSRowidMap(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite fts rowid backfill: %w", err)
+	}
+
 	// Apply any in-place migration steps (none on a fresh, baseline, or wiped
 	// DB), then stamp the current schema version. After a wipe the store is
 	// empty and the daemon's normal indexing repopulates it.
