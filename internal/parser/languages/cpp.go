@@ -85,6 +85,7 @@ type cppDeferredCall struct {
 	name     string
 	line     int
 	isMember bool
+	receiver string
 	argTypes []string
 }
 
@@ -142,6 +143,7 @@ func (e *CppExtractor) Extract(filePath string, src []byte) (*parser.ExtractionR
 				name:     m.Captures["callm.method"].Text,
 				line:     expr.StartLine + 1,
 				isMember: true,
+				receiver: cppCallReceiverText(expr.Node, src),
 				argTypes: extractCppCallArgTypes(expr.Node, src),
 			})
 
@@ -191,6 +193,9 @@ func (e *CppExtractor) Extract(filePath string, src []byte) (*parser.ExtractionR
 			edge.Meta = map[string]any{
 				"scope_arg_types": strings.Join(c.argTypes, ","),
 			}
+		}
+		if c.isMember && c.receiver != "" {
+			stampFactoryChainReceiver(edge, c.receiver, resolveChainType(c.receiver, nil, result))
 		}
 		result.Edges = append(result.Edges, edge)
 	}
@@ -652,4 +657,26 @@ func cppArgTypeHint(arg *sitter.Node, src []byte) string {
 		}
 	}
 	return ""
+}
+
+// cppCallReceiverText returns the receiver expression text of a member call
+// `recv.method(...)` / `recv->method(...)` -- the object of the call's
+// field_expression -- so a factory chain (`make().with().build()`) can be
+// typed by resolveChainType.
+func cppCallReceiverText(callNode *sitter.Node, src []byte) string {
+	if callNode == nil {
+		return ""
+	}
+	fn := callNode.ChildByFieldName("function")
+	if fn == nil || fn.Type() != "field_expression" {
+		return ""
+	}
+	obj := fn.ChildByFieldName("argument")
+	if obj == nil && fn.NamedChildCount() > 0 {
+		obj = fn.NamedChild(0)
+	}
+	if obj == nil {
+		return ""
+	}
+	return strings.TrimSpace(obj.Content(src))
 }

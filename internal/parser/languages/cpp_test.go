@@ -172,3 +172,35 @@ func TestCppExtractor_FnValueAddressOf(t *testing.T) {
 	assert.Equal(t, "address_of", forms["handler"], "&handler is an address-of form")
 	assert.Equal(t, "address_of", forms["Foo::method"], "&Foo::method is an address-of form")
 }
+
+func TestCppExtractor_FactoryChainReceiver(t *testing.T) {
+	src := []byte("struct Widget { Widget withX() { return *this; } };\n" +
+		"Widget builder() { return Widget(); }\n" +
+		"void run() {\n" +
+		"  builder().withX().build();\n" +
+		"}\n")
+	res, err := NewCppExtractor().Extract("w.cpp", src)
+	require.NoError(t, err)
+
+	var withX, build *graph.Edge
+	for _, e := range res.Edges {
+		if e.Kind != graph.EdgeCalls {
+			continue
+		}
+		switch e.To {
+		case "unresolved::*.withX":
+			withX = e
+		case "unresolved::*.build":
+			build = e
+		}
+	}
+	require.NotNil(t, withX, "withX() call edge")
+	require.NotNil(t, build, "build() call edge")
+	// builder() is a typed factory, so withX()'s receiver resolves to Widget.
+	assert.Equal(t, "Widget", withX.Meta["receiver_type"], "factory base resolves the chained receiver type")
+	// build()'s hop (withX) is not a typed node here, so the chain receiver
+	// expression is preserved for the graph-aware resolver to complete.
+	if got, _ := build.Meta["receiver_expr"].(string); got != "builder().withX()" {
+		t.Errorf("receiver_expr = %q, want builder().withX()", got)
+	}
+}
