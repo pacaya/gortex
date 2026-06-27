@@ -146,3 +146,30 @@ end.
 	assert.True(t, has("MyUnit.pas::TFoo.Baz", "unresolved::*.DoThing", graph.OriginTextMatched),
 		"paren-less call DoThing; should emit an edge; got %v", calls)
 }
+
+func TestPascalExtractor_FactoryChainReceiver(t *testing.T) {
+	src := []byte("procedure Run;\nbegin\n  Builder().WithX().Build();\nend;\n")
+	res, err := NewPascalExtractor().Extract("w.pas", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var build *graph.Edge
+	seen := map[string]int{}
+	for _, e := range res.Edges {
+		if e.Kind == graph.EdgeCalls {
+			seen[e.To]++
+			if e.To == "unresolved::*.Build" {
+				build = e
+			}
+		}
+	}
+	if build == nil {
+		t.Fatal("Build() call edge not found")
+	}
+	if got, _ := build.Meta["receiver_expr"].(string); got != "Builder().WithX()" {
+		t.Errorf("receiver_expr = %q, want Builder().WithX()", got)
+	}
+	if seen["unresolved::*.Build"] != 1 {
+		t.Errorf("Build() emitted %d times, want exactly 1", seen["unresolved::*.Build"])
+	}
+}

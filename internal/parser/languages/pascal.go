@@ -366,6 +366,20 @@ func (e *PascalExtractor) emitPascalCalls(n *sitter.Node, src []byte, filePath s
 			// First named child is the callee (identifier or genericDot).
 			if callee := pascalCallTargetName(c, src); callee != "" {
 				e.emitPascalCallEdge(fromID, callee, filePath, int(c.StartPoint().Row)+1, result, procIndex)
+			} else if dot := pascalFirstChild(c, "exprDot"); dot != nil {
+				// A chained `recv.Method()` whose receiver is itself a call --
+				// a factory chain Builder().WithX().Build(). The bare-callee path
+				// above misses these; emit the method with the receiver text so
+				// the shared walker can type the chain.
+				method, receiver := pascalDotMethodReceiver(dot, src)
+				if method != "" && strings.Contains(receiver, "(") {
+					edge := &graph.Edge{
+						From: fromID, To: "unresolved::*." + method,
+						Kind: graph.EdgeCalls, FilePath: filePath, Line: int(c.StartPoint().Row) + 1,
+					}
+					stampFactoryChainReceiver(edge, receiver, resolveChainType(receiver, nil, result))
+					result.Edges = append(result.Edges, edge)
+				}
 			}
 		case "statement":
 			// A statement whose only named child is a bare identifier /
@@ -482,6 +496,21 @@ func pascalReturnType(decl *sitter.Node, src []byte) string {
 
 // pascalCallTargetName returns the callee name of an exprCall (its first named
 // identifier / genericDot child).
+// pascalDotMethodReceiver splits an exprDot `recv.Method` into the method
+// name (its trailing identifier) and the receiver text (everything before).
+func pascalDotMethodReceiver(dot *sitter.Node, src []byte) (method, receiver string) {
+	for i := int(dot.ChildCount()) - 1; i >= 0; i-- {
+		if dot.Child(i).Type() == "identifier" {
+			method = strings.TrimSpace(dot.Child(i).Content(src))
+			break
+		}
+	}
+	if obj := dot.NamedChild(0); obj != nil {
+		receiver = strings.TrimSpace(obj.Content(src))
+	}
+	return method, receiver
+}
+
 func pascalCallTargetName(call *sitter.Node, src []byte) string {
 	for i := 0; i < int(call.ChildCount()); i++ {
 		c := call.Child(i)
