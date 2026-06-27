@@ -1,0 +1,16 @@
+{
+  "wall_clock_ns": 21665292,
+  "wall_clock_ms": 21.665292,
+  "alloc_bytes": 8789264,
+  "gc_cpu_fraction": 0.0020472144272846798,
+  "num_gc": 2,
+  "gc_pause_total_ns": 101874,
+  "nodes": 200,
+  "edges": 773,
+  "files": 10,
+  "runs": 8,
+  "go_version": "go1.26.4",
+  "goos": "darwin",
+  "goarch": "arm64",
+  "note": "best-of-runs cold index of testdata/fixture; the gate is wall_clock_ns + 15%; regenerate with GORTEX_BENCH_INDEX_UPDATE_BASELINE=1"
+}
