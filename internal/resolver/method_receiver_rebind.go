@@ -35,8 +35,12 @@ import (
 // Scope: Go only — other languages (Java / TS / Python) group methods
 // inside the class body in the same file, so the cross-file pattern
 // doesn't arise. The method node's Language gates the rebind.
+// pkgKey identifies a Go type by its package directory and name — the
+// key the receiver-rebind type index is built on. Package-level so the
+// whole-graph and per-file builders share it.
+type pkgKey struct{ pkg, name string }
+
 func (r *Resolver) rebindGoMethodReceivers() {
-	type pkgKey struct{ pkg, name string }
 	typesIdx := make(map[pkgKey]string)
 	for _, kind := range []graph.NodeKind{graph.KindType, graph.KindInterface} {
 		// Server-side language scope: only Go type/interface nodes cross
@@ -45,41 +49,85 @@ func (r *Resolver) rebindGoMethodReceivers() {
 		// just to discard the non-Go majority — the bulk of this pass's
 		// cost on a large single-language graph.
 		for n := range r.nodesByKindLang(kind, "go") {
-			if n.Name == "" || n.FilePath == "" {
-				continue
-			}
-			k := pkgKey{filepath.Dir(n.FilePath), n.Name}
-			if existing, ok := typesIdx[k]; ok && existing != n.ID {
-				// Two distinct type nodes with the same name in the
-				// same package directory shouldn't happen in valid Go,
-				// but guard against it — leave the edge alone rather
-				// than pick an arbitrary winner.
-				typesIdx[k] = ""
-				continue
-			}
-			typesIdx[k] = n.ID
+			addGoTypeToIndex(typesIdx, n)
 		}
 	}
 	if len(typesIdx) == 0 {
 		return
 	}
-	// Materialise the MemberOf edges and batch-load their endpoints in one
-	// GetNodesByIDs: a per-edge GetNode(e.From)+GetNode(e.To) here is two
-	// query round-trips per method on a disk backend — across tens of
-	// thousands of methods it was a multi-minute cold-warmup stall.
 	var memberOf []*graph.Edge
-	ids := make(map[string]struct{})
 	for e := range r.graph.EdgesByKind(graph.EdgeMemberOf) {
 		memberOf = append(memberOf, e)
+	}
+	r.rebindMemberOf(typesIdx, memberOf)
+}
+
+// rebindGoMethodReceiversForFile is the single-file scope of
+// rebindGoMethodReceivers. A Go method's receiver type lives in the same
+// package (directory) as the method, and only the edited file's methods
+// carry a freshly-extracted phantom `<file>::Type` receiver — so the type
+// index is built from just that package's files and the MemberOf edges
+// from just the edited file's methods, instead of indexing every Go type
+// and scanning every MemberOf edge in the graph on each save (the
+// dominant per-edit cost on a large graph). dirIndex (built by
+// buildPassIndexes before this runs) supplies the package's files.
+func (r *Resolver) rebindGoMethodReceiversForFile(filePath string) {
+	typesIdx := make(map[pkgKey]string)
+	for _, fn := range r.dirIndex[filepath.Dir(filePath)] {
+		for _, n := range r.graph.GetFileNodes(fn.FilePath) {
+			if n != nil && n.Language == "go" &&
+				(n.Kind == graph.KindType || n.Kind == graph.KindInterface) {
+				addGoTypeToIndex(typesIdx, n)
+			}
+		}
+	}
+	if len(typesIdx) == 0 {
+		return
+	}
+	var memberOf []*graph.Edge
+	for _, n := range r.graph.GetFileNodes(filePath) {
+		for _, e := range r.graph.GetOutEdges(n.ID) {
+			if e.Kind == graph.EdgeMemberOf {
+				memberOf = append(memberOf, e)
+			}
+		}
+	}
+	r.rebindMemberOf(typesIdx, memberOf)
+}
+
+// addGoTypeToIndex records a Go type/interface node under (dir, name).
+// Two distinct nodes with the same name in the same package directory
+// shouldn't happen in valid Go; if they do, the entry is poisoned to ""
+// so the rebind leaves the edge alone rather than pick an arbitrary
+// winner.
+func addGoTypeToIndex(idx map[pkgKey]string, n *graph.Node) {
+	if n == nil || n.Name == "" || n.FilePath == "" {
+		return
+	}
+	k := pkgKey{filepath.Dir(n.FilePath), n.Name}
+	if existing, ok := idx[k]; ok && existing != n.ID {
+		idx[k] = ""
+		return
+	}
+	idx[k] = n.ID
+}
+
+// rebindMemberOf lifts each Go method's MemberOf edge from a phantom
+// `<methodfile>::TypeName` target onto the canonical type node from
+// typesIdx. Endpoints are batch-loaded in one GetNodesByIDs (a per-edge
+// GetNode here is two query round-trips per method on a disk backend).
+func (r *Resolver) rebindMemberOf(typesIdx map[pkgKey]string, memberOf []*graph.Edge) {
+	if len(memberOf) == 0 {
+		return
+	}
+	ids := make(map[string]struct{}, len(memberOf)*2)
+	for _, e := range memberOf {
 		if e.From != "" {
 			ids[e.From] = struct{}{}
 		}
 		if e.To != "" {
 			ids[e.To] = struct{}{}
 		}
-	}
-	if len(memberOf) == 0 {
-		return
 	}
 	idList := make([]string, 0, len(ids))
 	for id := range ids {

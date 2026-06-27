@@ -1058,19 +1058,31 @@ func (s *Store) evictByScopeLocked(selectIDs, deleteNodes *sql.Stmt, scope strin
 		return 0, 0
 	}
 
-	// Delete every edge touching one of these nodes. We run a single
-	// DELETE per node id to avoid bumping into SQLite's bound-variable
-	// limit on big batches; under the write lock this is a
-	// straight-line walk.
+	// Delete every edge touching one of these nodes. A DELETE-per-node
+	// (… WHERE from_id = ? OR to_id = ?) is one statement round-trip and
+	// WAL commit per node — hundreds of them when evicting a large file on
+	// the per-edit reindex path. Instead delete in chunked IN batches
+	// keyed on from_id then to_id, so each chunk is one index-driven
+	// DELETE; the chunk size stays under SQLite's bound-variable limit.
 	var edgesRemoved int
-	for _, id := range ids {
-		res, err := s.db.Exec(`DELETE FROM edges WHERE from_id = ? OR to_id = ?`, id, id)
-		if err != nil {
-			panicOnFatal(err)
-			return 0, edgesRemoved
-		}
-		if n, err := res.RowsAffected(); err == nil {
-			edgesRemoved += int(n)
+	const evictEdgeChunk = 900
+	for _, col := range []string{"from_id", "to_id"} {
+		for start := 0; start < len(ids); start += evictEdgeChunk {
+			end := minInt(start+evictEdgeChunk, len(ids))
+			chunk := ids[start:end]
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+			args := make([]any, len(chunk))
+			for i, id := range chunk {
+				args[i] = id
+			}
+			res, err := s.db.Exec(`DELETE FROM edges WHERE `+col+` IN (`+placeholders+`)`, args...)
+			if err != nil {
+				panicOnFatal(err)
+				return 0, edgesRemoved
+			}
+			if n, err := res.RowsAffected(); err == nil {
+				edgesRemoved += int(n)
+			}
 		}
 	}
 
