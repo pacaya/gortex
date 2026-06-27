@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -168,6 +169,71 @@ func TestIndex_DataAssetSkippedByDefault(t *testing.T) {
 	require.NotNil(t, n2)
 	require.Nil(t, n2.Meta["skip_reason"])
 	require.Equal(t, "data", n2.Meta["data_class"])
+}
+
+// TestIndex_SkipUntrackedAssets verifies that, with the opt-in flag on,
+// untracked document/data assets are dropped while tracked assets and
+// untracked CODE are still indexed; and that the default (flag off) admits
+// untracked documents.
+func TestIndex_SkipUntrackedAssets(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available in PATH")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	runGit(t, dir, "config", "user.email", "t@example.com")
+	runGit(t, dir, "config", "user.name", "T")
+	runGit(t, dir, "config", "commit.gpgsign", "false")
+
+	// Tracked: a code file and a small document.
+	writeFile(t, filepath.Join(dir, "code.go"), "package main\n\nfunc A() {}\n")
+	writeFile(t, filepath.Join(dir, "tracked.txt"), "committed note")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-q", "-m", "init")
+
+	// Untracked working-tree files: a document, a data asset, and code.
+	writeFile(t, filepath.Join(dir, "untracked.txt"), "scratch rag asset")
+	writeFile(t, filepath.Join(dir, "vectors.npy"), "NUMPY-placeholder-bytes")
+	writeFile(t, filepath.Join(dir, "new.go"), "package main\n\nfunc B() {}\n")
+
+	// Flag ON: untracked assets dropped, tracked asset + untracked code kept.
+	g := graph.New()
+	idx := newAssetTestIndexer(g)
+	idx.config.SkipUntrackedAssets = true
+	if _, err := idx.IndexCtx(testCtx(), dir); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	for _, p := range []string{"untracked.txt", "vectors.npy"} {
+		n := g.GetNode(p)
+		require.NotNil(t, n, p)
+		require.Equal(t, skipReasonUntrackedAsset, n.Meta["skip_reason"], p)
+	}
+	tracked := g.GetNode("tracked.txt")
+	require.NotNil(t, tracked)
+	require.Nil(t, tracked.Meta["skip_reason"], "tracked document must be admitted")
+	newGo := g.GetNode("new.go")
+	require.NotNil(t, newGo, "untracked CODE must still be indexed")
+	require.Nil(t, newGo.Meta["skip_reason"])
+
+	// Flag OFF (default): the untracked document is admitted as content.
+	g2 := graph.New()
+	idx2 := newAssetTestIndexer(g2)
+	if _, err := idx2.IndexCtx(testCtx(), dir); err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	un := g2.GetNode("untracked.txt")
+	require.NotNil(t, un)
+	require.Nil(t, un.Meta["skip_reason"], "with the flag off, an untracked document is admitted")
+}
+
+// TestGitTrackedSet_NonGitDirInert verifies gitTrackedSet reports failure
+// (gate inert) outside a git repo.
+func TestGitTrackedSet_NonGitDirInert(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available in PATH")
+	}
+	_, ok := gitTrackedSet(testCtx(), t.TempDir())
+	require.False(t, ok)
 }
 
 // TestIndexFile_ContentSkip verifies the incremental (watcher) path applies

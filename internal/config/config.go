@@ -752,6 +752,21 @@ type IndexConfig struct {
 	// listable without being read or extracted. See
 	// ContentAdmissionConfig. Configured under `index.content`.
 	Content ContentAdmissionConfig `mapstructure:"content" yaml:"content,omitempty"`
+
+	// SkipUntrackedAssets drops document / data / image assets that git
+	// does not track (uncommitted working-tree files) during a full index.
+	// `.gitignore` is already honoured (respect_gitignore), but it can't
+	// catch files that are merely untracked — never `git add`ed and not in
+	// .gitignore — which is exactly how RAG corpora, downloaded datasets,
+	// and build outputs end up admitted (#120). When on, an untracked
+	// asset-class file is skipped at the walk with an `untracked_asset`
+	// telemetry node; untracked CODE is still indexed, so new / unsaved
+	// source keeps working. Off by default. Inert on a non-git repo or when
+	// `git ls-files` is unavailable (everything is admitted as before).
+	// Applies to the cold full-index walk; the incremental watcher path
+	// keeps the size / class caps only. Configured under
+	// `index.skip_untracked_assets`.
+	SkipUntrackedAssets bool `mapstructure:"skip_untracked_assets" yaml:"skip_untracked_assets,omitempty"`
 }
 
 // ContentAdmissionConfig gates which large non-source artifacts enter the

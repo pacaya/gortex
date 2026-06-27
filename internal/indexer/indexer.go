@@ -1953,6 +1953,11 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 	// non-source files into the parse pipeline and OOM (#120). Inert for
 	// all-code repos.
 	contentGate := idx.newContentAdmissionGate()
+	// Git-aware admission (opt-in): when index.skip_untracked_assets is on,
+	// drop asset-class files git does not track — uncommitted RAG corpora /
+	// datasets / build outputs that .gitignore can't catch (#120). Inert
+	// when off, on a non-git repo, or when git is unavailable.
+	untrackedGate := idx.newUntrackedAssetGate(ctx, absRoot)
 	var files []walkedFile
 	var skippedLarge int
 	var skippedBytes int64
@@ -1989,6 +1994,14 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 			rel, _ := filepath.Rel(absRoot, path)
 			skippedBySize = append(skippedBySize, skippedFile{
 				relPath: filepath.ToSlash(rel), lang: lang, size: info.Size(),
+			})
+			return nil
+		}
+		if reason, skip := untrackedGate.skip(lang, path); skip {
+			skippedContentBytes += info.Size()
+			rel, _ := filepath.Rel(absRoot, path)
+			skippedByContent = append(skippedByContent, skippedFile{
+				relPath: filepath.ToSlash(rel), lang: lang, size: info.Size(), reason: reason,
 			})
 			return nil
 		}
