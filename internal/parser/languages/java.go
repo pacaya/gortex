@@ -379,6 +379,12 @@ func (e *JavaExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 	// above don't cover. Attributed to the enclosing method via funcRanges.
 	emitJavaReferenceForms(root, src, filePath, fileID, funcRanges, result)
 
+	// React Native native event emits (getJSModule(...).emit / sendEvent helper)
+	// pair with the JS addListener handler on the same rn_native_event topic.
+	mineRNJVMEmits(src, func(line int) string {
+		return findEnclosingFunc(funcRanges, line)
+	}, filePath, "java", result)
+
 	// @Value("${key:Default}") fields → their literal defaults, for invoker
 	// dispatch through a Spring-injected field (built only when invoker
 	// detection is configured).

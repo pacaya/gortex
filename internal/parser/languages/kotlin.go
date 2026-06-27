@@ -354,6 +354,12 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 	// JS-callable method nodes for the Expo bridge synthesizer.
 	emitExpoModuleNodes(src, filePath, "kotlin", fileID, result, seen)
 
+	// React Native native event emits (getJSModule(...).emit / sendEvent helper)
+	// pair with the JS addListener handler on the same rn_native_event topic.
+	mineRNJVMEmits(src, func(line int) string {
+		return findEnclosingFunc(funcRanges, line)
+	}, filePath, "kotlin", result)
+
 	stampScopePkg(result, kotlinPackageName(root, src))
 	captureValueRefCandidates(result, root, filePath, src)
 	captureFnValueCandidates(result, root, filePath, src)

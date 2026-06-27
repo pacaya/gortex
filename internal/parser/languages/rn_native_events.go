@@ -50,3 +50,19 @@ func mineRNNativeEmits(src []byte, re *regexp.Regexp, callerLookup func(line int
 	}
 	emitPubsubEvents(events, callerLookup, filePath, language, result)
 }
+
+// rnJVMEmitRe matches an Android React Native device-event emit chain,
+// reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("Name", ...)
+// (Kotlin) / ....RCTDeviceEventEmitter.class).emit("Name", ...) (Java), capturing
+// the event name.
+var rnJVMEmitRe = regexp.MustCompile(`getJSModule\s*\([^;]*?\)\s*\.\s*emit\s*\(\s*"([^"]+)"`)
+
+// mineRNJVMEmits scans Java/Kotlin source for React Native native event emits --
+// the getJSModule(...).emit("Name", ...) device-event-emitter chain and the
+// common sendEvent(reactContext, "Name", ...) helper wrapper -- and records each
+// as a publish on the rn_native_event channel. The two forms are syntactically
+// disjoint, so neither double-counts the other.
+func mineRNJVMEmits(src []byte, callerLookup func(line int) string, filePath, language string, result *parser.ExtractionResult) {
+	mineRNNativeEmits(src, rnJVMEmitRe, callerLookup, filePath, language, result)
+	mineRNNativeEmits(src, rnSendEventWrapperRe, callerLookup, filePath, language, result)
+}
