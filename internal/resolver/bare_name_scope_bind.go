@@ -101,6 +101,47 @@ func (r *Resolver) bindBareNameScopeRefs() {
 	}
 }
 
+// bindBareNameScopeRefsForFile is the single-file scope of
+// bindBareNameScopeRefs. A bare-name reference binds to a KindLocal /
+// KindParam declared by its OWN enclosing function, and that function —
+// with all of its locals and params — lives entirely in the edited file.
+// So the scope index is built from the file's own KindLocal / KindParam
+// nodes and only the file's outgoing Read / Reference / ArgOf / ValueFlow
+// edges are considered. This produces the same binds as the whole-graph
+// sweep for a per-save resolve without scanning every KindLocal in the
+// graph (the single largest node kind).
+func (r *Resolver) bindBareNameScopeRefsForFile(filePath string) {
+	owned := map[string][]scopeNode{}
+	for _, n := range r.graph.GetFileNodes(filePath) {
+		if n.Kind != graph.KindLocal && n.Kind != graph.KindParam {
+			continue
+		}
+		owner := enclosingFunctionForBinding(n.ID)
+		if owner == "" {
+			continue
+		}
+		owned[owner] = append(owned[owner], scopeNode{
+			id: n.ID, name: n.Name, startLine: n.StartLine, kind: n.Kind,
+		})
+	}
+	if len(owned) == 0 {
+		return
+	}
+
+	var batch []graph.EdgeReindex
+	for _, e := range r.fileOutEdges(filePath) {
+		switch e.Kind {
+		case graph.EdgeReads, graph.EdgeReferences, graph.EdgeArgOf, graph.EdgeValueFlow:
+			if rewrote := r.tryBindBareName(e, owned); rewrote != "" {
+				batch = append(batch, graph.EdgeReindex{Edge: e, OldTo: rewrote})
+			}
+		}
+	}
+	if len(batch) > 0 {
+		r.graph.ReindexEdges(batch)
+	}
+}
+
 // tryBindBareName tries to rewrite e.To from `unresolved::<name>` to a
 // matching in-scope KindLocal/KindParam ID. Returns the original To
 // value when a rewrite happened (caller batches it for ReindexEdges)

@@ -93,6 +93,27 @@ func (r *Resolver) attributeGoBuiltins() {
 	}
 }
 
+// attributeGoBuiltinsForFile is the single-file scope of attributeGoBuiltins:
+// it only inspects the edited file's outgoing edges. A builtin reference's
+// source endpoint is always inside the file that mentions it, so this
+// produces the same rewrites as the whole-graph sweep for a per-save
+// resolve without scanning every edge of eleven kinds across the graph.
+func (r *Resolver) attributeGoBuiltinsForFile(filePath string) {
+	if !r.graphHasLanguage("go") {
+		return
+	}
+	materialised := map[string]struct{}{}
+	var batch []graph.EdgeReindex
+	for _, e := range r.fileOutEdges(filePath) {
+		if old := r.tryAttributeGoBuiltin(e, materialised); old != "" {
+			batch = append(batch, graph.EdgeReindex{Edge: e, OldTo: old})
+		}
+	}
+	if len(batch) > 0 {
+		r.graph.ReindexEdges(batch)
+	}
+}
+
 // tryAttributeGoBuiltin checks if e.To is `unresolved::<bareName>`
 // where bareName is a Go builtin and the source language is Go (the
 // source is inside a Go function / file). On a match it materialises

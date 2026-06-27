@@ -869,7 +869,21 @@ func (r *Resolver) ResolveFilesAndIncoming(filePaths []string) *ResolveStats {
 // has built the per-pass indexes.
 func (r *Resolver) resolveFileLocked(filePath string, stats *ResolveStats) {
 	r.resolveFileEdgesLocked(filePath, stats)
-	r.runFileAttributionPassesLocked()
+	r.runFileAttributionPassesForFileLocked(filePath)
+}
+
+// fileOutEdges returns every outgoing edge of every node defined in
+// filePath — the scope a single-file attribution pass needs in place of
+// a whole-graph EdgesByKind sweep. Builtin / external / bare-name
+// attributions all act on edges whose source is inside the edited file,
+// so this is the complete candidate set for those passes.
+func (r *Resolver) fileOutEdges(filePath string) []*graph.Edge {
+	nodes := r.graph.GetFileNodes(filePath)
+	var out []*graph.Edge
+	for _, n := range nodes {
+		out = append(out, r.graph.GetOutEdges(n.ID)...)
+	}
+	return out
 }
 
 // resolveFileEdgesLocked walks one file's outgoing unresolved edges and
@@ -941,6 +955,24 @@ func (r *Resolver) runFileAttributionPassesLocked() {
 	r.bindGenericParamRefs()
 	r.attributeGoBuiltins()
 	r.attributeGoExternalCalls()
+}
+
+// runFileAttributionPassesForFileLocked is the single-file equivalent of
+// runFileAttributionPassesLocked. Builtin / external-call / bare-name
+// attribution only ever rewrite edges originating in the edited file, so
+// they run over that file's outgoing edges instead of sweeping the whole
+// graph once per save — the dominant per-edit resolver cost on a large
+// graph. The two passes that genuinely need cross-file context (method-
+// receiver rebind reads the package's type index; generic-param binding)
+// stay whole-graph; both are already batched and cheap. The pass ORDER
+// matches runFileAttributionPassesLocked: bare-name binding runs before
+// builtin attribution so a local named `len` shadows the builtin.
+func (r *Resolver) runFileAttributionPassesForFileLocked(filePath string) {
+	r.rebindGoMethodReceivers()
+	r.bindBareNameScopeRefsForFile(filePath)
+	r.bindGenericParamRefs()
+	r.attributeGoBuiltinsForFile(filePath)
+	r.attributeGoExternalCallsForFile(filePath)
 }
 
 // ResolveIncomingForFile is the reverse of ResolveFile: instead of

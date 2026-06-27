@@ -37,54 +37,86 @@ import (
 //
 // All AddNode / AddEdge calls are idempotent on ID, so a second run
 // of this pass (incremental ResolveFile re-invocation) is a no-op.
+// extKey identifies a unique external target across the attribution
+// passes; modKey identifies its owning module. Package-level so the
+// whole-graph and single-file collectors feed one materialiser.
+//
+// repoPrefix is part of the key because stdlib stubs are per-repo (see
+// internal/graph/stub.go) — two repos on different Go SDK versions emit
+// semantically distinct `<repoA>::stdlib::fmt::Errorf` and
+// `<repoB>::stdlib::fmt::Errorf` stubs that MUST round-trip through this
+// attribution as distinct nodes, not collide into one.
+type extKey struct {
+	repoPrefix, prefix, importPath, symbol string
+}
+
+type modKey struct{ repoPrefix, importPath string }
+
+// goExternalAttribKinds is every edge kind an extern-prefixed target can
+// show up on — the same set attributeGoBuiltins scans.
+var goExternalAttribKinds = []graph.EdgeKind{
+	graph.EdgeCalls,
+	graph.EdgeReferences,
+	graph.EdgeReads,
+	graph.EdgeArgOf,
+	graph.EdgeValueFlow,
+	graph.EdgeReturnsTo,
+	graph.EdgeTypedAs,
+	graph.EdgeReturns,
+	graph.EdgeInstantiates,
+	graph.EdgeCaptures,
+	graph.EdgeThrows,
+}
+
 func (r *Resolver) attributeGoExternalCalls() {
 	// Go-only pass: skip the external-prefix edge scan when the graph has
 	// no Go nodes.
 	if !r.graphHasLanguage("go") {
 		return
 	}
-	// Scan every edge whose target sits in one of the three external
-	// prefixes. Collect unique (repoPrefix, prefix, importPath, symbol)
-	// tuples so we materialise each one once even when many edges
-	// reference the same target. repoPrefix is included because
-	// stdlib stubs are per-repo (see internal/graph/stub.go) — two
-	// repos on different Go SDK versions emit semantically distinct
-	// `<repoA>::stdlib::fmt::Errorf` and `<repoB>::stdlib::fmt::Errorf`
-	// stubs that MUST round-trip through this attribution pass as
-	// distinct nodes, not collide into one.
-	type extKey struct {
-		repoPrefix, prefix, importPath, symbol string
-	}
 	seen := map[extKey]struct{}{}
-	depEdgesScan := func(kind graph.EdgeKind) {
-		for e := range r.graph.EdgesByKind(kind) {
-			if e.To == "" {
-				continue
-			}
-			prefix, importPath, symbol := splitGoExternalTarget(e.To)
-			if prefix == "" {
-				continue
-			}
-			seen[extKey{graph.StubRepoPrefix(e.To), prefix, importPath, symbol}] = struct{}{}
+	for _, k := range goExternalAttribKinds {
+		for e := range r.graph.EdgesByKind(k) {
+			collectGoExternalTarget(e, seen)
 		}
 	}
-	// Same edge-kind set as attributeGoBuiltins — anywhere an
-	// extern-prefixed target can show up.
-	for _, k := range []graph.EdgeKind{
-		graph.EdgeCalls,
-		graph.EdgeReferences,
-		graph.EdgeReads,
-		graph.EdgeArgOf,
-		graph.EdgeValueFlow,
-		graph.EdgeReturnsTo,
-		graph.EdgeTypedAs,
-		graph.EdgeReturns,
-		graph.EdgeInstantiates,
-		graph.EdgeCaptures,
-		graph.EdgeThrows,
-	} {
-		depEdgesScan(k)
+	r.materializeGoExternalSeen(seen)
+}
+
+// attributeGoExternalCallsForFile is the single-file scope of
+// attributeGoExternalCalls: an extern-prefixed target is referenced from
+// inside the edited file, so only that file's outgoing edges can
+// introduce a new one. Produces the same materialisation as the
+// whole-graph sweep for a per-save resolve.
+func (r *Resolver) attributeGoExternalCallsForFile(filePath string) {
+	if !r.graphHasLanguage("go") {
+		return
 	}
+	seen := map[extKey]struct{}{}
+	for _, e := range r.fileOutEdges(filePath) {
+		collectGoExternalTarget(e, seen)
+	}
+	r.materializeGoExternalSeen(seen)
+}
+
+// collectGoExternalTarget records e's external target (if any) into seen,
+// deduping by the per-repo (prefix, path, symbol) tuple.
+func collectGoExternalTarget(e *graph.Edge, seen map[extKey]struct{}) {
+	if e == nil || e.To == "" {
+		return
+	}
+	prefix, importPath, symbol := splitGoExternalTarget(e.To)
+	if prefix == "" {
+		return
+	}
+	seen[extKey{graph.StubRepoPrefix(e.To), prefix, importPath, symbol}] = struct{}{}
+}
+
+// materializeGoExternalSeen turns the collected external targets into
+// KindModule + KindFunction nodes and their EdgeMemberOf links. All
+// AddNode / AddEdge calls are idempotent on ID, so a second run (e.g. a
+// re-resolve of the same file) is a no-op.
+func (r *Resolver) materializeGoExternalSeen(seen map[extKey]struct{}) {
 	if len(seen) == 0 {
 		return
 	}
@@ -97,7 +129,6 @@ func (r *Resolver) attributeGoExternalCalls() {
 	// same SDK-version sensitivity its symbols do. Key includes the
 	// repo prefix so two repos importing the same path get distinct
 	// module nodes.
-	type modKey struct{ repoPrefix, importPath string }
 	modules := map[modKey]string{}
 	for k := range seen {
 		modKey := modKey{repoPrefix: k.repoPrefix, importPath: k.importPath}
