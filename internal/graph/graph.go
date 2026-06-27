@@ -2,7 +2,11 @@ package graph
 
 import (
 	"iter"
+	"math/bits"
+	"os"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,18 +20,39 @@ type GraphStats struct {
 	ByLanguage map[string]int `json:"by_language"`
 }
 
-// numShards controls the write-fan-out of the graph. Each shard owns a
-// disjoint slice of node IDs (by FNV hash) and its own RWMutex, so
-// parallel indexers writing distinct nodes don't contend for a single
-// lock. 16 is a good default: even split across typical 8- or 12-core
-// machines, small enough that operations which must walk every shard
-// (AllNodes, Stats, EvictRepo) stay cheap.
+// The graph's write fan-out is sharded: each shard owns a disjoint
+// slice of node IDs (by FNV hash) and its own RWMutex, so parallel
+// indexers writing distinct nodes don't contend for a single lock. The
+// shard count is chosen once per Graph at construction (see
+// defaultShardCount) rather than fixed at compile time, so many-core
+// machines get more fan-out while small machines keep the historical
+// count. It is always a power of two: shardIdx masks an ID's hash with
+// count-1, which equals the modulo only for powers of two.
 //
-// Trade-off: the old graph used one lock per graph; now we have 16, and
-// cross-shard operations (AddEdge when source and target are in
-// different shards, plus exhaustive reads) lock multiple shards. To
-// avoid deadlock we always acquire shards in ascending index order.
-const numShards = 16
+// Trade-off: more shards cut write contention but make cross-shard
+// operations (AddEdge across shards, plus exhaustive reads that walk
+// every shard) take more locks. To avoid deadlock we always acquire
+// shards in ascending index order.
+const (
+	// shardCountEnv pins the shard fan-out for a new graph, overriding
+	// the CPU-derived default. Useful for benchmarks and tests. The
+	// value is coerced to a power of two within [minShards, maxShards].
+	shardCountEnv = "GORTEX_GRAPH_SHARDS"
+
+	// minShards / maxShards bound every shard count — derived or
+	// explicitly overridden — to a sane, power-of-two range. minShards
+	// must stay >= 1 so the shardMask (count-1) is a valid mask.
+	minShards = 1
+	maxShards = 512
+
+	// derivedShardFloor / derivedShardCeiling bound the CPU-derived
+	// count. The floor preserves the historical fan-out of 16 on typical
+	// (<= 16 logical CPU) machines, so sharded results stay
+	// byte-identical there; the ceiling caps per-graph shard overhead on
+	// many-core boxes.
+	derivedShardFloor   = 16
+	derivedShardCeiling = 256
+)
 
 // edgeKey is the logical identity of an edge — two edges with the same
 // key are considered the same edge and dedup to one entry in the
@@ -442,8 +467,14 @@ func removeEdgeFromBucket(bucket map[string][]*Edge, keys map[string][]edgeHash,
 // this single mutex serialises those phases without blocking
 // ordinary shard-scoped reads and writes.
 type Graph struct {
-	shards    [numShards]*shard
-	resolveMu sync.Mutex
+	// shards holds the lock-sharded node/edge maps. Its length is
+	// shardCount (a power of two); shardMask is shardCount-1, precomputed
+	// so the hot-path shardIdx masks with a single AND instead of a
+	// modulo.
+	shards     []*shard
+	shardCount int
+	shardMask  uint32
+	resolveMu  sync.Mutex
 	// edgeIdentityRevisions counts how many times an in-graph edge's
 	// provenance-bearing identity changed — i.e. its Origin was
 	// upgraded or reverted while its logical (From,To,Kind,FilePath,
@@ -543,13 +574,72 @@ var (
 	_ ConstantValueReader      = (*Graph)(nil)
 )
 
-// New creates an empty graph.
+// New creates an empty graph with a shard fan-out derived from the host
+// (see defaultShardCount).
 func New() *Graph {
-	g := &Graph{}
+	return newWithShardCount(defaultShardCount())
+}
+
+// newWithShardCount creates an empty graph with an explicit shard
+// fan-out. The count is coerced to a power of two within
+// [minShards, maxShards] so the shardMask (count-1) modulo trick stays
+// exact regardless of what the caller asks for. Used by New and by
+// benchmarks/tests that pin a specific fan-out.
+func newWithShardCount(count int) *Graph {
+	count = coerceShardCount(count)
+	g := &Graph{
+		shards:     make([]*shard, count),
+		shardCount: count,
+		shardMask:  uint32(count - 1),
+	}
 	for i := range g.shards {
 		g.shards[i] = newShard()
 	}
 	return g
+}
+
+// defaultShardCount picks the shard fan-out for a new graph. An explicit
+// GORTEX_GRAPH_SHARDS override wins (coerced to a power of two within
+// [minShards, maxShards]); otherwise the count derives from
+// runtime.NumCPU(), rounded up to the next power of two and clamped to
+// [derivedShardFloor, derivedShardCeiling].
+func defaultShardCount() int {
+	if v := strings.TrimSpace(os.Getenv(shardCountEnv)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return coerceShardCount(n)
+		}
+	}
+	n := nextPow2(runtime.NumCPU())
+	if n < derivedShardFloor {
+		n = derivedShardFloor
+	}
+	if n > derivedShardCeiling {
+		n = derivedShardCeiling
+	}
+	return n
+}
+
+// coerceShardCount rounds n up to the nearest power of two and clamps it
+// to [minShards, maxShards]. Both bounds are powers of two, so the
+// result is always a valid power-of-two shard count — the invariant the
+// shardMask modulo trick depends on.
+func coerceShardCount(n int) int {
+	n = nextPow2(n)
+	if n < minShards {
+		n = minShards
+	}
+	if n > maxShards {
+		n = maxShards
+	}
+	return n
+}
+
+// nextPow2 returns the smallest power of two >= n, and at least 1.
+func nextPow2(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	return 1 << bits.Len(uint(n-1))
 }
 
 // ResolveMutex returns the graph-wide mutex resolvers use to
@@ -1714,26 +1804,28 @@ func (g *Graph) SetEdgeProvenanceBatch(batch []EdgeProvenanceUpdate) int {
 // fnv.New32a() incurs — shardIdx is on the hottest path in the graph
 // (every AddNode / AddEdge / GetNode call), and the heap profile shows
 // 690 MB/30 s of fnv state allocations during cold-start indexing.
-func shardIdx(id string) int {
+// shardMask is shardCount-1 and shardCount is a power of two, so
+// h & shardMask is an exact, branch-free modulo.
+func (g *Graph) shardIdx(id string) int {
 	var h uint32 = 2166136261
 	for i := 0; i < len(id); i++ {
 		h ^= uint32(id[i])
 		h *= 16777619
 	}
-	return int(h % numShards)
+	return int(h & g.shardMask)
 }
 
 // shardFor returns the shard that owns the given ID.
 func (g *Graph) shardFor(id string) *shard {
-	return g.shards[shardIdx(id)]
+	return g.shards[g.shardIdx(id)]
 }
 
 // lockTwoWrite locks two shards for write in ascending index order to
 // prevent deadlock. If both IDs land in the same shard, the mutex is
 // locked exactly once. Returns a closure the caller defers to unlock.
 func (g *Graph) lockTwoWrite(idA, idB string) func() {
-	a := shardIdx(idA)
-	b := shardIdx(idB)
+	a := g.shardIdx(idA)
+	b := g.shardIdx(idB)
 	if a == b {
 		s := g.shards[a]
 		s.mu.Lock()
@@ -1760,7 +1852,7 @@ func (g *Graph) lockTwoWrite(idA, idB string) func() {
 // concurrent AddEdge on that shard (bug: "concurrent map read and map
 // write" in addEdgeToBucket).
 func (g *Graph) lockThreeWrite(idA, idB, idC string) func() {
-	a, b, c := shardIdx(idA), shardIdx(idB), shardIdx(idC)
+	a, b, c := g.shardIdx(idA), g.shardIdx(idB), g.shardIdx(idC)
 	// Sort (a, b, c) ascending without allocating a slice.
 	if a > b {
 		a, b = b, a
@@ -1915,25 +2007,25 @@ func (g *Graph) AddBatch(nodes []*Node, edges []*Edge) {
 	if len(nodes) == 0 && len(edges) == 0 {
 		return
 	}
-	var nodesByShard [numShards][]*Node
-	var outEdgesByShard [numShards][]*Edge
-	var inEdgesByShard [numShards][]*Edge
+	nodesByShard := make([][]*Node, g.shardCount)
+	outEdgesByShard := make([][]*Edge, g.shardCount)
+	inEdgesByShard := make([][]*Edge, g.shardCount)
 	for _, n := range nodes {
 		if n == nil || n.ID == "" {
 			continue
 		}
-		i := shardIdx(n.ID)
+		i := g.shardIdx(n.ID)
 		nodesByShard[i] = append(nodesByShard[i], n)
 	}
 	for _, e := range edges {
 		if e == nil {
 			continue
 		}
-		outEdgesByShard[shardIdx(e.From)] = append(outEdgesByShard[shardIdx(e.From)], e)
-		inEdgesByShard[shardIdx(e.To)] = append(inEdgesByShard[shardIdx(e.To)], e)
+		outEdgesByShard[g.shardIdx(e.From)] = append(outEdgesByShard[g.shardIdx(e.From)], e)
+		inEdgesByShard[g.shardIdx(e.To)] = append(inEdgesByShard[g.shardIdx(e.To)], e)
 	}
 
-	for i := range numShards {
+	for i := range g.shards {
 		if len(nodesByShard[i]) == 0 && len(outEdgesByShard[i]) == 0 && len(inEdgesByShard[i]) == 0 {
 			continue
 		}
