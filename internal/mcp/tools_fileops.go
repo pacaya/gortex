@@ -32,7 +32,7 @@ var errPathEscape = errors.New("relative path escapes the indexed repo root")
 
 // resolveFilePath turns a user-supplied path into the absolute filesystem
 // path the write should target. Accepts:
-//   - absolute paths, used as-is (no containment check)
+//   - absolute paths (still confined: refused if outside every repo root)
 //   - repo-prefixed paths (e.g. "gortex/internal/foo.go" in multi-repo mode)
 //   - paths relative to the single indexer's root (single-repo mode only)
 //
@@ -44,14 +44,31 @@ var errPathEscape = errors.New("relative path escapes the indexed repo root")
 //     bare-relative path that doesn't match any registered prefix
 //     (no implicit "primary repo", so the daemon refuses to fall
 //     through to its process CWD).
-//   - errPathEscape — relative or repo-prefixed input that resolves
-//     outside the anchor repo's root via `..` segments. Catches
-//     `../../etc/passwd` style attempts at the boundary instead of
-//     letting them silently land on system files.
+//   - errPathEscape — any input (relative, repo-prefixed, or absolute)
+//     whose resolved location lands outside every indexed repo root,
+//     whether via `..` segments, an out-of-root absolute path, or a
+//     symlink that points out. Catches `../../etc/passwd` and
+//     `/etc/passwd` style attempts at the boundary instead of letting
+//     them silently land on system files.
 //
-// Absolute paths bypass containment by design — agents that hand
-// over an absolute path own the location.
+// Both relative and absolute inputs are confined to the indexed
+// repository roots: an absolute path that points outside every root is
+// refused, not honoured. See the confinement guard at the top of the body.
 func (s *Server) resolveFilePath(rawPath string) (absPath, relPath string, err error) {
+	// Post-resolution confinement (the SECURITY.md "confined to indexed
+	// repository roots" invariant): whatever path the body resolves below —
+	// relative or absolute — is refused if its real, symlink-resolved
+	// location falls outside every indexed repository root. This is the
+	// central choke point; no caller, read or write, may bypass it. It is a
+	// no-op for control clients that have no known roots (the same posture
+	// guardSymlinkWithinRepo takes on the read path).
+	defer func() {
+		if err == nil {
+			if guardErr := s.guardSymlinkWithinRepo(absPath); guardErr != nil {
+				absPath, relPath, err = "", "", guardErr
+			}
+		}
+	}()
 	if rawPath == "" {
 		return "", "", fmt.Errorf("%w: path is empty", errPathUnresolved)
 	}
@@ -259,10 +276,13 @@ func (s *Server) guardSymlinkWithinRepo(absPath string) error {
 	}
 	real, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		// Unresolvable (broken symlink / not-yet-created file): fall back to the
-		// lexical path so an in-repo miss still reaches the normal not-found
-		// error, while an out-of-repo miss is still refused here.
-		real = filepath.Clean(absPath)
+		// Not-yet-created file (or broken symlink): EvalSymlinks can't resolve
+		// the leaf, so resolve the nearest existing ancestor and re-append the
+		// trailing components. This keeps a brand-new file under a symlinked
+		// root (e.g. macOS /var -> /private/var, or a symlinked checkout) inside
+		// the root, while an out-of-repo target still resolves outside and is
+		// refused below.
+		real = resolveNearestExistingAncestor(absPath)
 	}
 	for _, root := range roots {
 		if pathContainedIn(real, root) {
@@ -270,6 +290,30 @@ func (s *Server) guardSymlinkWithinRepo(absPath string) error {
 		}
 	}
 	return fmt.Errorf("%w: %q resolves to %q, outside every indexed repository root", errPathEscape, absPath, real)
+}
+
+// resolveNearestExistingAncestor symlink-resolves the longest existing prefix
+// of absPath and rejoins the non-existent trailing components, so the
+// confinement check on a not-yet-created file compares like-for-like against
+// the (symlink-resolved) repository roots. Falls back to the lexical clean of
+// absPath when nothing along the chain resolves.
+func resolveNearestExistingAncestor(absPath string) string {
+	cur := filepath.Clean(absPath)
+	var suffix string
+	for {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			if suffix == "" {
+				return real
+			}
+			return filepath.Join(real, suffix)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return filepath.Clean(absPath) // reached the filesystem root unresolved
+		}
+		suffix = filepath.Join(filepath.Base(cur), suffix)
+		cur = parent
+	}
 }
 
 // guardRepoRoots returns the symlink-resolved root paths of every tracked repo

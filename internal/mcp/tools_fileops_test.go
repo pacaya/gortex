@@ -246,9 +246,11 @@ func TestEditFile_RejectsPathTraversal(t *testing.T) {
 	assert.Equal(t, "untouched", string(got), "the file outside the repo must remain unchanged")
 }
 
-func TestWriteFile_AbsolutePathOutsideRepoIsAllowed(t *testing.T) {
-	// Absolute paths bypass the containment check by design — agents
-	// that hand over an absolute path are responsible for the location.
+func TestWriteFile_AbsolutePathOutsideRepoIsRefused(t *testing.T) {
+	// Confinement is universal (SECURITY.md): an absolute path that points
+	// outside every indexed repository root is refused, not honoured. This
+	// is the GHSA-w42c-h7hr-f67p arbitrary-write fix — previously such a
+	// path was written verbatim, an arbitrary-write -> RCE primitive.
 	srv, _ := setupTestServer(t)
 	tmp := t.TempDir()
 	target := filepath.Join(tmp, "external.txt")
@@ -257,11 +259,10 @@ func TestWriteFile_AbsolutePathOutsideRepoIsAllowed(t *testing.T) {
 		"path":    target,
 		"content": "abs allowed",
 	})
-	assert.False(t, result.IsError)
+	assert.True(t, result.IsError, "an absolute path outside the repo must be refused")
 
-	got, err := os.ReadFile(target)
-	require.NoError(t, err)
-	assert.Equal(t, "abs allowed", string(got))
+	_, statErr := os.Stat(target)
+	assert.True(t, os.IsNotExist(statErr), "the out-of-root file must not be created")
 }
 
 func TestEditFile_DryRunDoesNotWrite(t *testing.T) {

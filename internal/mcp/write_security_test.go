@@ -1,0 +1,285 @@
+package mcp
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	mcplib "github.com/mark3labs/mcp-go/mcp"
+	"github.com/stretchr/testify/require"
+)
+
+// These tests pin the SECURITY.md "confined to indexed repository roots"
+// invariant on the WRITE path. Before the fix, resolveFilePath honoured any
+// absolute path verbatim and the write/edit handlers never re-checked it, so
+// a single write_file / edit_file / batch_edit / move_symbol / generate_skill
+// call could create or overwrite a file anywhere the daemon user could reach
+// (e.g. ~/.zshrc, .git/hooks/pre-commit) — arbitrary write → code execution.
+// The dry_run diff additionally echoed the on-disk content of any out-of-root
+// file, an arbitrary-read oracle. Confinement is now enforced centrally in
+// resolveFilePath, so every sink below must refuse and leak nothing.
+//
+// newReadGuardServer / readText live in read_security_test.go; callBatchEdit
+// in batch_edit_hetero_test.go; setupMoveInlineRepo in tools_move_inline_test.go;
+// callTool / setupTestServer in server_test.go — all package mcp.
+
+func writeFileTool(t *testing.T, srv *Server, args map[string]any) *mcplib.CallToolResult {
+	t.Helper()
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = "write_file"
+	req.Params.Arguments = args
+	res, err := srv.handleWriteFile(context.Background(), req)
+	require.NoError(t, err)
+	return res
+}
+
+func editFileTool(t *testing.T, srv *Server, args map[string]any) *mcplib.CallToolResult {
+	t.Helper()
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = "edit_file"
+	req.Params.Arguments = args
+	res, err := srv.handleEditFile(context.Background(), req)
+	require.NoError(t, err)
+	return res
+}
+
+// write_file with a bare absolute path outside every repo root is refused and
+// the file is never created (MkdirAll no longer runs).
+func TestWriteFile_AbsolutePathOutsideRootRefused(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	srv := newReadGuardServer(t, repoRoot)
+
+	victim := filepath.Join(outside, "pwn.txt")
+	res := writeFileTool(t, srv, map[string]any{
+		"path":    victim,
+		"content": "OWNED-by-write_file-outside-every-repo-root",
+	})
+	require.True(t, res.IsError, "write_file to an absolute path outside the repo must be refused")
+	require.Contains(t, readText(t, res), "outside every indexed repository")
+
+	_, statErr := os.Stat(victim)
+	require.True(t, os.IsNotExist(statErr), "the out-of-root file must not be created")
+}
+
+// write_file through an in-repo symlink whose real target escapes the root is
+// refused, and the out-of-root target is not modified.
+func TestWriteFile_InRepoSymlinkEscapeRefused(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	srv := newReadGuardServer(t, repoRoot)
+
+	target := filepath.Join(outside, "target.txt")
+	require.NoError(t, os.WriteFile(target, []byte("ORIGINAL"), 0o644))
+	link := filepath.Join(repoRoot, "link.txt")
+	require.NoError(t, os.Symlink(target, link))
+
+	res := writeFileTool(t, srv, map[string]any{
+		"path":    link,
+		"content": "CLOBBERED-THROUGH-SYMLINK",
+	})
+	require.True(t, res.IsError, "writing through an in-repo symlink escaping the root must be refused")
+
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "ORIGINAL", string(got), "the out-of-root symlink target must not be modified")
+}
+
+// write_file dry_run must refuse an out-of-root file BEFORE reading it, so its
+// content cannot leak through the unified-diff preview.
+func TestWriteFile_DryRunDoesNotLeakOutsideContent(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	srv := newReadGuardServer(t, repoRoot)
+
+	const secret = "TOP-SECRET-DRYRUN-LEAK-CANARY"
+	victim := filepath.Join(outside, "secret.txt")
+	require.NoError(t, os.WriteFile(victim, []byte(secret), 0o600))
+
+	res := writeFileTool(t, srv, map[string]any{
+		"path":    victim,
+		"content": "x",
+		"dry_run": true,
+	})
+	require.True(t, res.IsError, "dry_run write to an out-of-root file must be refused before reading it")
+	require.NotContains(t, readText(t, res), secret, "dry_run diff must not leak the out-of-root file content")
+}
+
+// edit_file on an out-of-root file is refused both for real and dry_run, and
+// the file is left untouched with no content leak.
+func TestEditFile_AbsolutePathOutsideRootRefused(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	srv := newReadGuardServer(t, repoRoot)
+
+	const secret = "SECRET-EDIT-CANARY"
+	victim := filepath.Join(outside, "victim.txt")
+	require.NoError(t, os.WriteFile(victim, []byte(secret+"\n"), 0o644))
+
+	res := editFileTool(t, srv, map[string]any{
+		"path":       victim,
+		"old_string": secret,
+		"new_string": "REPLACED",
+	})
+	require.True(t, res.IsError, "edit_file on an out-of-root file must be refused")
+	got, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	require.Equal(t, secret+"\n", string(got), "the out-of-root file must be unchanged")
+
+	dry := editFileTool(t, srv, map[string]any{
+		"path":       victim,
+		"old_string": secret,
+		"new_string": "REPLACED",
+		"dry_run":    true,
+	})
+	require.True(t, dry.IsError, "dry_run edit on an out-of-root file must be refused")
+	require.NotContains(t, readText(t, dry), secret, "dry_run diff must not leak the out-of-root file content")
+}
+
+// batch_edit's edit_file op must honour the same confinement: an out-of-root
+// target neither succeeds nor mutates the file.
+func TestBatchEdit_EditFileOutsideRootRefused(t *testing.T) {
+	repoRoot := t.TempDir()
+	outside := t.TempDir()
+	srv := newReadGuardServer(t, repoRoot)
+
+	const original = "ORIGINAL-BATCH-CONTENT"
+	victim := filepath.Join(outside, "victim.txt")
+	require.NoError(t, os.WriteFile(victim, []byte(original), 0o644))
+
+	res := callBatchEdit(t, srv, map[string]any{
+		"edits": []any{
+			map[string]any{"op": "edit_file", "path": victim, "old_string": original, "new_string": "PWNED"},
+		},
+	})
+	require.Contains(t, readText(t, res), "outside every indexed repository", "the op must report the confinement refusal")
+
+	got, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	require.Equal(t, original, string(got), "batch edit_file must not modify an out-of-root file")
+}
+
+// move_symbol with a target_file outside every repo root is refused and the
+// out-of-root target is never created.
+func TestMoveSymbol_TargetOutsideRootRefused(t *testing.T) {
+	srv, _ := setupMoveInlineRepo(t, map[string]string{
+		"pkga/a.go": "package pkga\n\nfunc Foo() int { return 42 }\n",
+	})
+	outside := t.TempDir()
+	target := filepath.Join(outside, "evil.go")
+
+	res := callTool(t, srv, "move_symbol", map[string]any{
+		"id":          "pkga/a.go::Foo",
+		"target_file": target,
+	})
+	require.True(t, res.IsError, "move_symbol to an out-of-root target must be refused")
+
+	_, statErr := os.Stat(target)
+	require.True(t, os.IsNotExist(statErr), "the out-of-root target file must not be created")
+}
+
+// generate_skill must refuse an output_dir outside every repo root rather than
+// fall back to the literal path and write a skill bundle there.
+func TestGenerateSkill_OutputDirOutsideRootRefused(t *testing.T) {
+	repoRoot := t.TempDir()
+	src := filepath.Join(repoRoot, "src")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "main.go"),
+		[]byte("package main\n\nfunc main() {}\n"), 0o644))
+
+	srv := newReadGuardServer(t, repoRoot)
+
+	outside := t.TempDir()
+	req := mcplib.CallToolRequest{}
+	req.Params.Name = "generate_skill"
+	req.Params.Arguments = map[string]any{
+		"directory":  src,
+		"output_dir": outside,
+	}
+	res, err := srv.handleGenerateSkill(context.Background(), req)
+	require.NoError(t, err)
+	require.True(t, res.IsError, "generate_skill output_dir outside the repo must be refused")
+
+	_, statErr := os.Stat(filepath.Join(outside, "SKILL.md"))
+	require.True(t, os.IsNotExist(statErr), "no SKILL.md must be written outside the repo")
+}
+
+// TestPoC_GHSA_w42c_h7hr_f67p reproduces the reported advisory PoC 1:1
+// against the same harness it used (newSingleRepoServer — the multi-indexer
+// single-repo daemon shape) and asserts the exploit is now fully closed:
+//   - write_file to an absolute path outside every repo root is REFUSED;
+//   - AtomicWriteFile's MkdirAll never runs, so a non-existent parent
+//     (the "~/victim-home/.zshrc" RCE path) is NOT auto-created;
+//   - the write_file / edit_file dry_run diff does NOT echo the on-disk
+//     content of an out-of-root file (the arbitrary-read oracle is closed).
+func TestPoC_GHSA_w42c_h7hr_f67p(t *testing.T) {
+	srv, _, repoRoot := newSingleRepoServer(t)
+	outside := t.TempDir() // stands in for $HOME — outside every indexed root
+
+	// 1. Arbitrary write outside every repo root, with a non-existent parent
+	//    dir (mirrors writing ~/victim-home/.zshrc with MkdirAll auto-create).
+	victimHome := filepath.Join(outside, "victim-home")
+	victim := filepath.Join(victimHome, ".zshrc")
+	res := writeFileTool(t, srv, map[string]any{
+		"path":    victim,
+		"content": "echo PWNED_BY_GORTEX_RCE # injected via write_file",
+	})
+	require.True(t, res.IsError, "write_file outside every repo root must be refused")
+	require.Contains(t, readText(t, res), "outside every indexed repository")
+	_, statErr := os.Stat(victim)
+	require.True(t, os.IsNotExist(statErr), "the out-of-root file must not be created")
+	_, dirErr := os.Stat(victimHome)
+	require.True(t, os.IsNotExist(dirErr), "MkdirAll must not auto-create the out-of-root parent dir")
+
+	// 2. Confinement boundary sanity: an in-root write through the SAME server
+	//    still works, proving the refusal above is the guard, not a dead server.
+	ok := writeFileTool(t, srv, map[string]any{
+		"path":    filepath.Join(repoRoot, "scratch.txt"),
+		"content": "in-root ok",
+	})
+	require.False(t, ok.IsError, "an in-root write must still succeed: %s", readText(t, ok))
+
+	// 3. Arbitrary-read oracle: write_file / edit_file dry_run must NOT leak the
+	//    content of an existing out-of-root file via the unified-diff preview.
+	const canary = "TOP-SECRET-ORACLE-CANARY-7f3a"
+	secret := filepath.Join(outside, "secret.txt")
+	require.NoError(t, os.WriteFile(secret, []byte(canary+"\n"), 0o600))
+
+	wDry := writeFileTool(t, srv, map[string]any{
+		"path":    secret,
+		"content": "overwrite",
+		"dry_run": true,
+	})
+	require.True(t, wDry.IsError, "write_file dry_run on an out-of-root file must be refused")
+	require.NotContains(t, readText(t, wDry), canary, "write_file dry_run diff must not leak out-of-root content")
+
+	eDry := editFileTool(t, srv, map[string]any{
+		"path":       secret,
+		"old_string": canary,
+		"new_string": "x",
+		"dry_run":    true,
+	})
+	require.True(t, eDry.IsError, "edit_file dry_run on an out-of-root file must be refused")
+	require.NotContains(t, readText(t, eDry), canary, "edit_file dry_run diff must not leak out-of-root content")
+
+	// The secret file is untouched on disk.
+	got, err := os.ReadFile(secret)
+	require.NoError(t, err)
+	require.Equal(t, canary+"\n", string(got))
+}
+
+// Guard against a false positive from the new central check: an ordinary
+// in-root write must still succeed.
+func TestWriteFile_InRootStillAllowed(t *testing.T) {
+	srv, dir := setupTestServer(t)
+	res := writeFileTool(t, srv, map[string]any{
+		"path":    filepath.Join(dir, "new.go"),
+		"content": "package main\n",
+	})
+	require.False(t, res.IsError, "an in-root write must still succeed: %s", readText(t, res))
+
+	got, err := os.ReadFile(filepath.Join(dir, "new.go"))
+	require.NoError(t, err)
+	require.Equal(t, "package main\n", string(got))
+}

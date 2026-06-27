@@ -111,12 +111,15 @@ func (s *Server) handleGenerateSkill(ctx context.Context, req mcp.CallToolReques
 		}
 		absOutputDir = filepath.Join(repoRoot, ".claude", "skills", skillName)
 	} else {
-		resolved, _, err := s.resolveFilePath(outputDir)
-		if err != nil {
-			absOutputDir = outputDir // accept literal path even when not under a known root
-		} else {
-			absOutputDir = resolved
+		// Confine the override: resolveFilePath refuses any path outside
+		// every indexed repo root, so an absolute output_dir can no longer
+		// escape into the home dir / system paths (SECURITY.md confinement
+		// invariant). Refuse rather than fall back to the literal path.
+		resolved, _, rerr := s.resolveFilePath(outputDir)
+		if rerr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("resolve output_dir: %v", rerr)), nil
 		}
+		absOutputDir = resolved
 	}
 
 	// Walk the directory once, collecting candidates that pass
