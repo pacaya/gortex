@@ -198,24 +198,6 @@ func (n *Node) SetInner(inner ts.Node) {
 	n.valid = true
 }
 
-// wrap wraps a nullable *ts.Node reached by navigating from n, carrying
-// n's language key so Type() stays allocation-free across a tree walk.
-// Returns nil for nil input.
-func (n *Node) wrap(c *ts.Node) *Node {
-	if c == nil {
-		return nil
-	}
-	if n.arena == nil {
-		return &Node{inner: *c, valid: true, langKey: n.langKey}
-	}
-	nn := n.arena.alloc()
-	nn.inner = *c
-	nn.valid = true
-	nn.langKey = n.langKey
-	nn.arena = n.arena
-	return nn
-}
-
 // Inner returns a pointer to the underlying ts.Node. Internal use by
 // the parser package's query runners.
 func (n *Node) Inner() *ts.Node {
@@ -343,9 +325,9 @@ func (n *Node) NamedChildren() iter.Seq[*Node] {
 			return
 		}
 		for {
-			c := cursor.Node()
+			c := cursorCurrentNode(cursor)
 			if c.IsNamed() {
-				if !yield(n.WrapVal(*c)) {
+				if !yield(n.WrapVal(c)) {
 					return
 				}
 			}
@@ -357,8 +339,13 @@ func (n *Node) NamedChildren() iter.Seq[*Node] {
 }
 
 // ChildByFieldName returns the first child with the given field name or nil.
+// Uses a direct C call so the result is arena-allocated with no heap node.
 func (n *Node) ChildByFieldName(name string) *Node {
-	return n.wrap(n.inner.ChildByFieldName(name))
+	c, ok := childByFieldNameDirect(n.inner, name)
+	if !ok {
+		return nil
+	}
+	return n.WrapVal(c)
 }
 
 // FieldNameForChild returns the field name of the i-th child, or "" if none.
@@ -379,17 +366,42 @@ func (n *Node) Parent() *Node {
 	return n.WrapVal(c)
 }
 
-// NextSibling returns the next sibling (named or anonymous) or nil.
-func (n *Node) NextSibling() *Node { return n.wrap(n.inner.NextSibling()) }
+// NextSibling returns the next sibling (named or anonymous) or nil. Direct C
+// call, arena-allocated result, no heap node.
+func (n *Node) NextSibling() *Node {
+	c, ok := nextSiblingDirect(n.inner)
+	if !ok {
+		return nil
+	}
+	return n.WrapVal(c)
+}
 
 // PrevSibling returns the previous sibling (named or anonymous) or nil.
-func (n *Node) PrevSibling() *Node { return n.wrap(n.inner.PrevSibling()) }
+func (n *Node) PrevSibling() *Node {
+	c, ok := prevSiblingDirect(n.inner)
+	if !ok {
+		return nil
+	}
+	return n.WrapVal(c)
+}
 
 // NextNamedSibling returns the next named sibling or nil.
-func (n *Node) NextNamedSibling() *Node { return n.wrap(n.inner.NextNamedSibling()) }
+func (n *Node) NextNamedSibling() *Node {
+	c, ok := nextNamedSiblingDirect(n.inner)
+	if !ok {
+		return nil
+	}
+	return n.WrapVal(c)
+}
 
 // PrevNamedSibling returns the previous named sibling or nil.
-func (n *Node) PrevNamedSibling() *Node { return n.wrap(n.inner.PrevNamedSibling()) }
+func (n *Node) PrevNamedSibling() *Node {
+	c, ok := prevNamedSiblingDirect(n.inner)
+	if !ok {
+		return nil
+	}
+	return n.WrapVal(c)
+}
 
 // IsNamed reports whether the node corresponds to a named grammar rule.
 func (n *Node) IsNamed() bool { return n.inner.IsNamed() }

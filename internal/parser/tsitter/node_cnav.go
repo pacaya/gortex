@@ -29,9 +29,19 @@ package tsitter
 // reinterpreted from ts.Node, whose sole field is this struct.
 typedef struct { uint32_t context[4]; const void *id; const void *tree; } GxTSNode;
 
+// Mirror of TSTreeCursor — reinterpreted from *ts.TreeCursor (whose sole
+// field is this struct) so the cursor's current node can be read by value.
+typedef struct { const void *tree; const void *id; uint32_t context[3]; } GxTSTreeCursor;
+
 extern GxTSNode ts_node_child(GxTSNode, uint32_t);
 extern GxTSNode ts_node_named_child(GxTSNode, uint32_t);
 extern GxTSNode ts_node_parent(GxTSNode);
+extern GxTSNode ts_node_next_sibling(GxTSNode);
+extern GxTSNode ts_node_prev_sibling(GxTSNode);
+extern GxTSNode ts_node_next_named_sibling(GxTSNode);
+extern GxTSNode ts_node_prev_named_sibling(GxTSNode);
+extern GxTSNode ts_node_child_by_field_name(GxTSNode, const char *, uint32_t);
+extern GxTSNode ts_tree_cursor_current_node(const GxTSTreeCursor *);
 */
 import "C"
 
@@ -47,6 +57,9 @@ import (
 func init() {
 	if unsafe.Sizeof(ts.Node{}) != unsafe.Sizeof(C.GxTSNode{}) {
 		panic("tsitter: ts.Node and TSNode size mismatch — tree-sitter ABI changed, update node_cnav.go")
+	}
+	if unsafe.Sizeof(ts.TreeCursor{}) != unsafe.Sizeof(C.GxTSTreeCursor{}) {
+		panic("tsitter: ts.TreeCursor and TSTreeCursor size mismatch — tree-sitter ABI changed, update node_cnav.go")
 	}
 }
 
@@ -80,6 +93,64 @@ func namedChildDirect(parent ts.Node, i int) (ts.Node, bool) {
 // parentDirect returns n's parent as a value. ok is false at the root.
 func parentDirect(n ts.Node) (ts.Node, bool) {
 	c := C.ts_node_parent(asC(n))
+	if c.id == nil {
+		return ts.Node{}, false
+	}
+	return asGo(c), true
+}
+
+func nextSiblingDirect(n ts.Node) (ts.Node, bool) {
+	c := C.ts_node_next_sibling(asC(n))
+	if c.id == nil {
+		return ts.Node{}, false
+	}
+	return asGo(c), true
+}
+
+func prevSiblingDirect(n ts.Node) (ts.Node, bool) {
+	c := C.ts_node_prev_sibling(asC(n))
+	if c.id == nil {
+		return ts.Node{}, false
+	}
+	return asGo(c), true
+}
+
+func nextNamedSiblingDirect(n ts.Node) (ts.Node, bool) {
+	c := C.ts_node_next_named_sibling(asC(n))
+	if c.id == nil {
+		return ts.Node{}, false
+	}
+	return asGo(c), true
+}
+
+func prevNamedSiblingDirect(n ts.Node) (ts.Node, bool) {
+	c := C.ts_node_prev_named_sibling(asC(n))
+	if c.id == nil {
+		return ts.Node{}, false
+	}
+	return asGo(c), true
+}
+
+// cursorCurrentNode returns a tree cursor's current node by value, avoiding
+// TreeCursor.Node's per-step heap *Node. The cursor walk itself (GotoFirstChild
+// / GotoNextSibling) stays O(total children); only the node read is changed.
+func cursorCurrentNode(cursor *ts.TreeCursor) ts.Node {
+	return asGo(C.ts_tree_cursor_current_node((*C.GxTSTreeCursor)(unsafe.Pointer(cursor))))
+}
+
+// childByFieldNameDirect returns parent's child for a grammar field name. The
+// name's bytes are passed to C by pointer+length (ts_node_child_by_field_name
+// does not require NUL termination and reads them only for the duration of the
+// call), so no C string is allocated. ok is false when no such field exists.
+func childByFieldNameDirect(parent ts.Node, name string) (ts.Node, bool) {
+	if name == "" {
+		return ts.Node{}, false
+	}
+	c := C.ts_node_child_by_field_name(
+		asC(parent),
+		(*C.char)(unsafe.Pointer(unsafe.StringData(name))),
+		C.uint32_t(len(name)),
+	)
 	if c.id == nil {
 		return ts.Node{}, false
 	}
