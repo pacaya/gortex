@@ -3397,6 +3397,126 @@ func (g *Graph) CrossRepoCandidates(baseKinds []EdgeKind) []CrossRepoCandidateRo
 	return out
 }
 
+// bfsHopLess orders two discovery candidates for the SAME node at the
+// SAME depth: smaller ParentID first, then smaller EdgeKind. This is the
+// tie-break the SQLite implementation applies via
+// ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY depth, parent_id,
+// edge_kind), so both backends settle on the identical discovery edge.
+func bfsHopLess(a, b BFSHop) bool {
+	if a.ParentID != b.ParentID {
+		return a.ParentID < b.ParentID
+	}
+	return a.EdgeKind < b.EdgeKind
+}
+
+// BFS is the in-memory reference implementation of the BFSCapable
+// capability — the oracle the SQLite recursive-CTE walk is shadow-tested
+// against. Layer-by-layer BFS over GetOutEdges / GetInEdges; see the
+// BFSCapable doc for the exact reachability / determinism / bound
+// semantics. Always returns a nil error (the error in the signature is
+// for the disk implementation's query failures).
+func (g *Graph) BFS(seeds []string, dir Direction, kinds []EdgeKind, maxDepth, limit int) ([]BFSHop, error) {
+	if len(seeds) == 0 {
+		return nil, nil
+	}
+	kset := make(map[EdgeKind]struct{}, len(kinds))
+	for _, k := range kinds {
+		if k != "" {
+			kset[k] = struct{}{}
+		}
+	}
+	forward := dir != DirectionBackward
+
+	// chosen[node] = the winning hop for that node (min depth, then the
+	// (parent, kind)-smallest discovery edge). Once a node is in chosen it
+	// is settled at its minimum depth and never revisited — that, plus the
+	// maxDepth bound, is what terminates a cyclic graph.
+	chosen := make(map[string]BFSHop, len(seeds))
+	frontier := make([]string, 0, len(seeds))
+	for _, s := range seeds {
+		if s == "" {
+			continue
+		}
+		if _, ok := chosen[s]; ok {
+			continue
+		}
+		chosen[s] = BFSHop{NodeID: s, Depth: 0}
+		frontier = append(frontier, s)
+	}
+
+	if len(kset) > 0 && maxDepth > 0 {
+		for depth := 0; depth < maxDepth && len(frontier) > 0; depth++ {
+			// Collect every depth+1 candidate across the WHOLE frontier
+			// before settling, so a node reached by several same-layer
+			// parents converges on the deterministic (parent, kind)-smallest
+			// — matching the CTE's ROW_NUMBER pick.
+			cand := make(map[string]BFSHop)
+			for _, cur := range frontier {
+				var edges []*Edge
+				if forward {
+					edges = g.GetOutEdges(cur)
+				} else {
+					edges = g.GetInEdges(cur)
+				}
+				for _, e := range edges {
+					if e == nil {
+						continue
+					}
+					if _, ok := kset[e.Kind]; !ok {
+						continue
+					}
+					nb := e.To
+					if !forward {
+						nb = e.From
+					}
+					if nb == "" {
+						continue
+					}
+					if _, ok := chosen[nb]; ok {
+						continue // already settled at a shallower-or-equal depth
+					}
+					// Node-backed targets only: an edge to an unresolved /
+					// external stub (no node row) is not a reachable hop.
+					if g.GetNode(nb) == nil {
+						continue
+					}
+					h := BFSHop{NodeID: nb, Depth: depth + 1, ParentID: cur, EdgeKind: e.Kind}
+					if existing, ok := cand[nb]; !ok || bfsHopLess(h, existing) {
+						cand[nb] = h
+					}
+				}
+			}
+			next := make([]string, 0, len(cand))
+			for nb, h := range cand {
+				chosen[nb] = h
+				next = append(next, nb)
+			}
+			frontier = next
+		}
+	}
+
+	out := make([]BFSHop, 0, len(chosen))
+	for _, h := range chosen {
+		out = append(out, h)
+	}
+	slices.SortFunc(out, func(a, b BFSHop) int {
+		if a.Depth != b.Depth {
+			return a.Depth - b.Depth
+		}
+		if a.NodeID < b.NodeID {
+			return -1
+		}
+		if a.NodeID > b.NodeID {
+			return 1
+		}
+		return 0
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // ExtractCandidates is the in-memory reference implementation of
 // ExtractCandidatesScanner. Walks NodesByKind for function + method,
 // applies the threshold gates locally, and counts distinct in-edge

@@ -1076,6 +1076,21 @@ func (e *Engine) bfs(nodeID string, opts QueryOptions, forward bool, edgeKinds [
 		kindSet[k] = true
 	}
 
+	// Prefer a single-round-trip BFS capability (the disk backend lowers it
+	// to one recursive CTE) over the layer-by-layer GetOutEdges / GetInEdges
+	// walk below, when the walk needs none of the per-layer hooks the flat
+	// hop-set cannot carry: workspace scope, test exclusion, dispatch
+	// expansion, or a bidirectional cluster walk. The in-memory graph
+	// implements the same capability, so both backends take this path and
+	// agree by construction; a backend without it (or a capability error)
+	// falls through to the Go walk, which stays the correctness oracle.
+	if capStore, ok := e.g.(graph.BFSCapable); ok && !bidir && len(edgeKinds) > 0 &&
+		opts.WorkspaceID == "" && !opts.ExcludeTests && !opts.IncludeDispatch {
+		if sg, ok := e.bfsViaCapability(capStore, nodeID, opts, forward, edgeKinds, kindSet); ok {
+			return sg
+		}
+	}
+
 	visited := map[string]bool{nodeID: true}
 	var allNodes []*graph.Node
 	var allEdges []*graph.Edge
@@ -1325,6 +1340,172 @@ func stripMeta(sg *SubGraph) {
 	for _, n := range sg.Nodes {
 		n.Meta = nil
 	}
+}
+
+// bfsViaCapability builds the same SubGraph the layer walk would, but
+// seeds it from a backend BFSCapable.BFS hop-set fetched in one
+// round-trip. It is taken only for non-bidirectional, kind-filtered walks
+// without workspace scope / test exclusion / dispatch expansion (gated by
+// the caller in bfs); ok=false signals a capability error so the caller
+// falls back to the in-memory layer walk.
+//
+// The reachable hop-set is materialised into nodes (one batched
+// GetNodesByIDs) and discovery edges (one batched adjacency fetch of the
+// expanded frontier, reused for the callee-boundary scan on forward call
+// walks). Node / edge selection mirrors the layer walk's admit(): the
+// seed always enters, unresolved / external-prefixed targets never do.
+func (e *Engine) bfsViaCapability(
+	capStore graph.BFSCapable,
+	nodeID string,
+	opts QueryOptions,
+	forward bool,
+	edgeKinds []graph.EdgeKind,
+	kindSet map[graph.EdgeKind]bool,
+) (*SubGraph, bool) {
+	dir := graph.DirectionForward
+	if !forward {
+		dir = graph.DirectionBackward
+	}
+	hops, err := capStore.BFS([]string{nodeID}, dir, edgeKinds, opts.Depth, opts.Limit)
+	if err != nil {
+		return nil, false
+	}
+
+	ids := make([]string, 0, len(hops))
+	var expandedIDs []string
+	for _, h := range hops {
+		ids = append(ids, h.NodeID)
+		// A node at depth < maxDepth had its neighbours followed — its
+		// adjacency carries both the discovery edges of its children and
+		// (forward) the dropped dynamic-dispatch out-edges for boundaries.
+		if h.Depth < opts.Depth {
+			expandedIDs = append(expandedIDs, h.NodeID)
+		}
+	}
+	nodesByID := e.g.GetNodesByIDs(ids)
+
+	var adj map[string][]*graph.Edge
+	if forward {
+		adj = e.g.GetOutEdgesByNodeIDs(expandedIDs)
+	} else {
+		adj = e.g.GetInEdgesByNodeIDs(expandedIDs)
+	}
+
+	allNodes := make([]*graph.Node, 0, len(hops))
+	allEdges := make([]*graph.Edge, 0, len(hops))
+	for _, h := range hops {
+		if h.ParentID == "" { // seed: always enters, regardless of scope
+			if n := nodesByID[h.NodeID]; n != nil {
+				allNodes = append(allNodes, n)
+			}
+			continue
+		}
+		if graph.IsUnresolvedTarget(h.NodeID) || strings.HasPrefix(h.NodeID, "external::") {
+			continue
+		}
+		n := nodesByID[h.NodeID]
+		if n == nil {
+			continue
+		}
+		allNodes = append(allNodes, n)
+		if edge := matchDiscoveryEdge(adj[h.ParentID], h, forward); edge != nil {
+			allEdges = append(allEdges, edge)
+		}
+	}
+
+	sg := &SubGraph{
+		Nodes:      allNodes,
+		Edges:      allEdges,
+		TotalNodes: len(allNodes),
+		TotalEdges: len(allEdges),
+		Truncated:  opts.Limit > 0 && len(hops) >= opts.Limit,
+	}
+
+	// A forward call walk flags its reachable set as a floor when an
+	// expanded node drops a dynamic-dispatch / external out-edge — the same
+	// boundaries the layer walk records inline during admit(), rebuilt from
+	// the expanded frontier's out-edges (already fetched into adj).
+	if forward && kindSet[graph.EdgeCalls] {
+		if bs := calleeBoundariesFromAdjacency(expandedIDs, adj, kindSet); len(bs) > 0 {
+			sg.Boundaries = bs
+			sg.LowerBound = graph.LowerBoundCaveat(bs)
+		}
+	}
+
+	if opts.Detail == "brief" {
+		stripMeta(sg)
+	}
+	return sg, true
+}
+
+// matchDiscoveryEdge finds, in a parent node's adjacency slice, the real
+// edge that the hop's (ParentID, NodeID, EdgeKind) discovery tuple names,
+// so the SubGraph carries the persisted edge (with its provenance) rather
+// than a synthetic one. Forward: parent -> node; backward: node -> parent.
+func matchDiscoveryEdge(edges []*graph.Edge, h graph.BFSHop, forward bool) *graph.Edge {
+	for _, e := range edges {
+		if e == nil || e.Kind != h.EdgeKind {
+			continue
+		}
+		if forward {
+			if e.From == h.ParentID && e.To == h.NodeID {
+				return e
+			}
+		} else if e.From == h.NodeID && e.To == h.ParentID {
+			return e
+		}
+	}
+	return nil
+}
+
+// calleeBoundariesFromAdjacency reconstructs the epistemic boundaries a
+// forward call walk records: for each expanded node, every out-edge of a
+// traversed kind whose target the walk could not follow (an unresolved /
+// external-prefixed stub) is one boundary, deduplicated by (source,
+// target) and capped. Mirrors the inline recordBoundaries path in bfs:
+// same kind gate (the walk's kindSet), same dropped-target set, same
+// "callees" direction, no SeedName.
+func calleeBoundariesFromAdjacency(
+	expandedIDs []string,
+	outAdj map[string][]*graph.Edge,
+	kindSet map[graph.EdgeKind]bool,
+) []graph.EpistemicBoundary {
+	seen := make(map[string]bool)
+	var out []graph.EpistemicBoundary
+	for _, id := range expandedIDs {
+		for _, edge := range outAdj[id] {
+			if edge == nil || !kindSet[edge.Kind] {
+				continue
+			}
+			if !graph.IsUnresolvedTarget(edge.To) && !strings.HasPrefix(edge.To, "external::") {
+				continue
+			}
+			reason, ok := graph.ClassifyDroppedTarget(edge.To, edge.Kind)
+			if !ok {
+				continue
+			}
+			key := edge.From + "\x00" + edge.To
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			target := edge.To
+			if graph.IsUnresolvedTarget(edge.To) {
+				target = graph.UnresolvedName(edge.To)
+			}
+			out = append(out, graph.EpistemicBoundary{
+				SeedID:    edge.From,
+				Target:    target,
+				EdgeKind:  string(edge.Kind),
+				Reason:    reason,
+				Direction: "callees",
+			})
+			if len(out) >= 50 {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 // isUsageEdgeKind reports whether an edge kind counts as a "usage"

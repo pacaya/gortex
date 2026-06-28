@@ -85,6 +85,7 @@ func RunConformance(t *testing.T, factory Factory) {
 	t.Run("FileImportAggregator", func(t *testing.T) { testFileImportAggregator(t, factory) })
 	t.Run("InDegreeForNodes", func(t *testing.T) { testInDegreeForNodes(t, factory) })
 	t.Run("ReachableForwardByKinds", func(t *testing.T) { testReachableForwardByKinds(t, factory) })
+	t.Run("BFS", func(t *testing.T) { testBFS(t, factory) })
 	t.Run("ThrowerErrorSurfacer", func(t *testing.T) { testThrowerErrorSurfacer(t, factory) })
 	t.Run("EdgeAdjacencyForKinds", func(t *testing.T) { testEdgeAdjacencyForKinds(t, factory) })
 	t.Run("CommunityCrossingsByKind", func(t *testing.T) { testCommunityCrossingsByKind(t, factory) })
@@ -2377,6 +2378,126 @@ func testReachableForwardByKinds(t *testing.T, factory Factory) {
 	if !dup["Test"] || !dup["A"] || !dup["B"] || !dup["C"] {
 		t.Fatalf("ReachableForwardByKinds(dup seeds) = %v, want full closure", dup)
 	}
+}
+
+// testBFS exercises the optional graph.BFSCapable capability. The same
+// fixture and assertions run against every backend the factory produces,
+// so the in-memory reference walk and the SQLite recursive-CTE walk are
+// shadow-tested for identical hop-sets — including a cycle, a node-backed
+// gate (an unresolved target), a min-depth-via-two-parents tie-break, the
+// depth bound, and deterministic limit truncation.
+func testBFS(t *testing.T, factory Factory) {
+	t.Helper()
+	s := factory(t)
+	bc, ok := s.(graph.BFSCapable)
+	if !ok {
+		t.Skip("backend does not implement graph.BFSCapable")
+	}
+
+	// Layout (functions):
+	//   A -calls->      B, C
+	//   B -calls->      D        B -references-> E
+	//   C -calls->      D
+	//   D -calls->      A (cycle)   D -calls-> unresolved::ghost (no node)
+	//   E -references-> F
+	for _, id := range []string{"A", "B", "C", "D", "E", "F"} {
+		s.AddNode(mkNode(id, id, "a.go", graph.KindFunction))
+	}
+	addE := func(from, to string, kind graph.EdgeKind, line int) {
+		e := mkEdge(from, to, kind)
+		e.Line = line
+		s.AddEdge(e)
+	}
+	addE("A", "B", graph.EdgeCalls, 1)
+	addE("A", "C", graph.EdgeCalls, 2)
+	addE("B", "D", graph.EdgeCalls, 3)
+	addE("C", "D", graph.EdgeCalls, 4)
+	addE("D", "A", graph.EdgeCalls, 5) // cycle back to the seed
+	addE("D", "unresolved::ghost", graph.EdgeCalls, 6)
+	addE("B", "E", graph.EdgeReferences, 7)
+	addE("E", "F", graph.EdgeReferences, 8)
+
+	calls := []graph.EdgeKind{graph.EdgeCalls}
+	callsRefs := []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences}
+
+	must := func(hops []graph.BFSHop, err error) []graph.BFSHop {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("BFS error: %v", err)
+		}
+		return hops
+	}
+	assertHops := func(name string, got, want []graph.BFSHop) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %d hops %+v, want %d %+v", name, len(got), got, len(want), want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("%s: hop[%d] = %+v, want %+v (full=%+v)", name, i, got[i], want[i], got)
+			}
+		}
+	}
+
+	// Forward, calls only: the cycle terminates; D settles at min depth 2
+	// via the (parent,kind)-smallest edge (B < C); the unresolved target and
+	// the references edges are excluded.
+	assertHops("fwd/calls", must(bc.BFS([]string{"A"}, graph.DirectionForward, calls, 5, 0)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+		{NodeID: "B", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+		{NodeID: "C", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+		{NodeID: "D", Depth: 2, ParentID: "B", EdgeKind: graph.EdgeCalls},
+	})
+
+	// Forward, calls + references: E reached via B (references), F via E.
+	assertHops("fwd/callsRefs", must(bc.BFS([]string{"A"}, graph.DirectionForward, callsRefs, 5, 0)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+		{NodeID: "B", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+		{NodeID: "C", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+		{NodeID: "D", Depth: 2, ParentID: "B", EdgeKind: graph.EdgeCalls},
+		{NodeID: "E", Depth: 2, ParentID: "B", EdgeKind: graph.EdgeReferences},
+		{NodeID: "F", Depth: 3, ParentID: "E", EdgeKind: graph.EdgeReferences},
+	})
+
+	// Backward (callers) from D, calls only: A is reached at depth 2 via the
+	// (parent,kind)-smallest caller (B < C).
+	assertHops("bwd/calls", must(bc.BFS([]string{"D"}, graph.DirectionBackward, calls, 5, 0)), []graph.BFSHop{
+		{NodeID: "D", Depth: 0},
+		{NodeID: "B", Depth: 1, ParentID: "D", EdgeKind: graph.EdgeCalls},
+		{NodeID: "C", Depth: 1, ParentID: "D", EdgeKind: graph.EdgeCalls},
+		{NodeID: "A", Depth: 2, ParentID: "B", EdgeKind: graph.EdgeCalls},
+	})
+
+	// Depth bound cuts the walk off before D.
+	assertHops("fwd/depth1", must(bc.BFS([]string{"A"}, graph.DirectionForward, calls, 1, 0)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+		{NodeID: "B", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+		{NodeID: "C", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+	})
+
+	// Limit truncates deterministically after (depth, node_id) ordering.
+	assertHops("fwd/limit2", must(bc.BFS([]string{"A"}, graph.DirectionForward, calls, 5, 2)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+		{NodeID: "B", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+	})
+
+	// Empty kinds and a zero depth bound both yield the seed only.
+	assertHops("fwd/noKinds", must(bc.BFS([]string{"A"}, graph.DirectionForward, nil, 5, 0)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+	})
+	assertHops("fwd/depth0", must(bc.BFS([]string{"A"}, graph.DirectionForward, calls, 0, 0)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+	})
+
+	// Empty seeds returns nil; duplicate seeds collapse.
+	if got := must(bc.BFS(nil, graph.DirectionForward, calls, 5, 0)); got != nil {
+		t.Fatalf("BFS(nil seeds) = %+v, want nil", got)
+	}
+	assertHops("fwd/dupSeeds", must(bc.BFS([]string{"A", "A"}, graph.DirectionForward, calls, 1, 0)), []graph.BFSHop{
+		{NodeID: "A", Depth: 0},
+		{NodeID: "B", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+		{NodeID: "C", Depth: 1, ParentID: "A", EdgeKind: graph.EdgeCalls},
+	})
 }
 
 // testThrowerErrorSurfacer exercises the optional

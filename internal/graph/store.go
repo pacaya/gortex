@@ -1681,6 +1681,77 @@ type CrossRepoCandidates interface {
 	CrossRepoCandidates(baseKinds []EdgeKind) []CrossRepoCandidateRow
 }
 
+// Direction selects which way a BFSCapable.BFS walk follows edges.
+type Direction int
+
+const (
+	// DirectionForward follows edges from source to target (from_id ->
+	// to_id): the callee / dependency / out-edge direction.
+	DirectionForward Direction = iota
+	// DirectionBackward follows edges from target to source (to_id ->
+	// from_id): the caller / dependent / in-edge direction.
+	DirectionBackward
+)
+
+// String renders the direction for logs / debugging.
+func (d Direction) String() string {
+	if d == DirectionBackward {
+		return "backward"
+	}
+	return "forward"
+}
+
+// BFSHop is one node reached by a BFSCapable.BFS walk. NodeID is the
+// reached node; Depth is its minimum hop-distance from the nearest seed
+// (seeds are depth 0). ParentID + EdgeKind name the edge that first
+// reached the node at that minimum depth — the discovery edge — so a
+// caller can rebuild the spanning tree / call chain without a second
+// pass. Seeds carry ParentID == "" and EdgeKind == "".
+type BFSHop struct {
+	NodeID   string
+	Depth    int
+	ParentID string
+	EdgeKind EdgeKind
+}
+
+// BFSCapable is an optional capability a backend MAY implement to run a
+// whole bounded breadth-first traversal in one round-trip instead of the
+// engine's layer-by-layer GetOutEdges / GetInEdges walk (one store call
+// per depth). The SQLite backend lowers it to a single recursive CTE; the
+// in-memory graph keeps the reference Go walk. Both MUST agree on the
+// reachable hop-set for the same arguments — the in-memory walk is the
+// correctness oracle the disk implementation is shadow-tested against.
+//
+// Semantics:
+//   - seeds enter the result at depth 0 (ParentID / EdgeKind empty). Empty
+//     seeds returns nil; duplicate seeds collapse.
+//   - dir picks the edge direction — forward follows from_id -> to_id,
+//     backward follows to_id -> from_id.
+//   - kinds gates which edge kinds the walk follows. Empty kinds returns
+//     the seed hops only (no edge is followed).
+//   - only node-backed targets are followed and returned; an edge to a
+//     target with no node row (an unresolved / external stub) is not a hop.
+//     This mirrors the engine's reachable-set semantics, where such targets
+//     are dropped rather than expanded.
+//   - each node appears once, at its minimum depth; among the discovery
+//     edges at that depth the (ParentID, EdgeKind)-smallest is chosen, so
+//     the result is deterministic. A cycle terminates because depth is
+//     bounded by maxDepth, not because of any visited bookkeeping.
+//   - maxDepth bounds the hop distance: a node at depth d is expanded only
+//     while d < maxDepth, so the deepest hop is maxDepth. maxDepth <= 0
+//     returns the seed hops only.
+//   - the result is ordered by (Depth, NodeID); limit > 0 caps the number
+//     of hops after that ordering (limit <= 0 means no cap).
+//
+// Optional capability — the engine's GetCallers / GetCallChain /
+// GetDependents / GetDependencies fall back to the in-memory layer walk
+// when the backend does not implement it, or when the walk needs features
+// the flat hop-set cannot express (workspace scope, test exclusion,
+// dispatch expansion, or a bidirectional cluster walk).
+type BFSCapable interface {
+	BFS(seeds []string, dir Direction, kinds []EdgeKind, maxDepth int, limit int) ([]BFSHop, error)
+}
+
 // ExtractCandidateRow is one tuple returned by ExtractCandidatesScanner.
 // Caller / FanOut counts are distinct-by-endpoint (one caller counted
 // once per (From, kind) pair, one callee counted once per (To, kind)
