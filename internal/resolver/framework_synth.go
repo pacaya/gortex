@@ -105,6 +105,7 @@ const (
 	SynthSidekiq           = "sidekiq-dispatch"
 	SynthLaravelEvent      = "laravel-event"
 	SynthFnPointerDispatch = "fn-pointer-dispatch"
+	SynthMacroExpansion    = "macro-expansion"
 	SynthGoFrameRoute      = "goframe-route"
 	SynthDjangoDescriptor  = "django-descriptor"
 	SynthExpressResolve    = "express-resolve"
@@ -241,6 +242,11 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		// fn-pointer field → the indirect recv->field() call, keyed by
 		// (struct type, field) with a field-copy fixpoint.
 		synthFunc{name: SynthFnPointerDispatch, fn: ResolveFnPointerDispatch},
+		// C/C++ function-like macro expansion: a macro invocation
+		// `CALL_M(o)` → each call hidden in the macro's replacement list,
+		// attributed to the use-site line so a forward call walk shows the
+		// call where the macro is invoked, not at its `#define`.
+		synthFunc{name: SynthMacroExpansion, fn: ResolveMacroExpansionCalls},
 		// Gin middleware-chain dispatcher → registered handlers. Bridges the
 		// `c.handlers[idx](c)` indirection so ServeHTTP→handler reachability
 		// flows; repo-scoped, gated on a dispatcher existing.
