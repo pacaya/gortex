@@ -93,7 +93,7 @@ func tsEntityDecoratorTableName(classNode *sitter.Node, src []byte) (string, str
 			return "", "", true
 		}
 		// Look at the first argument: string literal or object.
-		for i := 0; i < int(argsNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(argsNode.NamedChildCount()); i < _nc; i++ {
 			arg := argsNode.NamedChild(i)
 			if arg == nil {
 				continue
@@ -116,7 +116,7 @@ func tsEntityDecoratorTableName(classNode *sitter.Node, src []byte) (string, str
 // tsEntityStringArg unwraps a TS string literal to its content. Falls
 // back to stripping surrounding quotes when no fragment child exists.
 func tsEntityStringArg(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c != nil && c.Type() == "string_fragment" {
 			return c.Content(src)
@@ -131,7 +131,7 @@ func tsEntityStringArg(node *sitter.Node, src []byte) string {
 // name: "..." }) and similar options-object shapes.
 func tsObjectStringField(obj *sitter.Node, src []byte, key string) string {
 	keyRE := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(key) + `\s*:\s*$`)
-	for i := 0; i < int(obj.NamedChildCount()); i++ {
+	for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 		pair := obj.NamedChild(i)
 		if pair == nil || (pair.Type() != "pair" && pair.Type() != "property_name_value_pair") {
 			continue

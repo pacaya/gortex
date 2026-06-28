@@ -16,9 +16,9 @@ import (
 // HEEx component syntax:
 //
 //   - `<.local_name attr="...">…</.local_name>`     → local component
-//                                                     in the same module
+//     in the same module
 //   - `<MyApp.Components.Card />`                   → cross-module
-//                                                     reference
+//     reference
 //
 // Lowercase HTML / SVG primitives (`<div>`, `<span>`) are skipped — the
 // rendering edge graph would be pure noise otherwise. Capital-letter
@@ -88,7 +88,7 @@ func isHEExSigil(n *sitter.Node, src []byte) bool {
 		// Some grammar variants don't expose the name as a field.
 		// Fall back to scanning the first few children for a
 		// sigil_name node carrying the letter.
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c != nil && (c.Type() == "sigil_name" || c.Type() == "sigil_modifiers") {
 				nameNode = c

@@ -133,7 +133,7 @@ func isScalaPrimitive(t string) bool {
 // sits as a sibling of the bound identifier in the tree-sitter shape. Returns
 // "" when the val/var has no declared type (inferred).
 func scalaTypeAnnotationRaw(member *sitter.Node, src []byte) string {
-	for i := 0; i < int(member.NamedChildCount()); i++ {
+	for i, _nc := 0, int(member.NamedChildCount()); i < _nc; i++ {
 		c := member.NamedChild(i)
 		if c == nil {
 			continue
@@ -152,7 +152,7 @@ func scalaTypeAnnotationRaw(member *sitter.Node, src []byte) string {
 // "". The node shape is `name: Type` with the type as a sibling of the bound
 // identifier.
 func scalaParamTypeText(param *sitter.Node, src []byte) string {
-	for i := 0; i < int(param.NamedChildCount()); i++ {
+	for i, _nc := 0, int(param.NamedChildCount()); i < _nc; i++ {
 		c := param.NamedChild(i)
 		if c == nil {
 			continue
@@ -171,7 +171,7 @@ func scalaParamTypeText(param *sitter.Node, src []byte) string {
 // nil when the def has no declared return type.
 func scalaReturnTypeNode(fn *sitter.Node) *sitter.Node {
 	seenParams := false
-	for i := 0; i < int(fn.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fn.NamedChildCount()); i < _nc; i++ {
 		c := fn.NamedChild(i)
 		if c == nil {
 			continue
@@ -200,12 +200,12 @@ func emitScalaDefTypeUses(fn *sitter.Node, ownerID, filePath string, src []byte,
 	if fn == nil || ownerID == "" {
 		return
 	}
-	for i := 0; i < int(fn.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fn.NamedChildCount()); i < _nc; i++ {
 		c := fn.NamedChild(i)
 		if c == nil || c.Type() != "parameters" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			p := c.NamedChild(j)
 			if p == nil || p.Type() != "parameter" {
 				continue
@@ -227,12 +227,12 @@ func emitScalaClassParamTypeUses(classNode *sitter.Node, ownerID, filePath strin
 	if classNode == nil || ownerID == "" {
 		return
 	}
-	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(classNode.NamedChildCount()); i < _nc; i++ {
 		c := classNode.NamedChild(i)
 		if c == nil || c.Type() != "class_parameters" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			p := c.NamedChild(j)
 			if p == nil || p.Type() != "class_parameter" {
 				continue

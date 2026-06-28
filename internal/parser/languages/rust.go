@@ -466,7 +466,7 @@ func rustTypeParams(item *sitter.Node, src []byte) []map[string]string {
 	if tps == nil {
 		// Some grammar versions don't expose the field name; fall
 		// back to a child-type scan.
-		for i := 0; i < int(item.ChildCount()); i++ {
+		for i, _nc := 0, int(item.ChildCount()); i < _nc; i++ {
 			c := item.Child(i)
 			if c != nil && c.Type() == "type_parameters" {
 				tps = c
@@ -478,7 +478,7 @@ func rustTypeParams(item *sitter.Node, src []byte) []map[string]string {
 		return nil
 	}
 	var out []map[string]string
-	for i := 0; i < int(tps.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tps.NamedChildCount()); i < _nc; i++ {
 		tp := tps.NamedChild(i)
 		if tp == nil {
 			continue
@@ -496,7 +496,7 @@ func rustTypeParams(item *sitter.Node, src []byte) []map[string]string {
 		// versions emit these as `constrained_type_parameter`;
 		// newer ones flatten them under a `type_parameter` node.
 		entry := map[string]string{}
-		for j := 0; j < int(tp.ChildCount()); j++ {
+		for j, _nc := 0, int(tp.ChildCount()); j < _nc; j++ {
 			c := tp.Child(j)
 			if c == nil {
 				continue
@@ -569,7 +569,7 @@ func rustRawReturnType(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	pastArrow := false
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child == nil {
 			continue
@@ -692,7 +692,7 @@ func rustCollectAttributes(item *sitter.Node) []*sitter.Node {
 func emitRustAnnotationEdges(attrs []*sitter.Node, fromID, filePath string, src []byte, result *parser.ExtractionResult, seen map[string]bool) {
 	for _, attr := range attrs {
 		var attrNode *sitter.Node
-		for i := 0; i < int(attr.NamedChildCount()); i++ {
+		for i, _nc := 0, int(attr.NamedChildCount()); i < _nc; i++ {
 			c := attr.NamedChild(i)
 			if c != nil && c.Type() == "attribute" {
 				attrNode = c
@@ -728,7 +728,7 @@ func rustAttributeNameAndArgs(attr *sitter.Node, src []byte) (string, string) {
 		return "", ""
 	}
 	var name, args string
-	for i := 0; i < int(attr.ChildCount()); i++ {
+	for i, _nc := 0, int(attr.ChildCount()); i < _nc; i++ {
 		c := attr.Child(i)
 		if c == nil {
 			continue
@@ -756,7 +756,7 @@ func rustVisibility(item *sitter.Node, src []byte) string {
 	if item == nil {
 		return VisibilityPrivate
 	}
-	for i := 0; i < int(item.ChildCount()); i++ {
+	for i, _nc := 0, int(item.ChildCount()); i < _nc; i++ {
 		c := item.Child(i)
 		if c == nil {
 			continue
@@ -1044,7 +1044,7 @@ func extractRustReturnType(node *sitter.Node, src []byte) string {
 	// In tree-sitter-rust, function_item has children: fn, name, parameters, ->, type, block.
 	// Look for a type child after "->".
 	pastArrow := false
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		text := string(src[child.StartByte():child.EndByte()])
 		if text == "->" {

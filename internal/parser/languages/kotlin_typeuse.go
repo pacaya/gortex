@@ -147,7 +147,7 @@ func emitKotlinReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 			if ownerID == "" {
 				ownerID = fileID
 			}
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				switch c.Type() {
 				case "constructor_invocation":
@@ -175,7 +175,7 @@ func emitKotlinReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 			gaOwner := owner(gaLine)
 			var collectGenericArgs func(*sitter.Node)
 			collectGenericArgs = func(m *sitter.Node) {
-				for i := 0; i < int(m.NamedChildCount()); i++ {
+				for i, _nc := 0, int(m.NamedChildCount()); i < _nc; i++ {
 					c := m.NamedChild(i)
 					if c == nil {
 						continue
@@ -217,7 +217,7 @@ func kotlinNavLastIdent(nav *sitter.Node, src []byte) string {
 			continue
 		}
 		if c.Type() == "navigation_suffix" {
-			for j := 0; j < int(c.NamedChildCount()); j++ {
+			for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 				cc := c.NamedChild(j)
 				if cc != nil && cc.Type() == "simple_identifier" {
 					return cc.Content(src)
@@ -255,7 +255,7 @@ func kotlinFirstUserType(node *sitter.Node) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue

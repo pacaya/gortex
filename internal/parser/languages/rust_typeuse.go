@@ -180,7 +180,7 @@ func emitRustReferenceForms(root *sitter.Node, funcRanges []funcRange, fileID, f
 			// `: Bound + Other` on a type parameter, supertrait
 			// (`trait X: Y`), or where-predicate. Each named type child is
 			// a bound the bearer inherits.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil {
 					continue
@@ -244,7 +244,7 @@ func emitRustReferenceForms(root *sitter.Node, funcRanges []funcRange, fileID, f
 				}
 				emitRef(owner(line), canon, graph.RefContextGenericArg, line)
 			}
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil {
 					continue
@@ -289,7 +289,7 @@ func rustDeclaredTypeParams(root *sitter.Node, src []byte) map[string]bool {
 		if n.Type() != "type_parameters" {
 			return true
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			tp := n.NamedChild(i)
 			if tp == nil {
 				continue
@@ -302,7 +302,7 @@ func rustDeclaredTypeParams(root *sitter.Node, src []byte) map[string]bool {
 			default:
 				// Constrained (`<T: Clone>`, `<T = u8>`) — the param name is
 				// the first type_identifier child.
-				for j := 0; j < int(tp.NamedChildCount()); j++ {
+				for j, _nc := 0, int(tp.NamedChildCount()); j < _nc; j++ {
 					c := tp.NamedChild(j)
 					if c != nil && c.Type() == "type_identifier" {
 						params[strings.TrimSpace(c.Content(src))] = true
@@ -320,7 +320,7 @@ func rustDeclaredTypeParams(root *sitter.Node, src []byte) map[string]bool {
 // `#[derive(A, B)]` attribute_item and emits a static_access reference for
 // each Capitalized name. Non-derive attributes contribute nothing.
 func emitRustDeriveRefs(attrItem *sitter.Node, ownerID string, src []byte, emitRef func(ownerID, typeName, useKind string, line int), line int) {
-	for i := 0; i < int(attrItem.NamedChildCount()); i++ {
+	for i, _nc := 0, int(attrItem.NamedChildCount()); i < _nc; i++ {
 		attr := attrItem.NamedChild(i)
 		if attr == nil || attr.Type() != "attribute" {
 			continue
@@ -330,12 +330,12 @@ func emitRustDeriveRefs(attrItem *sitter.Node, ownerID string, src []byte, emitR
 		if head == nil || head.Content(src) != "derive" {
 			continue
 		}
-		for j := 0; j < int(attr.NamedChildCount()); j++ {
+		for j, _nc := 0, int(attr.NamedChildCount()); j < _nc; j++ {
 			c := attr.NamedChild(j)
 			if c == nil || c.Type() != "token_tree" {
 				continue
 			}
-			for k := 0; k < int(c.NamedChildCount()); k++ {
+			for k, _nc := 0, int(c.NamedChildCount()); k < _nc; k++ {
 				id := c.NamedChild(k)
 				if id == nil {
 					continue

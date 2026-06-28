@@ -86,7 +86,7 @@ func (e *OrgModeExtractor) Extract(filePath string, src []byte) (*parser.Extract
 		case "regular_link":
 			e.extractLink(node, parseSrc, filePath, fileNode.ID, seenLinks, result, startLine)
 		}
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			walk(node.NamedChild(i))
 		}
 	}
@@ -170,7 +170,7 @@ func (e *OrgModeExtractor) extractBlock(
 	startLine, endLine func(*sitter.Node) int,
 ) {
 	var blockType, params string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		switch child.Type() {
 		case "block_begin_name":
@@ -221,7 +221,7 @@ func (e *OrgModeExtractor) extractBlock(
 // so consumers can show the document title without re-parsing.
 func (e *OrgModeExtractor) maybeAttachKeyword(node *sitter.Node, src []byte, fileNode *graph.Node) {
 	var rawKey, val string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		switch child.Type() {
 		case "keyword_key":
@@ -255,7 +255,7 @@ func (e *OrgModeExtractor) extractLink(
 	startLine func(*sitter.Node) int,
 ) {
 	var target string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "pathreg" {
 			target = strings.TrimSpace(child.Content(src))

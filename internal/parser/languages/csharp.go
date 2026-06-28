@@ -477,7 +477,7 @@ func (e *CSharpExtractor) emitContainer(m parser.QueryResult, kind string, nodeK
 // the enum — so an enum's members are navigable symbols, not lost in the type.
 func (e *CSharpExtractor) emitCSharpEnumMembers(enumNode *sitter.Node, src []byte, filePath, enumID, enumName string, result *parser.ExtractionResult, seen map[string]bool) {
 	var list *sitter.Node
-	for i := 0; i < int(enumNode.ChildCount()); i++ {
+	for i, _nc := 0, int(enumNode.ChildCount()); i < _nc; i++ {
 		if c := enumNode.Child(i); c != nil && c.Type() == "enum_member_declaration_list" {
 			list = c
 			break
@@ -486,7 +486,7 @@ func (e *CSharpExtractor) emitCSharpEnumMembers(enumNode *sitter.Node, src []byt
 	if list == nil {
 		return
 	}
-	for i := 0; i < int(list.NamedChildCount()); i++ {
+	for i, _nc := 0, int(list.NamedChildCount()); i < _nc; i++ {
 		mem := list.NamedChild(i)
 		if mem.Type() != "enum_member_declaration" {
 			continue
@@ -495,7 +495,7 @@ func (e *CSharpExtractor) emitCSharpEnumMembers(enumNode *sitter.Node, src []byt
 		if nn := mem.ChildByFieldName("name"); nn != nil {
 			nameNode = nn
 		}
-		for j := 0; j < int(mem.NamedChildCount()); j++ {
+		for j, _nc := 0, int(mem.NamedChildCount()); j < _nc; j++ {
 			c := mem.NamedChild(j)
 			if c.Type() == "identifier" && nameNode == nil {
 				nameNode = c
@@ -532,7 +532,7 @@ func csharpHasModifier(decl *sitter.Node, src []byte, mod string) bool {
 	if decl == nil {
 		return false
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c != nil && c.Type() == "modifier" && strings.TrimSpace(c.Content(src)) == mod {
 			return true
@@ -550,7 +550,7 @@ func csharpEnclosingNamespace(node *sitter.Node, src []byte) string {
 			if nm := n.ChildByFieldName("name"); nm != nil {
 				return strings.TrimSpace(nm.Content(src))
 			}
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c.Type() == "identifier" || c.Type() == "qualified_name" {
 					return strings.TrimSpace(c.Content(src))
@@ -595,7 +595,7 @@ func csharpVisibility(decl *sitter.Node, src []byte, defaultVis string) string {
 	if decl == nil {
 		return defaultVis
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil {
 			continue
@@ -627,12 +627,12 @@ func csharpCollectAttributes(decl *sitter.Node, src []byte) []javaAnnotation {
 		return nil
 	}
 	var out []javaAnnotation
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "attribute_list" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			a := c.Child(j)
 			if a == nil || a.Type() != "attribute" {
 				continue
@@ -642,7 +642,7 @@ func csharpCollectAttributes(decl *sitter.Node, src []byte) []javaAnnotation {
 			if nm := a.ChildByFieldName("name"); nm != nil {
 				name = nm.Content(src)
 			}
-			for k := 0; k < int(a.ChildCount()); k++ {
+			for k, _nc := 0, int(a.ChildCount()); k < _nc; k++ {
 				inner := a.Child(k)
 				if inner == nil {
 					continue
@@ -981,7 +981,7 @@ func emitCSharpBaseList(typeID string, decl *sitter.Node, src []byte, filePath s
 	if baseList == nil {
 		// `bases` is not a named field in every grammar revision; fall
 		// back to a direct child scan for the base_list node.
-		for i := 0; i < int(decl.ChildCount()); i++ {
+		for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 			c := decl.Child(i)
 			if c != nil && c.Type() == "base_list" {
 				baseList = c
@@ -997,7 +997,7 @@ func emitCSharpBaseList(typeID string, decl *sitter.Node, src []byte, filePath s
 	// and the "first non-interface is the superclass" branch never runs.
 	allowsBaseClass := csharpDeclAllowsBaseClass(decl)
 	extendsTaken := false
-	for i := 0; i < int(baseList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(baseList.NamedChildCount()); i < _nc; i++ {
 		entry := baseList.NamedChild(i)
 		if entry == nil {
 			continue
@@ -1035,7 +1035,7 @@ func csharpDeclAllowsBaseClass(decl *sitter.Node) bool {
 	case "struct_declaration":
 		return false
 	case "record_declaration":
-		for i := 0; i < int(decl.ChildCount()); i++ {
+		for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 			if c := decl.Child(i); c != nil && c.Type() == "struct" {
 				return false
 			}
@@ -1061,7 +1061,7 @@ func csharpBaseTypeName(entry *sitter.Node, src []byte) (string, bool) {
 		if id := entry.ChildByFieldName("name"); id != nil {
 			return id.Content(src), false
 		}
-		for i := 0; i < int(entry.ChildCount()); i++ {
+		for i, _nc := 0, int(entry.ChildCount()); i < _nc; i++ {
 			if c := entry.Child(i); c != nil && c.Type() == "identifier" {
 				return c.Content(src), false
 			}
@@ -1069,7 +1069,7 @@ func csharpBaseTypeName(entry *sitter.Node, src []byte) (string, bool) {
 	case "qualified_name":
 		// System.Object → Object (the last identifier).
 		var last string
-		for i := 0; i < int(entry.ChildCount()); i++ {
+		for i, _nc := 0, int(entry.ChildCount()); i < _nc; i++ {
 			if c := entry.Child(i); c != nil && c.Type() == "identifier" {
 				last = c.Content(src)
 			}
@@ -1080,7 +1080,7 @@ func csharpBaseTypeName(entry *sitter.Node, src []byte) (string, bool) {
 		if id := entry.ChildByFieldName("type"); id != nil {
 			return normalizeCSharpBaseName(id.Content(src)), true
 		}
-		for i := 0; i < int(entry.ChildCount()); i++ {
+		for i, _nc := 0, int(entry.ChildCount()); i < _nc; i++ {
 			c := entry.Child(i)
 			if c == nil {
 				continue
@@ -1113,7 +1113,7 @@ func extractCSharpMethodReturnType(methodNode *sitter.Node, src []byte, methodNa
 	if methodNode == nil {
 		return ""
 	}
-	for i := 0; i < int(methodNode.ChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.ChildCount()); i < _nc; i++ {
 		child := methodNode.Child(i)
 		if child.Type() == "identifier" && string(src[child.StartByte():child.EndByte()]) == methodName {
 			break
@@ -1166,7 +1166,7 @@ func csharpFieldDeclType(fieldDecl *sitter.Node, src []byte) string {
 	if fieldDecl == nil {
 		return ""
 	}
-	for i := 0; i < int(fieldDecl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fieldDecl.NamedChildCount()); i < _nc; i++ {
 		c := fieldDecl.NamedChild(i)
 		if c == nil || c.Type() != "variable_declaration" {
 			continue
@@ -1188,7 +1188,7 @@ func csharpFieldDeclType(fieldDecl *sitter.Node, src []byte) string {
 // inferTypeFromCSharpNew extracts the type name from a C# object_creation_expression.
 // new UserService(...) -> "UserService"
 func inferTypeFromCSharpNew(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "identifier" || child.Type() == "type_identifier" ||
 			child.Type() == "generic_name" || child.Type() == "qualified_name" {

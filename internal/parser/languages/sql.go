@@ -57,12 +57,12 @@ func (e *SQLExtractor) Extract(filePath string, src []byte) (*parser.ExtractionR
 	seen := make(map[string]bool)
 
 	// Walk top-level statements.
-	for i := 0; i < int(root.NamedChildCount()); i++ {
+	for i, _nc := 0, int(root.NamedChildCount()); i < _nc; i++ {
 		stmt := root.NamedChild(i)
 		if stmt.Type() != "statement" {
 			continue
 		}
-		for j := 0; j < int(stmt.NamedChildCount()); j++ {
+		for j, _nc := 0, int(stmt.NamedChildCount()); j < _nc; j++ {
 			child := stmt.NamedChild(j)
 			switch child.Type() {
 			case "create_table":
@@ -100,10 +100,10 @@ func (e *SQLExtractor) extractCreateTable(node *sitter.Node, src []byte, filePat
 	})
 
 	// Extract column names as variables with EdgeMemberOf.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "column_definitions" {
-			for k := 0; k < int(child.NamedChildCount()); k++ {
+			for k, _nc := 0, int(child.NamedChildCount()); k < _nc; k++ {
 				col := child.NamedChild(k)
 				if col.Type() == "column_definition" {
 					colName := firstNamedChildOfType(col, "identifier", src)
@@ -203,7 +203,7 @@ func (e *SQLExtractor) extractCreateTrigger(node *sitter.Node, src []byte, fileP
 // findObjectName extracts the name from a CREATE statement by finding
 // the first object_reference > identifier child.
 func findObjectName(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "object_reference" {
 			return firstNamedChildOfType(child, "identifier", src)
@@ -214,7 +214,7 @@ func findObjectName(node *sitter.Node, src []byte) string {
 }
 
 func firstNamedChildOfType(node *sitter.Node, nodeType string, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == nodeType {
 			return child.Content(src)

@@ -90,7 +90,7 @@ func (w *tsBindingWalker) walk(n *sitter.Node) {
 		}
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		w.walk(n.NamedChild(i))
 	}
 }
@@ -101,7 +101,7 @@ func (w *tsBindingWalker) walk(n *sitter.Node) {
 // (object_pattern / array_pattern) — for patterns we descend and
 // emit one node per shorthand identifier.
 func (w *tsBindingWalker) handleVarDecl(decl *sitter.Node) {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "variable_declarator" {
 			continue
@@ -156,7 +156,7 @@ func (w *tsBindingWalker) emitFromPattern(node *sitter.Node, line int) {
 	case "identifier", "shorthand_property_identifier_pattern":
 		w.bindLocal(node.Content(w.src), line)
 	case "object_pattern", "array_pattern":
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			c := node.NamedChild(i)
 			if c == nil {
 				continue
@@ -169,7 +169,7 @@ func (w *tsBindingWalker) emitFromPattern(node *sitter.Node, line int) {
 					w.emitFromPattern(v, line)
 				}
 			case "rest_pattern":
-				for j := 0; j < int(c.NamedChildCount()); j++ {
+				for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 					w.emitFromPattern(c.NamedChild(j), line)
 				}
 			default:
@@ -183,7 +183,7 @@ func (w *tsBindingWalker) emitFromPattern(node *sitter.Node, line int) {
 			w.emitFromPattern(l, line)
 		}
 	case "rest_pattern":
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			w.emitFromPattern(node.NamedChild(i), line)
 		}
 	}

@@ -192,7 +192,7 @@ func expressIsRouteReceiver(recv *sitter.Node, src []byte) bool {
 // expressFirstArgIsString reports whether the first call argument is a string
 // literal (the route path).
 func expressFirstArgIsString(args *sitter.Node) bool {
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		if c := args.NamedChild(i); c != nil {
 			return c.Type() == "string"
 		}
@@ -205,7 +205,7 @@ func expressFirstArgIsString(args *sitter.Node) bool {
 func expressHandlerPositionArgs(args *sitter.Node) []*sitter.Node {
 	var out []*sitter.Node
 	sawPath := false
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -253,7 +253,7 @@ func expressHandlerParamNames(handler *sitter.Node, src []byte) map[string]bool 
 		}
 		return out
 	}
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		p := params.NamedChild(i)
 		if p == nil {
 			continue
@@ -273,7 +273,7 @@ func expressWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		expressWalk(n.NamedChild(i), fn)
 	}
 }

@@ -92,7 +92,7 @@ func cDeclIsConst(decl *sitter.Node, src []byte) bool {
 	if decl == nil {
 		return false
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		ch := decl.Child(i)
 		if ch != nil && ch.Type() == "type_qualifier" && ch.Content(src) == "const" {
 			return true

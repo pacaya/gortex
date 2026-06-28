@@ -110,7 +110,7 @@ func walkRustNodes(n *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(n) {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkRustNodes(n.NamedChild(i), visit)
 	}
 }
@@ -150,7 +150,7 @@ func rustExprTailName(expr *sitter.Node, src []byte) string {
 
 func emitRustParamNodes(ownerID string, params *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
 	pos := 0
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		decl := params.NamedChild(i)
 		if decl == nil {
 			continue
@@ -226,7 +226,7 @@ func rustParamName(decl *sitter.Node, src []byte) string {
 		// Older grammar shapes; rare.
 	}
 	// Walk for identifier child (mut_pattern (identifier)).
-	for i := 0; i < int(pat.NamedChildCount()); i++ {
+	for i, _nc := 0, int(pat.NamedChildCount()); i < _nc; i++ {
 		c := pat.NamedChild(i)
 		if c != nil && c.Type() == "identifier" {
 			return c.Content(src)

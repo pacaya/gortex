@@ -71,12 +71,12 @@ func captureGoFrameRoutes(result *parser.ExtractionResult, root *sitter.Node, fi
 		result.Nodes = append(result.Nodes, &graph.Node{
 			ID: routeID, Kind: graph.KindContract, Name: method + " " + path,
 			FilePath: filePath, StartLine: int(n.StartPoint().Row) + 1, Language: "go",
-			Meta:     nodeMeta,
+			Meta: nodeMeta,
 		})
 		result.Edges = append(result.Edges, &graph.Edge{
 			From: routeID, To: "unresolved::*." + reqType, Kind: graph.EdgeCalls,
 			FilePath: filePath, Line: int(n.StartPoint().Row) + 1,
-			Meta:     edgeMeta,
+			Meta: edgeMeta,
 		})
 	})
 
@@ -116,7 +116,7 @@ func captureGoFrameRoutes(result *parser.ExtractionResult, root *sitter.Node, fi
 
 // goframeStructType returns the struct_type of a type_spec, or nil.
 func goframeStructType(typeSpec *sitter.Node) *sitter.Node {
-	for i := 0; i < int(typeSpec.NamedChildCount()); i++ {
+	for i, _nc := 0, int(typeSpec.NamedChildCount()); i < _nc; i++ {
 		if c := typeSpec.NamedChild(i); c != nil && c.Type() == "struct_type" {
 			return c
 		}
@@ -128,7 +128,7 @@ func goframeStructType(typeSpec *sitter.Node) *sitter.Node {
 // struct tag and returns the method + path.
 func goframeMetaTag(structType *sitter.Node, src []byte) (method, path string, ok bool) {
 	var fields *sitter.Node
-	for i := 0; i < int(structType.NamedChildCount()); i++ {
+	for i, _nc := 0, int(structType.NamedChildCount()); i < _nc; i++ {
 		if c := structType.NamedChild(i); c != nil && c.Type() == "field_declaration_list" {
 			fields = c
 			break
@@ -137,7 +137,7 @@ func goframeMetaTag(structType *sitter.Node, src []byte) (method, path string, o
 	if fields == nil {
 		return "", "", false
 	}
-	for i := 0; i < int(fields.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fields.NamedChildCount()); i < _nc; i++ {
 		fd := fields.NamedChild(i)
 		if fd == nil || fd.Type() != "field_declaration" {
 			continue
@@ -165,7 +165,7 @@ func goframeMetaTag(structType *sitter.Node, src []byte) (method, path string, o
 // goframeIsMetaEmbed reports whether a field_declaration is an embedded
 // `g.Meta` (or `gmeta.Meta`) field.
 func goframeIsMetaEmbed(fd *sitter.Node, src []byte) bool {
-	for i := 0; i < int(fd.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fd.NamedChildCount()); i < _nc; i++ {
 		c := fd.NamedChild(i)
 		if c != nil && c.Type() == "qualified_type" {
 			if t := c.ChildByFieldName("name"); t != nil && t.Content(src) == "Meta" {
@@ -180,12 +180,12 @@ func goframeIsMetaEmbed(fd *sitter.Node, src []byte) bool {
 // reading the literal's content child so the surrounding ` / " delimiters
 // (not the inner key:"value" quotes) are stripped.
 func goframeFieldTag(fd *sitter.Node, src []byte) string {
-	for i := 0; i < int(fd.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fd.NamedChildCount()); i < _nc; i++ {
 		c := fd.NamedChild(i)
 		if c == nil || (c.Type() != "raw_string_literal" && c.Type() != "interpreted_string_literal") {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			if cc := c.NamedChild(j); cc != nil && strings.HasSuffix(cc.Type(), "content") {
 				return cc.Content(src)
 			}
@@ -219,7 +219,7 @@ func goframeTagValue(tag, key string) string {
 func goframeMethodParts(md *sitter.Node, src []byte) (name, recvType, reqType, reqPkg string, ok bool) {
 	var plists []*sitter.Node
 	var nameNode *sitter.Node
-	for i := 0; i < int(md.NamedChildCount()); i++ {
+	for i, _nc := 0, int(md.NamedChildCount()); i < _nc; i++ {
 		c := md.NamedChild(i)
 		if c == nil {
 			continue
@@ -251,7 +251,7 @@ func goframePackageName(root *sitter.Node, src []byte) string {
 		if pkg != "" || n.Type() != "package_clause" {
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			if c := n.NamedChild(i); c != nil && c.Type() == "package_identifier" {
 				pkg = strings.TrimSpace(c.Content(src))
 				return
@@ -264,7 +264,7 @@ func goframePackageName(root *sitter.Node, src []byte) string {
 // goframePointedType returns the (pointer-stripped) type name of a
 // parameter list's single parameter — used for the receiver type.
 func goframePointedType(plist *sitter.Node, src []byte) string {
-	for i := 0; i < int(plist.NamedChildCount()); i++ {
+	for i, _nc := 0, int(plist.NamedChildCount()); i < _nc; i++ {
 		pd := plist.NamedChild(i)
 		if pd == nil || pd.Type() != "parameter_declaration" {
 			continue
@@ -278,7 +278,7 @@ func goframePointedType(plist *sitter.Node, src []byte) string {
 // qualifier, "" when unqualified) of the last pointer-typed parameter — the
 // GoFrame request struct.
 func goframeLastPointerParamType(plist *sitter.Node, src []byte) (typeName, pkg string) {
-	for i := 0; i < int(plist.NamedChildCount()); i++ {
+	for i, _nc := 0, int(plist.NamedChildCount()); i < _nc; i++ {
 		pd := plist.NamedChild(i)
 		if pd == nil || pd.Type() != "parameter_declaration" {
 			continue
@@ -358,7 +358,7 @@ func goframeBoundControllers(root *sitter.Node, src []byte) map[string]bool {
 		if args == nil {
 			return
 		}
-		for i := 0; i < int(args.NamedChildCount()); i++ {
+		for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 			a := args.NamedChild(i)
 			if a == nil || a.Type() != "call_expression" {
 				continue
@@ -384,7 +384,7 @@ func goframeWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		goframeWalk(n.NamedChild(i), fn)
 	}
 }

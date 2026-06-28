@@ -56,7 +56,7 @@ func firstPyPubsubTopicArg(callExpr *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -92,7 +92,7 @@ func firstPyPubsubTopicArg(callExpr *sitter.Node, src []byte) string {
 // literal content — callers gate on the method classification, not the
 // string shape, and a stable-enough topic name is the common case.
 func pyStringLiteralContent(strNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(strNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(strNode.NamedChildCount()); i < _nc; i++ {
 		c := strNode.NamedChild(i)
 		if c == nil {
 			continue

@@ -74,7 +74,7 @@ func goWorkflowReceiverAlias(root *sitter.Node, src []byte) string {
 				}
 			}
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 			if found != "" {
 				return
@@ -219,7 +219,7 @@ func goTemporalHandlerName(callNode *sitter.Node, src []byte) string {
 		return ""
 	}
 	count := 0
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -256,7 +256,7 @@ func goTemporalDispatchArg(callNode *sitter.Node) *sitter.Node {
 		return nil
 	}
 	count := 0
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -281,7 +281,7 @@ func goTemporalRegisterName(callNode *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -402,7 +402,7 @@ func goTemporalRegisterNameOverride(callNode *sitter.Node, src []byte) string {
 	// Second positional argument = the options struct.
 	var opts *sitter.Node
 	count := 0
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -437,7 +437,7 @@ func goTemporalRegisterNameOverride(callNode *sitter.Node, src []byte) string {
 		}
 		return n
 	}
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		kv := body.NamedChild(i)
 		if kv == nil || kv.Type() != "keyed_element" || kv.NamedChildCount() < 2 {
 			continue
@@ -570,7 +570,7 @@ func goTemporalNthArgName(callNode *sitter.Node, n int, src []byte) string {
 		return ""
 	}
 	count := 0
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -616,7 +616,7 @@ func goTemporalNthStringLiteralArg(callNode *sitter.Node, n int, src []byte) str
 		return ""
 	}
 	count := 0
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -723,7 +723,7 @@ func goTemporalEnvDefaultName(callNode *sitter.Node, name string, src []byte, ex
 			n.StartByte() < limit && goAssignHasTarget(n, name, src) {
 			assigns = append(assigns, n)
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}
@@ -847,7 +847,7 @@ func goTemporalVarTrace(callNode *sitter.Node, name string, src []byte) (litDef,
 			assigns++
 			rhs = goAssignRHSExpr(n, name, src)
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}
@@ -929,7 +929,7 @@ func goIdentIsFileConst(fromNode *sitter.Node, ident string, src []byte) bool {
 				return
 			}
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}
@@ -972,7 +972,7 @@ func goTemporalFuncReturnName(call, fromNode *sitter.Node, src []byte) (litDef, 
 				return
 			}
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			find(n.NamedChild(i))
 		}
 	}
@@ -997,7 +997,7 @@ func goTemporalFuncReturnName(call, fromNode *sitter.Node, src []byte) (litDef, 
 				ret = n.NamedChild(0)
 			}
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}
@@ -1054,7 +1054,7 @@ func goAssignHasTarget(assign *sitter.Node, name string, src []byte) bool {
 	if left == nil {
 		return false
 	}
-	for i := 0; i < int(left.NamedChildCount()); i++ {
+	for i, _nc := 0, int(left.NamedChildCount()); i < _nc; i++ {
 		c := left.NamedChild(i)
 		if c != nil && c.Type() == "identifier" && c.Content(src) == name {
 			return true
@@ -1076,7 +1076,7 @@ func goAssignRHSExpr(assign *sitter.Node, name string, src []byte) *sitter.Node 
 		return nil
 	}
 	idx := -1
-	for i := 0; i < int(left.NamedChildCount()); i++ {
+	for i, _nc := 0, int(left.NamedChildCount()); i < _nc; i++ {
 		c := left.NamedChild(i)
 		if c != nil && c.Type() == "identifier" && c.Content(src) == name {
 			idx = i
@@ -1172,7 +1172,7 @@ func goCallEnvDefaultLiteral(call *sitter.Node, src []byte) (val string, isConst
 	firstVal := ""
 	firstConst := false
 	haveDefault := false
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue

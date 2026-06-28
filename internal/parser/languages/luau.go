@@ -59,7 +59,7 @@ func (e *LuauExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 	// as `variable_declaration`, `M.foo = function()` as
 	// `assignment_statement`. New to Luau: `type_definition` for type
 	// aliases.
-	for i := 0; i < int(root.ChildCount()); i++ {
+	for i, _nc := 0, int(root.ChildCount()); i < _nc; i++ {
 		child := root.Child(i)
 		if child == nil {
 			continue
@@ -197,7 +197,7 @@ func (e *LuauExtractor) extractVariable(
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
 	var assign *sitter.Node
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -212,7 +212,7 @@ func (e *LuauExtractor) extractVariable(
 	}
 
 	var varList *sitter.Node
-	for i := 0; i < int(assign.NamedChildCount()); i++ {
+	for i, _nc := 0, int(assign.NamedChildCount()); i < _nc; i++ {
 		c := assign.NamedChild(i)
 		if c != nil && c.Type() == "variable_list" {
 			varList = c
@@ -223,7 +223,7 @@ func (e *LuauExtractor) extractVariable(
 		return
 	}
 
-	for i := 0; i < int(varList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(varList.NamedChildCount()); i < _nc; i++ {
 		ident := varList.NamedChild(i)
 		if ident == nil || ident.Type() != "identifier" {
 			continue
@@ -258,7 +258,7 @@ func (e *LuauExtractor) extractAssignmentFunc(
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
 	var varList, exprList *sitter.Node
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -275,7 +275,7 @@ func (e *LuauExtractor) extractAssignmentFunc(
 	}
 	// Require RHS to be a function_definition (anonymous function literal).
 	hasFunc := false
-	for i := 0; i < int(exprList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(exprList.NamedChildCount()); i < _nc; i++ {
 		c := exprList.NamedChild(i)
 		if c != nil && c.Type() == "function_definition" {
 			hasFunc = true
@@ -363,7 +363,7 @@ func (e *LuauExtractor) extractType(
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
 	exported := false
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		c := node.Child(i)
 		if c != nil && c.Type() == "export" {
 			exported = true
@@ -512,7 +512,7 @@ func (e *LuauExtractor) emitGenericParamsFromNode(
 	result *parser.ExtractionResult, line int,
 ) {
 	first := true
-	for i := 0; i < int(gn.NamedChildCount()); i++ {
+	for i, _nc := 0, int(gn.NamedChildCount()); i < _nc; i++ {
 		c := gn.NamedChild(i)
 		if c == nil || c.Type() != "identifier" {
 			continue
@@ -549,7 +549,7 @@ func (e *LuauExtractor) emitTypeAnnotations(
 ) {
 	// Typed parameters.
 	if params := fnNode.ChildByFieldName("parameters"); params != nil {
-		for i := 0; i < int(params.NamedChildCount()); i++ {
+		for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 			p := params.NamedChild(i)
 			if p == nil || p.Type() != "parameter" {
 				continue
@@ -581,7 +581,7 @@ func (e *LuauExtractor) emitTypeAnnotations(
 
 // firstChildOfType returns the first direct child of the given type.
 func firstChildOfType(node *sitter.Node, typ string) *sitter.Node {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		c := node.Child(i)
 		if c != nil && c.Type() == typ {
 			return c
@@ -594,7 +594,7 @@ func firstChildOfType(node *sitter.Node, typ string) *sitter.Node {
 // (`name: T`) — the named child after the `:` token, if present.
 func paramTypeNode(p *sitter.Node) *sitter.Node {
 	seenColon := false
-	for i := 0; i < int(p.ChildCount()); i++ {
+	for i, _nc := 0, int(p.ChildCount()); i < _nc; i++ {
 		c := p.Child(i)
 		if c == nil {
 			continue
@@ -620,7 +620,7 @@ func returnTypeNode(fnNode *sitter.Node) *sitter.Node {
 		return nil
 	}
 	afterParams := false
-	for i := 0; i < int(fnNode.ChildCount()); i++ {
+	for i, _nc := 0, int(fnNode.ChildCount()); i < _nc; i++ {
 		c := fnNode.Child(i)
 		if c == nil {
 			continue
@@ -643,7 +643,7 @@ func returnTypeNode(fnNode *sitter.Node) *sitter.Node {
 // — the named node after the `=` token.
 func typeAliasRHS(node *sitter.Node) *sitter.Node {
 	seenEq := false
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		c := node.Child(i)
 		if c == nil {
 			continue

@@ -107,7 +107,7 @@ func sidekiqWorkerClass(classDecl *sitter.Node, src []byte) bool {
 	if body == nil {
 		return false
 	}
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		c := body.NamedChild(i)
 		if c == nil || (c.Type() != "call" && c.Type() != "command") {
 			continue
@@ -120,7 +120,7 @@ func sidekiqWorkerClass(classDecl *sitter.Node, src []byte) bool {
 		if args == nil {
 			continue
 		}
-		for j := 0; j < int(args.NamedChildCount()); j++ {
+		for j, _nc := 0, int(args.NamedChildCount()); j < _nc; j++ {
 			a := args.NamedChild(j)
 			if a != nil && sidekiqIncludes[strings.TrimSpace(a.Content(src))] {
 				return true
@@ -157,7 +157,7 @@ func sidekiqWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		sidekiqWalk(n.NamedChild(i), fn)
 	}
 }

@@ -115,10 +115,10 @@ func (e *ScalaExtractor) extractTrait(
 
 	// Collect method names from the template_body.
 	var methodNames []string
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child.Type() == "template_body" {
-			for j := 0; j < int(child.ChildCount()); j++ {
+			for j, _nc := 0, int(child.ChildCount()); j < _nc; j++ {
 				member := child.Child(j)
 				if member.Type() == "function_declaration" || member.Type() == "function_definition" {
 					mName := scalaFindChildIdentifier(member, src)
@@ -245,12 +245,12 @@ func (e *ScalaExtractor) extractMembersFromBody(
 	ownerID, ownerName string,
 	result *parser.ExtractionResult, seen, annotationSeen map[string]bool,
 ) {
-	for i := 0; i < int(parent.ChildCount()); i++ {
+	for i, _nc := 0, int(parent.ChildCount()); i < _nc; i++ {
 		child := parent.Child(i)
 		if child.Type() != "template_body" {
 			continue
 		}
-		for j := 0; j < int(child.ChildCount()); j++ {
+		for j, _nc := 0, int(child.ChildCount()); j < _nc; j++ {
 			member := child.Child(j)
 			switch member.Type() {
 			case "val_definition", "var_definition", "val_declaration", "var_declaration":
@@ -411,7 +411,7 @@ func (e *ScalaExtractor) extractTopLevelValVar(member *sitter.Node, src []byte, 
 // so `value.m` resolves to it even though m is declared outside T's body.
 func (e *ScalaExtractor) extractExtension(node *sitter.Node, src []byte, filePath string, fileNode *graph.Node, result *parser.ExtractionResult, seen map[string]bool) {
 	recv := scalaExtensionReceiver(node, src)
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		fn := node.NamedChild(i)
 		if fn.Type() != "function_definition" && fn.Type() != "function_declaration" {
 			continue
@@ -452,17 +452,17 @@ func (e *ScalaExtractor) extractExtension(node *sitter.Node, src []byte, filePat
 // scalaExtensionReceiver returns the extended type named in an extension's
 // receiver parameter `(x: T)`, or "".
 func scalaExtensionReceiver(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		p := node.NamedChild(i)
 		if p.Type() != "parameters" {
 			continue
 		}
-		for j := 0; j < int(p.NamedChildCount()); j++ {
+		for j, _nc := 0, int(p.NamedChildCount()); j < _nc; j++ {
 			param := p.NamedChild(j)
 			if param.Type() != "parameter" {
 				continue
 			}
-			for k := 0; k < int(param.NamedChildCount()); k++ {
+			for k, _nc := 0, int(param.NamedChildCount()); k < _nc; k++ {
 				t := param.NamedChild(k)
 				if t.Type() == "type_identifier" || t.Type() == "generic_type" {
 					return scalaBaseType(strings.TrimSpace(t.Content(src)))
@@ -475,12 +475,12 @@ func scalaExtensionReceiver(node *sitter.Node, src []byte) string {
 
 // scalaPackageName returns the dotted name of the file's `package` clause, or "".
 func scalaPackageName(root *sitter.Node, src []byte) string {
-	for i := 0; i < int(root.NamedChildCount()); i++ {
+	for i, _nc := 0, int(root.NamedChildCount()); i < _nc; i++ {
 		c := root.NamedChild(i)
 		if c.Type() != "package_clause" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			id := c.NamedChild(j)
 			if id.Type() == "package_identifier" {
 				return strings.TrimSpace(id.Content(src))
@@ -547,7 +547,7 @@ func (e *ScalaExtractor) extractImport(
 	result *parser.ExtractionResult,
 ) {
 	var parts []string
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child.Type() == "identifier" {
 			parts = append(parts, child.Content(src))
@@ -655,7 +655,7 @@ func (e *ScalaExtractor) extractCall(
 // scalaFindChildIdentifier finds the first direct child of type "identifier"
 // and returns its text content.
 func scalaFindChildIdentifier(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child.Type() == "identifier" {
 			return child.Content(src)

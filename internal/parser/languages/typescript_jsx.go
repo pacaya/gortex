@@ -84,7 +84,7 @@ func jsxElementName(node *sitter.Node, src []byte) string {
 	if nameNode == nil {
 		// Fallback: walk children for the name token. tree-sitter
 		// grammars vary on whether the field is exposed.
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			c := node.NamedChild(i)
 			if c != nil && (c.Type() == "identifier" || c.Type() == "member_expression" || c.Type() == "nested_identifier") {
 				nameNode = c

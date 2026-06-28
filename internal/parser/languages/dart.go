@@ -173,17 +173,17 @@ func (e *DartExtractor) extractTypes(
 // reachable through the class — codegraph does not model mixins at all. The
 // grammar nests them as class_definition → superclass → mixins → type_identifier.
 func (e *DartExtractor) emitDartMixinEdges(classNode *sitter.Node, src []byte, classID, filePath string, result *parser.ExtractionResult) {
-	for i := 0; i < int(classNode.ChildCount()); i++ {
+	for i, _nc := 0, int(classNode.ChildCount()); i < _nc; i++ {
 		sup := classNode.Child(i)
 		if sup.Type() != "superclass" {
 			continue
 		}
-		for j := 0; j < int(sup.ChildCount()); j++ {
+		for j, _nc := 0, int(sup.ChildCount()); j < _nc; j++ {
 			mixins := sup.Child(j)
 			if mixins.Type() != "mixins" {
 				continue
 			}
-			for k := 0; k < int(mixins.ChildCount()); k++ {
+			for k, _nc := 0, int(mixins.ChildCount()); k < _nc; k++ {
 				m := mixins.Child(k)
 				if m.Type() != "type_identifier" {
 					continue
@@ -311,12 +311,12 @@ func dartIsGenerated(filePath string) bool {
 // Returns "" when the method has no leading return type (e.g. a void-inferred
 // `build()` or a getter/setter).
 func dartMethodReturnType(methodSig *sitter.Node, src []byte) string {
-	for i := 0; i < int(methodSig.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodSig.NamedChildCount()); i < _nc; i++ {
 		fs := methodSig.NamedChild(i)
 		if fs.Type() != "function_signature" {
 			continue
 		}
-		for j := 0; j < int(fs.NamedChildCount()); j++ {
+		for j, _nc := 0, int(fs.NamedChildCount()); j < _nc; j++ {
 			c := fs.NamedChild(j)
 			switch c.Type() {
 			case "type_identifier", "type", "nullable_type":
@@ -355,7 +355,7 @@ func (e *DartExtractor) extractTopLevelFunctions(
 	root *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
-	for i := 0; i < int(root.ChildCount()); i++ {
+	for i, _nc := 0, int(root.ChildCount()); i < _nc; i++ {
 		child := root.Child(i)
 		if child.Type() != "function_signature" {
 			continue
@@ -407,7 +407,7 @@ func (e *DartExtractor) extractTopLevelVariables(
 	root *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
-	for i := 0; i < int(root.ChildCount()); i++ {
+	for i, _nc := 0, int(root.ChildCount()); i < _nc; i++ {
 		child := root.Child(i)
 		switch child.Type() {
 		case "initialized_variable_definition":
@@ -433,7 +433,7 @@ func (e *DartExtractor) extractTopLevelVariables(
 
 		case "static_final_declaration_list":
 			// Walk children for static_final_declaration nodes.
-			for j := 0; j < int(child.ChildCount()); j++ {
+			for j, _nc := 0, int(child.ChildCount()); j < _nc; j++ {
 				decl := child.Child(j)
 				if decl.Type() != "static_final_declaration" {
 					continue
@@ -578,7 +578,7 @@ func (e *DartExtractor) extractCalls(
 			if sib.Type() != "selector" {
 				break
 			}
-			for j := 0; j < int(sib.ChildCount()); j++ {
+			for j, _nc := 0, int(sib.ChildCount()); j < _nc; j++ {
 				child := sib.Child(j)
 				switch child.Type() {
 				case "argument_part", "arguments":
@@ -641,7 +641,7 @@ func firstIdentifierChild(node *sitter.Node) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		c := node.Child(i)
 		if c != nil && c.Type() == "identifier" {
 			return c
@@ -653,7 +653,7 @@ func firstIdentifierChild(node *sitter.Node) *sitter.Node {
 // --- helpers ---
 
 func (e *DartExtractor) hasChildType(node *sitter.Node, typeName string) bool {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		if node.Child(i).Type() == typeName {
 			return true
 		}
@@ -662,7 +662,7 @@ func (e *DartExtractor) hasChildType(node *sitter.Node, typeName string) bool {
 }
 
 func (e *DartExtractor) findChildIdentifier(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child.Type() == "identifier" {
 			return child.Content(src)
@@ -675,7 +675,7 @@ func (e *DartExtractor) findChildIdentifier(node *sitter.Node, src []byte) strin
 // method_signature wraps function_signature, getter_signature, setter_signature,
 // constructor_signature, operator_signature, factory_constructor_signature.
 func (e *DartExtractor) extractMethodName(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		switch child.Type() {
 		case "function_signature":
@@ -702,7 +702,7 @@ func (e *DartExtractor) extractMethodName(node *sitter.Node, src []byte) string 
 			return e.findChildIdentifier(child, src)
 		case "operator_signature":
 			// operator + binary_operator child
-			for j := 0; j < int(child.ChildCount()); j++ {
+			for j, _nc := 0, int(child.ChildCount()); j < _nc; j++ {
 				c := child.Child(j)
 				if c.Type() == "binary_operator" || c.Type() == "tilde_operator" {
 					return "operator " + strings.TrimSpace(c.Content(src))
@@ -861,7 +861,7 @@ func (e *DartExtractor) mineDartFactoryChains(root *sitter.Node, src []byte, fil
 			}
 			var assignable *sitter.Node
 			hasArgs := false
-			for j := 0; j < int(sib.ChildCount()); j++ {
+			for j, _nc := 0, int(sib.ChildCount()); j < _nc; j++ {
 				switch sib.Child(j).Type() {
 				case "argument_part", "arguments":
 					hasArgs = true

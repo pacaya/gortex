@@ -35,7 +35,7 @@ func javaTemporalStartWorkflowName(callNode *sitter.Node, method string, src []b
 		return ""
 	}
 	var first *sitter.Node
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		if c := args.NamedChild(i); c != nil {
 			first = c
 			break
@@ -96,7 +96,7 @@ func javaTemporalSignalQuery(callNode *sitter.Node, method string, src []byte) (
 		return "", ""
 	}
 	var first *sitter.Node
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		if c := args.NamedChild(i); c != nil {
 			first = c
 			break

@@ -97,7 +97,7 @@ func emitCppReferenceForms(root *sitter.Node, src []byte, filePath, fileID strin
 		case "template_argument_list":
 			emitCppGenericArgs(n, src, filePath, funcRanges, result, seen)
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}
@@ -171,7 +171,7 @@ func emitCppInheritance(clause *sitter.Node, src []byte, filePath string, result
 		return
 	}
 	line := int(clause.StartPoint().Row) + 1
-	for i := 0; i < int(clause.NamedChildCount()); i++ {
+	for i, _nc := 0, int(clause.NamedChildCount()); i < _nc; i++ {
 		ch := clause.NamedChild(i)
 		switch ch.Type() {
 		case "type_identifier", "template_type", "qualified_identifier", "dependent_type":
@@ -233,7 +233,7 @@ func emitCppStackConstruction(n *sitter.Node, src []byte, filePath string, funcR
 // initializer — the marker that distinguishes a stack construction
 // (`Foo x(1)`, `Foo x{1}`) from a plain typed local (`Foo x;`, `int x = 5`).
 func cppDeclHasCtorInit(decl *sitter.Node) bool {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		ch := decl.NamedChild(i)
 		if ch.Type() != "init_declarator" {
 			continue
@@ -280,7 +280,7 @@ func emitCppNamedCast(n *sitter.Node, src []byte, filePath string, funcRanges []
 	line := int(n.StartPoint().Row) + 1
 	owner := findEnclosingFunc(funcRanges, line)
 	// The first template argument is the cast target.
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		ch := args.NamedChild(i)
 		if ch.Type() == "type_descriptor" {
 			emitCppReferenceEdge(owner, ch.Content(src), graph.RefContextCast, filePath, line, result, seen)
@@ -346,7 +346,7 @@ func emitCppGenericArgs(n *sitter.Node, src []byte, filePath string, funcRanges 
 	if owner == "" {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		ch := n.NamedChild(i)
 		if ch == nil || ch.Type() != "type_descriptor" {
 			continue

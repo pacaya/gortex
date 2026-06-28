@@ -160,7 +160,7 @@ func dartLeadingTypeText(node *sitter.Node, src []byte) string {
 		return ""
 	}
 	typeText := ""
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -203,7 +203,7 @@ func dartReturnTypeText(fnSig *sitter.Node, src []byte) string {
 		return ""
 	}
 	typeText := ""
-	for i := 0; i < int(fnSig.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fnSig.NamedChildCount()); i < _nc; i++ {
 		c := fnSig.NamedChild(i)
 		if c == nil {
 			continue
@@ -233,7 +233,7 @@ func dartFirstChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c != nil && c.Type() == nodeType {
 			return c

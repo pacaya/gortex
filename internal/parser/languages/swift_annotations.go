@@ -40,7 +40,7 @@ func emitSwiftAnnotationEdges(
 		// Some declarations expose modifiers as a positional named
 		// child rather than via a named field; scan top-level
 		// children for a `modifiers` node as a fallback.
-		for i := 0; i < int(defNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(defNode.NamedChildCount()); i < _nc; i++ {
 			c := defNode.NamedChild(i)
 			if c != nil && c.Type() == "modifiers" {
 				mods = c
@@ -52,7 +52,7 @@ func emitSwiftAnnotationEdges(
 		return
 	}
 
-	for i := 0; i < int(mods.NamedChildCount()); i++ {
+	for i, _nc := 0, int(mods.NamedChildCount()); i < _nc; i++ {
 		attr := mods.NamedChild(i)
 		if attr == nil || attr.Type() != "attribute" {
 			continue
@@ -82,7 +82,7 @@ func swiftAttributeNameAndArgs(attr *sitter.Node, src []byte) (string, string) {
 	}
 	var name string
 	var argParts []string
-	for i := 0; i < int(attr.NamedChildCount()); i++ {
+	for i, _nc := 0, int(attr.NamedChildCount()); i < _nc; i++ {
 		c := attr.NamedChild(i)
 		if c == nil {
 			continue
@@ -116,7 +116,7 @@ func swiftModifiers(defNode *sitter.Node) *sitter.Node {
 	if mods := defNode.ChildByFieldName("modifiers"); mods != nil {
 		return mods
 	}
-	for i := 0; i < int(defNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(defNode.NamedChildCount()); i < _nc; i++ {
 		if c := defNode.NamedChild(i); c != nil && c.Type() == "modifiers" {
 			return c
 		}
@@ -134,7 +134,7 @@ func swiftObjCAttr(defNode *sitter.Node, src []byte) (isObjC bool, explicit stri
 	if mods == nil {
 		return false, ""
 	}
-	for i := 0; i < int(mods.NamedChildCount()); i++ {
+	for i, _nc := 0, int(mods.NamedChildCount()); i < _nc; i++ {
 		attr := mods.NamedChild(i)
 		if attr == nil || attr.Type() != "attribute" {
 			continue
@@ -335,7 +335,7 @@ func swiftUserTypeName(node *sitter.Node, src []byte) string {
 	// user_type nests left-to-right so the last identifier is the
 	// leaf.
 	var last string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -368,7 +368,7 @@ func swiftHasAttr(defNode *sitter.Node, attrName string, src []byte) bool {
 	if mods == nil {
 		return false
 	}
-	for i := 0; i < int(mods.NamedChildCount()); i++ {
+	for i, _nc := 0, int(mods.NamedChildCount()); i < _nc; i++ {
 		attr := mods.NamedChild(i)
 		if attr == nil || attr.Type() != "attribute" {
 			continue

@@ -97,7 +97,7 @@ func (e *DockerfileExtractor) walk(node *sitter.Node, src []byte, filePath, file
 		e.extractInstruction(node, src, filePath, fileID, result, nodeType)
 	}
 
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil {
 			e.walk(child, src, filePath, fileID, result, st)
@@ -116,7 +116,7 @@ func (e *DockerfileExtractor) extractFrom(node *sitter.Node, src []byte, filePat
 	endLine := int(node.EndPoint().Row) + 1
 
 	imageName := ""
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child == nil {
 			continue
@@ -196,7 +196,7 @@ func (e *DockerfileExtractor) extractFrom(node *sitter.Node, src []byte, filePat
 }
 
 func (e *DockerfileExtractor) extractEnvArg(node *sitter.Node, src []byte, filePath, fileID string, result *parser.ExtractionResult, prefix string, st *dockerfileState) {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child == nil {
 			continue
@@ -345,7 +345,7 @@ func (e *DockerfileExtractor) extractInstruction(node *sitter.Node, src []byte, 
 }
 
 func (e *DockerfileExtractor) findChildOfType(node *sitter.Node, childType string) *sitter.Node {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil && child.Type() == childType {
 			return child

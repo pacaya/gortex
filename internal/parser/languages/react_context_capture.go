@@ -55,7 +55,7 @@ func captureReactContextRefs(result *parser.ExtractionResult, root *sitter.Node,
 // reactFirstIdentArg returns the first call argument when it is a bare
 // identifier (the context object passed to useContext), else "".
 func reactFirstIdentArg(args *sitter.Node, src []byte) string {
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		a := args.NamedChild(i)
 		if a == nil {
 			continue

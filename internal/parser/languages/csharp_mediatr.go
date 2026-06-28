@@ -59,7 +59,7 @@ func captureMediatRDispatch(result *parser.ExtractionResult, root *sitter.Node, 
 		if body == nil {
 			return
 		}
-		for i := 0; i < int(body.NamedChildCount()); i++ {
+		for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 			m := body.NamedChild(i)
 			if m == nil || m.Type() != "method_declaration" {
 				continue
@@ -145,12 +145,12 @@ func captureMediatRDispatch(result *parser.ExtractionResult, root *sitter.Node, 
 // interface, returning the request/notification type (first generic arg)
 // and the dispatch kind.
 func mediatrHandlerType(classDecl *sitter.Node, src []byte) (reqType, kind string) {
-	for i := 0; i < int(classDecl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(classDecl.NamedChildCount()); i < _nc; i++ {
 		bl := classDecl.NamedChild(i)
 		if bl == nil || bl.Type() != "base_list" {
 			continue
 		}
-		for j := 0; j < int(bl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(bl.NamedChildCount()); j < _nc; j++ {
 			base := bl.NamedChild(j)
 			if base == nil || base.Type() != "generic_name" {
 				continue
@@ -167,7 +167,7 @@ func mediatrHandlerType(classDecl *sitter.Node, src []byte) (reqType, kind strin
 // mediatrGenericNameParts splits a generic_name into its base identifier
 // and first type argument's simple name.
 func mediatrGenericNameParts(gn *sitter.Node, src []byte) (base, firstArg string) {
-	for i := 0; i < int(gn.NamedChildCount()); i++ {
+	for i, _nc := 0, int(gn.NamedChildCount()); i < _nc; i++ {
 		c := gn.NamedChild(i)
 		if c == nil {
 			continue
@@ -178,7 +178,7 @@ func mediatrGenericNameParts(gn *sitter.Node, src []byte) (base, firstArg string
 				base = c.Content(src)
 			}
 		case "type_argument_list":
-			for j := 0; j < int(c.NamedChildCount()); j++ {
+			for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 				a := c.NamedChild(j)
 				if a != nil && a.IsNamed() {
 					firstArg = mediatrSimpleType(a.Content(src))
@@ -197,7 +197,7 @@ func mediatrArgType(call *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		a := args.NamedChild(i)
 		if a == nil {
 			continue
@@ -243,7 +243,7 @@ func mediatrWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		mediatrWalk(n.NamedChild(i), fn)
 	}
 }

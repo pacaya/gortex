@@ -47,7 +47,7 @@ func (e *LuaExtractor) Extract(filePath string, src []byte) (*parser.ExtractionR
 	// the declaration. Same story for `local x = 1` which becomes a
 	// `variable_declaration` that's a `local_declaration` field of the
 	// chunk.
-	for i := 0; i < int(root.ChildCount()); i++ {
+	for i, _nc := 0, int(root.ChildCount()); i < _nc; i++ {
 		child := root.Child(i)
 		if child == nil {
 			continue
@@ -176,7 +176,7 @@ func (e *LuaExtractor) extractVariable(
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
 	var assign *sitter.Node
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -191,7 +191,7 @@ func (e *LuaExtractor) extractVariable(
 	}
 
 	var varList *sitter.Node
-	for i := 0; i < int(assign.NamedChildCount()); i++ {
+	for i, _nc := 0, int(assign.NamedChildCount()); i < _nc; i++ {
 		c := assign.NamedChild(i)
 		if c != nil && c.Type() == "variable_list" {
 			varList = c
@@ -202,7 +202,7 @@ func (e *LuaExtractor) extractVariable(
 		return
 	}
 
-	for i := 0; i < int(varList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(varList.NamedChildCount()); i < _nc; i++ {
 		ident := varList.NamedChild(i)
 		if ident == nil || ident.Type() != "identifier" {
 			continue
@@ -239,7 +239,7 @@ func (e *LuaExtractor) extractAssignmentFunc(
 	result *parser.ExtractionResult, seen map[string]bool,
 ) {
 	var varList, exprList *sitter.Node
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -256,7 +256,7 @@ func (e *LuaExtractor) extractAssignmentFunc(
 	}
 	// Require RHS to be a function_definition (anonymous function literal).
 	hasFunc := false
-	for i := 0; i < int(exprList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(exprList.NamedChildCount()); i < _nc; i++ {
 		c := exprList.NamedChild(i)
 		if c != nil && c.Type() == "function_definition" {
 			hasFunc = true
@@ -353,7 +353,7 @@ func extractLuaRequires(root *sitter.Node, src []byte, filePath, fileID string, 
 			return
 		}
 		var arg *sitter.Node
-		for i := 0; i < int(args.NamedChildCount()); i++ {
+		for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 			if a := args.NamedChild(i); a != nil {
 				arg = a
 				break
@@ -397,7 +397,7 @@ func resolveLuaRequireTarget(arg *sitter.Node, src []byte) (name, ipath string) 
 	case "function_call":
 		// e.g. script:WaitForChild("Bar") → leaf is the string argument.
 		if a := arg.ChildByFieldName("arguments"); a != nil {
-			for i := 0; i < int(a.NamedChildCount()); i++ {
+			for i, _nc := 0, int(a.NamedChildCount()); i < _nc; i++ {
 				if s := a.NamedChild(i); s != nil && s.Type() == "string" {
 					return strings.Trim(s.Content(src), `"'`+"`"), strings.TrimSpace(arg.Content(src))
 				}
@@ -417,7 +417,7 @@ func luaIndexLeaf(n *sitter.Node, src []byte) string {
 		return strings.TrimSpace(strings.Trim(f.Content(src), `"'[]`+"`"))
 	}
 	leaf := ""
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c.Type() == "identifier" || c.Type() == "string" {
 			leaf = strings.TrimSpace(strings.Trim(c.Content(src), `"'`+"`"))

@@ -370,7 +370,7 @@ func (e *KotlinExtractor) Extract(filePath string, src []byte) (*parser.Extracti
 // or "". It scans by content prefix so it is robust to the grammar's exact node
 // name for the header.
 func kotlinPackageName(root *sitter.Node, src []byte) string {
-	for i := 0; i < int(root.ChildCount()); i++ {
+	for i, _nc := 0, int(root.ChildCount()); i < _nc; i++ {
 		c := root.Child(i)
 		txt := strings.TrimSpace(c.Content(src))
 		if !strings.HasPrefix(txt, "package") {
@@ -403,7 +403,7 @@ func (e *KotlinExtractor) emitClassOrInterface(m parser.QueryResult, filePath, f
 	isInterface := false
 	var enumBody *sitter.Node
 	if def.Node != nil {
-		for i := 0; i < int(def.Node.ChildCount()); i++ {
+		for i, _nc := 0, int(def.Node.ChildCount()); i < _nc; i++ {
 			child := def.Node.Child(i)
 			switch child.Type() {
 			case "interface":
@@ -453,13 +453,13 @@ func (e *KotlinExtractor) emitClassOrInterface(m parser.QueryResult, filePath, f
 	if enumBody == nil {
 		return
 	}
-	for i := 0; i < int(enumBody.ChildCount()); i++ {
+	for i, _nc := 0, int(enumBody.ChildCount()); i < _nc; i++ {
 		entry := enumBody.Child(i)
 		if entry == nil || entry.Type() != "enum_entry" {
 			continue
 		}
 		var entryName string
-		for j := 0; j < int(entry.ChildCount()); j++ {
+		for j, _nc := 0, int(entry.ChildCount()); j < _nc; j++ {
 			ch := entry.Child(j)
 			if ch != nil && ch.Type() == "simple_identifier" {
 				entryName = ch.Content(src)
@@ -805,12 +805,12 @@ func kotlinCollectAnnotations(decl *sitter.Node, src []byte) []javaAnnotation {
 		return nil
 	}
 	var out []javaAnnotation
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			ann := c.Child(j)
 			if ann == nil {
 				continue
@@ -823,7 +823,7 @@ func kotlinCollectAnnotations(decl *sitter.Node, src []byte) []javaAnnotation {
 			}
 			var name, args string
 			line := int(ann.StartPoint().Row) + 1
-			for k := 0; k < int(ann.ChildCount()); k++ {
+			for k, _nc := 0, int(ann.ChildCount()); k < _nc; k++ {
 				inner := ann.Child(k)
 				if inner == nil {
 					continue
@@ -873,12 +873,12 @@ func kotlinVisibility(decl *sitter.Node, src []byte) string {
 	if decl == nil {
 		return VisibilityPublic
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			tok := c.Child(j)
 			if tok == nil {
 				continue
@@ -907,12 +907,12 @@ func kotlinModifierFlags(decl *sitter.Node, src []byte) (isAsync bool, kmpRole s
 	if decl == nil {
 		return false, ""
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			tok := c.Child(j)
 			if tok == nil {
 				continue
@@ -969,7 +969,7 @@ func kotlinExtensionReceiver(fn *sitter.Node, src []byte) string {
 		return ""
 	}
 	name := ""
-	for i := 0; i < int(ut.ChildCount()); i++ {
+	for i, _nc := 0, int(ut.ChildCount()); i < _nc; i++ {
 		if c := ut.Child(i); c != nil && c.Type() == "type_identifier" {
 			name = c.Content(src)
 		}
@@ -1068,7 +1068,7 @@ func kotlinTypeIdentifierChild(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		ch := node.Child(i)
 		if ch != nil && ch.Type() == "type_identifier" {
 			return ch.Content(src)
@@ -1154,12 +1154,12 @@ func kotlinPropertyIsConst(decl *sitter.Node, src []byte) bool {
 	if decl == nil {
 		return false
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			tok := c.Child(j)
 			if tok == nil {
 				continue
@@ -1188,7 +1188,7 @@ func collectKotlinLambdaScopes(root *sitter.Node, src []byte) []kotlinLambdaScop
 		}
 		params := map[string]bool{}
 		hasExplicit := false
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			ch := n.Child(i)
 			if ch == nil || ch.Type() != "lambda_parameters" {
 				continue
@@ -1274,7 +1274,7 @@ func extractKotlinReturnType(node *sitter.Node, src []byte) string {
 	}
 	// Look for user_type or nullable_type child after the function_value_parameters.
 	pastParams := false
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child.Type() == "function_value_parameters" {
 			pastParams = true
@@ -1300,7 +1300,7 @@ func extractKotlinReturnType(node *sitter.Node, src []byte) string {
 // Shared with other language extractors via package scope.
 func walkNodes(node *sitter.Node, fn func(*sitter.Node)) {
 	fn(node)
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		walkNodes(node.Child(i), fn)
 	}
 }

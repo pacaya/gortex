@@ -147,7 +147,7 @@ func laravelTagListenMap(prop *sitter.Node, src []byte, classNodeByName map[stri
 		return
 	}
 	var entries []string
-	for i := 0; i < int(arr.NamedChildCount()); i++ {
+	for i, _nc := 0, int(arr.NamedChildCount()); i < _nc; i++ {
 		el := arr.NamedChild(i)
 		if el == nil || el.Type() != "array_element_initializer" || el.NamedChildCount() < 2 {
 			continue
@@ -181,7 +181,7 @@ func laravelClassRefList(n *sitter.Node, src []byte) []string {
 		return out
 	}
 	if n.Type() == "array_creation_expression" {
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			el := n.NamedChild(i)
 			if el == nil {
 				continue
@@ -209,7 +209,7 @@ func laravelFirstNewArgType(call *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		a := args.NamedChild(i)
 		if a == nil {
 			continue
@@ -230,7 +230,7 @@ func laravelFirstNewArgType(call *sitter.Node, src []byte) string {
 
 // laravelNewType returns the simple class name of a `new X(...)`.
 func laravelNewType(newExpr *sitter.Node, src []byte) string {
-	for i := 0; i < int(newExpr.NamedChildCount()); i++ {
+	for i, _nc := 0, int(newExpr.NamedChildCount()); i < _nc; i++ {
 		c := newExpr.NamedChild(i)
 		if c == nil {
 			continue
@@ -250,7 +250,7 @@ func laravelFirstParamType(method *sitter.Node, src []byte) string {
 	if params == nil {
 		return ""
 	}
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		p := params.NamedChild(i)
 		if p == nil || p.Type() != "simple_parameter" {
 			continue
@@ -346,7 +346,7 @@ func laravelWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		laravelWalk(n.NamedChild(i), fn)
 	}
 }

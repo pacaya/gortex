@@ -180,12 +180,12 @@ func emitScalaInheritEdges(def *sitter.Node, filePath string, src []byte, emit f
 		return
 	}
 	ownerID := filePath + "::" + name
-	for i := 0; i < int(def.NamedChildCount()); i++ {
+	for i, _nc := 0, int(def.NamedChildCount()); i < _nc; i++ {
 		c := def.NamedChild(i)
 		if c == nil || c.Type() != "extends_clause" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			t := c.NamedChild(j)
 			if t == nil {
 				continue
@@ -203,7 +203,7 @@ func emitScalaInheritEdges(def *sitter.Node, filePath string, src []byte, emit f
 // instance_expression — the type_identifier / generic_type child following the
 // `new` keyword, generics intact — or "".
 func scalaInstanceType(n *sitter.Node, src []byte) string {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -220,7 +220,7 @@ func scalaInstanceType(n *sitter.Node, src []byte) string {
 // `x.isInstanceOf[...]` / `x.asInstanceOf[...]` invocation, by reading the
 // method-name identifier of its field_expression callee.
 func scalaIsInstanceCheck(n *sitter.Node, src []byte) bool {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		fe := n.NamedChild(i)
 		if fe == nil || fe.Type() != "field_expression" {
 			continue
@@ -245,12 +245,12 @@ func scalaIsInstanceCheck(n *sitter.Node, src []byte) bool {
 // child (`[Foo, Bar]` -> ["Foo", "Bar"]), generics intact, or nil.
 func scalaTypeArgNames(n *sitter.Node, src []byte) []string {
 	var out []string
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		ta := n.NamedChild(i)
 		if ta == nil || ta.Type() != "type_arguments" {
 			continue
 		}
-		for j := 0; j < int(ta.NamedChildCount()); j++ {
+		for j, _nc := 0, int(ta.NamedChildCount()); j < _nc; j++ {
 			t := ta.NamedChild(j)
 			if t == nil {
 				continue
@@ -274,12 +274,12 @@ func scalaTypeArgNames(n *sitter.Node, src []byte) []string {
 // filters primitives, so this helper only locates the argument heads.
 func scalaGenericArgHeads(n *sitter.Node, src []byte) []string {
 	var out []string
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		ta := n.NamedChild(i)
 		if ta == nil || ta.Type() != "type_arguments" {
 			continue
 		}
-		for j := 0; j < int(ta.NamedChildCount()); j++ {
+		for j, _nc := 0, int(ta.NamedChildCount()); j < _nc; j++ {
 			arg := ta.NamedChild(j)
 			if arg == nil {
 				continue
@@ -304,7 +304,7 @@ func scalaGenericArgHeads(n *sitter.Node, src []byte) []string {
 // scalaGenericHead returns the head type_identifier text of a `generic_type`
 // node (`Seq[Repo]` -> "Seq"), or "".
 func scalaGenericHead(n *sitter.Node, src []byte) string {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -319,7 +319,7 @@ func scalaGenericHead(n *sitter.Node, src []byte) string {
 // scalaPatternType returns the type a typed_pattern matches against
 // (`case d: Foo` -> "Foo"), generics intact, or "".
 func scalaPatternType(n *sitter.Node, src []byte) string {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue

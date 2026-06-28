@@ -103,7 +103,7 @@ func (e *PascalExtractor) emitPascalModule(n *sitter.Node, src []byte, filePath,
 }
 
 func (e *PascalExtractor) emitPascalUses(n *sitter.Node, src []byte, filePath, fileID string, result *parser.ExtractionResult) {
-	for i := 0; i < int(n.ChildCount()); i++ {
+	for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 		c := n.Child(i)
 		if c.Type() != "moduleName" {
 			continue
@@ -177,7 +177,7 @@ func (e *PascalExtractor) emitPascalType(n *sitter.Node, src []byte, filePath, f
 }
 
 func (e *PascalExtractor) emitPascalEnumMembers(enum *sitter.Node, src []byte, filePath, typeID string, result *parser.ExtractionResult, seen map[string]bool) {
-	for i := 0; i < int(enum.ChildCount()); i++ {
+	for i, _nc := 0, int(enum.ChildCount()); i < _nc; i++ {
 		c := enum.Child(i)
 		if c.Type() != "declEnumValue" {
 			continue
@@ -207,7 +207,7 @@ func (e *PascalExtractor) emitPascalEnumMembers(enum *sitter.Node, src []byte, f
 
 func (e *PascalExtractor) emitPascalClassBody(body *sitter.Node, src []byte, filePath, typeName, typeID string, result *parser.ExtractionResult, seen map[string]bool, procIndex map[string]string) {
 	// Base type(s): typeref children directly under the class header.
-	for i := 0; i < int(body.ChildCount()); i++ {
+	for i, _nc := 0, int(body.ChildCount()); i < _nc; i++ {
 		c := body.Child(i)
 		if c.Type() == "typeref" {
 			base := strings.TrimSpace(c.Content(src))
@@ -222,7 +222,7 @@ func (e *PascalExtractor) emitPascalClassBody(body *sitter.Node, src []byte, fil
 	visibility := VisibilityPublic
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			c := n.Child(i)
 			switch c.Type() {
 			case "declSection":
@@ -419,7 +419,7 @@ func (e *PascalExtractor) emitPascalCallEdge(fromID, callee, filePath string, li
 
 // pascalFirstChild returns the first direct child of n with the given type.
 func pascalFirstChild(n *sitter.Node, typ string) *sitter.Node {
-	for i := 0; i < int(n.ChildCount()); i++ {
+	for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 		if c := n.Child(i); c.Type() == typ {
 			return c
 		}
@@ -438,13 +438,13 @@ func pascalChildText(n *sitter.Node, src []byte, typ string) string {
 // pascalTypeBody returns the declClass/declRecord/declEnum/declInterface node a
 // declType resolves to, unwrapping the intermediate `type` wrapper.
 func pascalTypeBody(declType *sitter.Node) *sitter.Node {
-	for i := 0; i < int(declType.ChildCount()); i++ {
+	for i, _nc := 0, int(declType.ChildCount()); i < _nc; i++ {
 		c := declType.Child(i)
 		switch c.Type() {
 		case "declClass", "declRecord", "declObject", "declInterface", "declEnum":
 			return c
 		case "type":
-			for j := 0; j < int(c.ChildCount()); j++ {
+			for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 				if inner := c.Child(j); inner.IsNamed() {
 					return inner
 				}
@@ -512,7 +512,7 @@ func pascalDotMethodReceiver(dot *sitter.Node, src []byte) (method, receiver str
 }
 
 func pascalCallTargetName(call *sitter.Node, src []byte) string {
-	for i := 0; i < int(call.ChildCount()); i++ {
+	for i, _nc := 0, int(call.ChildCount()); i < _nc; i++ {
 		c := call.Child(i)
 		if c.Type() == "identifier" || c.Type() == "genericDot" {
 			return strings.TrimSpace(c.Content(src))
@@ -525,7 +525,7 @@ func pascalCallTargetName(call *sitter.Node, src []byte) string {
 // statement whose sole named child is an identifier / genericDot — or "".
 func pascalParenlessCallee(stmt *sitter.Node, src []byte) string {
 	var named []*sitter.Node
-	for i := 0; i < int(stmt.ChildCount()); i++ {
+	for i, _nc := 0, int(stmt.ChildCount()); i < _nc; i++ {
 		if c := stmt.Child(i); c.IsNamed() {
 			named = append(named, c)
 		}

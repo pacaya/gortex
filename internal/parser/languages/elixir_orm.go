@@ -15,8 +15,8 @@ import (
 //
 //   - schema "name" do …          (Ecto.Schema, the canonical case)
 //   - embedded_schema do …        (Ecto.Schema embedded — no table; we
-//                                  skip these because there's no DB
-//                                  binding to surface)
+//     skip these because there's no DB
+//     binding to surface)
 //
 // `use Ecto.Schema` and friends aren't required for detection — the
 // presence of a `schema "..." do` macro is the load-bearing signal.
@@ -120,7 +120,7 @@ func elixirCallArgs(call *sitter.Node) *sitter.Node {
 	if a := call.ChildByFieldName("arguments"); a != nil {
 		return a
 	}
-	for i := 0; i < int(call.NamedChildCount()); i++ {
+	for i, _nc := 0, int(call.NamedChildCount()); i < _nc; i++ {
 		c := call.NamedChild(i)
 		if c == nil {
 			continue
@@ -139,7 +139,7 @@ func elixirFirstArg(args *sitter.Node) *sitter.Node {
 	if args == nil {
 		return nil
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -157,7 +157,7 @@ func elixirFirstArg(args *sitter.Node) *sitter.Node {
 // the literal characters. Strips quotes when no `quoted_content`
 // child is present.
 func elixirStringLiteral(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c != nil && c.Type() == "quoted_content" {
 			return c.Content(src)

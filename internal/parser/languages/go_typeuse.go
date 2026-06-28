@@ -95,7 +95,7 @@ func emitGoTypeArgReferences(root *sitter.Node, src []byte, filePath, fileID str
 		case "type_identifier", "qualified_type":
 			emit(n.Content(src), int(n.StartPoint().Row)+1)
 		default:
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				emitTypeLeaves(n.NamedChild(i))
 			}
 		}
@@ -107,7 +107,7 @@ func emitGoTypeArgReferences(root *sitter.Node, src []byte, filePath, fileID str
 			// Generic instantiation arguments: the bracketed list under a
 			// generic_type. Each entry is a type_elem (or a bare type
 			// node on older grammars); descend into all of them.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				emitTypeLeaves(n.NamedChild(i))
 			}
 		case "map_type":
@@ -121,7 +121,7 @@ func emitGoTypeArgReferences(root *sitter.Node, src []byte, filePath, fileID str
 				emitTypeLeaves(key)
 				emitTypeLeaves(value)
 			} else {
-				for i := 0; i < int(n.NamedChildCount()); i++ {
+				for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 					emitTypeLeaves(n.NamedChild(i))
 				}
 			}
@@ -132,7 +132,7 @@ func emitGoTypeArgReferences(root *sitter.Node, src []byte, filePath, fileID str
 			if value := n.ChildByFieldName("value"); value != nil {
 				emitTypeLeaves(value)
 			} else {
-				for i := 0; i < int(n.NamedChildCount()); i++ {
+				for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 					emitTypeLeaves(n.NamedChild(i))
 				}
 			}
@@ -162,7 +162,7 @@ func collectGoTypeParamNames(root *sitter.Node, src []byte) map[string]bool {
 				return
 			}
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c == nil {
 				continue

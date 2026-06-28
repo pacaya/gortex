@@ -59,7 +59,7 @@ func (e *HTMLExtractor) walkNode(node *sitter.Node, src []byte, filePath, fileID
 	}
 
 	// Recurse into children.
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil {
 			e.walkNode(child, src, filePath, fileID, result)
@@ -202,7 +202,7 @@ func htmlElementText(node *sitter.Node, src []byte) string {
 			}
 			b.WriteString(n.Content(src))
 		}
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			walk(n.Child(i))
 		}
 	}
@@ -217,7 +217,7 @@ func htmlElementText(node *sitter.Node, src []byte) string {
 
 // findChildByType finds the first child node with the given type.
 func findChildByType(node *sitter.Node, typeName string) *sitter.Node {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil && child.Type() == typeName {
 			return child
@@ -229,7 +229,7 @@ func findChildByType(node *sitter.Node, typeName string) *sitter.Node {
 // findAttribute looks for an attribute with the given name in a start_tag node
 // and returns its unquoted value.
 func findAttribute(startTag *sitter.Node, attrName string, src []byte) string {
-	for i := 0; i < int(startTag.ChildCount()); i++ {
+	for i, _nc := 0, int(startTag.ChildCount()); i < _nc; i++ {
 		child := startTag.Child(i)
 		if child == nil || child.Type() != "attribute" {
 			continue

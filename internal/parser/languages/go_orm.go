@@ -37,7 +37,7 @@ func detectGoORMModel(structNode *sitter.Node, src []byte, ownerID, ownerName, f
 
 	hasGormTag := false
 	embedsGormModel := false
-	for i := 0; i < int(fieldList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fieldList.NamedChildCount()); i < _nc; i++ {
 		decl := fieldList.NamedChild(i)
 		if decl == nil || decl.Type() != "field_declaration" {
 			continue
@@ -95,7 +95,7 @@ func detectGoORMModel(structNode *sitter.Node, src []byte, ownerID, ownerName, f
 // goStructFieldList returns the field_declaration_list node from a
 // struct_type, or nil when absent.
 func goStructFieldList(structNode *sitter.Node) *sitter.Node {
-	for i := 0; i < int(structNode.ChildCount()); i++ {
+	for i, _nc := 0, int(structNode.ChildCount()); i < _nc; i++ {
 		c := structNode.Child(i)
 		if c != nil && c.Type() == "field_declaration_list" {
 			return c
@@ -107,7 +107,7 @@ func goStructFieldList(structNode *sitter.Node) *sitter.Node {
 // structFieldHasGormTag reports whether a field_declaration carries a
 // `gorm:"..."` struct tag.
 func structFieldHasGormTag(decl *sitter.Node, src []byte) bool {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "raw_string_literal" {
 			continue
@@ -125,7 +125,7 @@ func structFieldHasGormTag(decl *sitter.Node, src []byte) bool {
 // `*gorm.Model` shapes.
 func structFieldEmbedsGormModel(decl *sitter.Node, src []byte) bool {
 	hasName := false
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil {
 			continue
@@ -139,7 +139,7 @@ func structFieldEmbedsGormModel(decl *sitter.Node, src []byte) bool {
 		// An explicit field name means it isn't an embed.
 		return false
 	}
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil {
 			continue
@@ -152,7 +152,7 @@ func structFieldEmbedsGormModel(decl *sitter.Node, src []byte) bool {
 			}
 		case "pointer_type":
 			// `*gorm.Model` — the qualified_type lives inside.
-			for j := 0; j < int(c.NamedChildCount()); j++ {
+			for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 				inner := c.NamedChild(j)
 				if inner != nil && inner.Type() == "qualified_type" &&
 					strings.TrimSpace(inner.Content(src)) == "gorm.Model" {
@@ -386,7 +386,7 @@ func walkAST(n *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(n) {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkAST(n.NamedChild(i), visit)
 	}
 }
@@ -400,7 +400,7 @@ func receiverTypeFromMethodNode(n *sitter.Node, src []byte) string {
 	if recv == nil {
 		return ""
 	}
-	for i := 0; i < int(recv.NamedChildCount()); i++ {
+	for i, _nc := 0, int(recv.NamedChildCount()); i < _nc; i++ {
 		decl := recv.NamedChild(i)
 		if decl == nil || decl.Type() != "parameter_declaration" {
 			continue
@@ -433,7 +433,7 @@ func firstStringReturnLiteral(body *sitter.Node, src []byte) string {
 			return true
 		}
 		// return_statement's first named child is the expression list.
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c == nil {
 				continue

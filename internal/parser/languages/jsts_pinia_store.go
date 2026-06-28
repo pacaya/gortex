@@ -136,7 +136,7 @@ func tagPiniaSetupStoreActions(result *parser.ExtractionResult, root *sitter.Nod
 			return
 		}
 		returned := map[string]bool{}
-		for i := 0; i < int(obj.NamedChildCount()); i++ {
+		for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 			c := obj.NamedChild(i)
 			if c == nil {
 				continue
@@ -179,7 +179,7 @@ func piniaSetupFn(call *sitter.Node) *sitter.Node {
 	if args == nil {
 		return nil
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -198,7 +198,7 @@ func piniaWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		piniaWalk(n.NamedChild(i), fn)
 	}
 }

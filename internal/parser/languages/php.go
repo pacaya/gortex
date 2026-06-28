@@ -115,7 +115,7 @@ func (e *PHPExtractor) walkChildren(
 	result *parser.ExtractionResult, seen map[string]bool,
 	currentClass string,
 ) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		e.walkNode(child, src, filePath, fileNode, result, seen, currentClass)
 	}
@@ -150,13 +150,13 @@ func (e *PHPExtractor) extractNamespace(
 	// Walk children of namespace body.
 	body := e.findChildByType(node, "compound_statement")
 	if body != nil {
-		for i := 0; i < int(body.NamedChildCount()); i++ {
+		for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 			child := body.NamedChild(i)
 			e.walkNode(child, src, filePath, fileNode, result, seen, "")
 		}
 	}
 	// Some namespaces don't use braces; walk remaining children.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() != "namespace_name" && child.Type() != "compound_statement" {
 			e.walkNode(child, src, filePath, fileNode, result, seen, "")
@@ -270,7 +270,7 @@ func (e *PHPExtractor) extractPhpMembers(
 	ownerName, ownerID string,
 ) map[string]*sitter.Node {
 	methodNodes := make(map[string]*sitter.Node)
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		child := body.NamedChild(i)
 		switch child.Type() {
 		case "method_declaration":
@@ -372,7 +372,7 @@ func (e *PHPExtractor) extractPhpClassConst(
 	ownerName, ownerID string,
 ) {
 	vis := phpMemberVisibility(node, src)
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		ce := node.NamedChild(i)
 		if ce.Type() != "const_element" {
 			continue
@@ -410,7 +410,7 @@ func (e *PHPExtractor) extractPhpProperty(
 ) {
 	vis := phpMemberVisibility(node, src)
 	propType := phpPropertyType(node, src)
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		pe := node.NamedChild(i)
 		if pe.Type() != "property_element" {
 			continue
@@ -455,7 +455,7 @@ func (e *PHPExtractor) extractPhpProperty(
 // `use`s — modeling trait composition the way a mixin is modeled, so the
 // composed members are reachable through the class.
 func (e *PHPExtractor) extractPhpTraitUse(node *sitter.Node, src []byte, filePath, ownerID string, result *parser.ExtractionResult) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c.Type() != "name" && c.Type() != "qualified_name" {
 			continue
@@ -502,7 +502,7 @@ func (e *PHPExtractor) extractPhpEnumCase(
 // phpPropertyType returns the declared type of a property_declaration (the type
 // node before the first property_element), or "".
 func phpPropertyType(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		switch c.Type() {
 		case "primitive_type", "named_type", "union_type", "nullable_type", "intersection_type", "optional_type", "qualified_name":
@@ -576,7 +576,7 @@ func emitPHPTypeUseEdges(ownerID, typeText, filePath string, line int, result *p
 // node after formal_parameters, before the body), or "".
 func phpReturnType(node *sitter.Node, src []byte) string {
 	seenParams := false
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		t := c.Type()
 		if t == "formal_parameters" {
@@ -606,7 +606,7 @@ func (e *PHPExtractor) emitPHPParamTypeUseEdges(node *sitter.Node, src []byte, o
 	if params == nil {
 		return
 	}
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		p := params.NamedChild(i)
 		switch p.Type() {
 		case "simple_parameter", "variadic_parameter", "property_promotion_parameter":
@@ -624,7 +624,7 @@ func (e *PHPExtractor) emitPHPParamTypeUseEdges(node *sitter.Node, src []byte, o
 // phpParameterType returns the declared type of a parameter node (the type
 // node before its variable_name), or "".
 func phpParameterType(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		switch c.Type() {
 		case "primitive_type", "named_type", "union_type", "nullable_type",
@@ -758,7 +758,7 @@ func (e *PHPExtractor) extractUseImport(
 	result *parser.ExtractionResult,
 ) {
 	// use_declaration children can be namespace_use_clause or namespace_name.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		var importPath string
 		switch child.Type() {
@@ -796,7 +796,7 @@ func (e *PHPExtractor) extractRequireInclude(
 	result *parser.ExtractionResult,
 ) {
 	// Look for require, require_once, include, include_once expressions.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		ct := child.Type()
 		if ct == "require_expression" || ct == "require_once_expression" ||
@@ -903,7 +903,7 @@ func (e *PHPExtractor) extractCallSites(
 	}
 
 	// Recurse into children.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		e.extractCallSites(child, src, filePath, callerID, result)
 	}
@@ -911,7 +911,7 @@ func (e *PHPExtractor) extractCallSites(
 
 // findChildByType finds the first named child with the given type.
 func (e *PHPExtractor) findChildByType(node *sitter.Node, typeName string) *sitter.Node {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == typeName {
 			return child
@@ -930,7 +930,7 @@ func (e *PHPExtractor) extractStringContent(node *sitter.Node, src []byte) strin
 	if node.Type() == "string_content" {
 		return node.Content(src)
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		if result := e.extractStringContent(node.NamedChild(i), src); result != "" {
 			return result
 		}
@@ -1030,7 +1030,7 @@ func (e *PHPExtractor) emitLaravelMiddleware(methodNodes map[string]*sitter.Node
 				}
 			}
 		}
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			walk(n.Child(i))
 		}
 	}
@@ -1164,7 +1164,7 @@ func (e *PHPExtractor) emitLaravelBindings(methodNodes map[string]*sitter.Node, 
 				})
 			}
 		}
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			walk(n.Child(i))
 		}
 	}
@@ -1209,7 +1209,7 @@ func phpExtractClassRef(arg *sitter.Node, src []byte) string {
 		return arg.Content(src)
 	case "string":
 		// middleware('auth') alias form — return the alias verbatim.
-		for i := 0; i < int(arg.NamedChildCount()); i++ {
+		for i, _nc := 0, int(arg.NamedChildCount()); i < _nc; i++ {
 			c := arg.NamedChild(i)
 			if c != nil && c.Type() == "string_content" {
 				return c.Content(src)
@@ -1237,7 +1237,7 @@ func phpExtractStringArray(arg *sitter.Node, src []byte) map[string]struct{} {
 	if arg.Type() != "array_creation_expression" {
 		return out
 	}
-	for i := 0; i < int(arg.NamedChildCount()); i++ {
+	for i, _nc := 0, int(arg.NamedChildCount()); i < _nc; i++ {
 		el := arg.NamedChild(i)
 		if el == nil {
 			continue
@@ -1253,7 +1253,7 @@ func phpExtractStringArray(arg *sitter.Node, src []byte) map[string]struct{} {
 		}
 		switch el.Type() {
 		case "string":
-			for j := 0; j < int(el.NamedChildCount()); j++ {
+			for j, _nc := 0, int(el.NamedChildCount()); j < _nc; j++ {
 				c := el.NamedChild(j)
 				if c != nil && c.Type() == "string_content" {
 					out[c.Content(src)] = struct{}{}
@@ -1338,17 +1338,17 @@ func emitPHPAnnotationEdgesFromAttrs(attrs []phpAttribute, fromID, filePath stri
 // each group. Returns nil when the node carries no attributes.
 func collectPhpAttributes(node *sitter.Node, src []byte) []phpAttribute {
 	var out []phpAttribute
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil || c.Type() != "attribute_list" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			group := c.NamedChild(j)
 			if group == nil || group.Type() != "attribute_group" {
 				continue
 			}
-			for k := 0; k < int(group.NamedChildCount()); k++ {
+			for k, _nc := 0, int(group.NamedChildCount()); k < _nc; k++ {
 				attr := group.NamedChild(k)
 				if attr == nil || attr.Type() != "attribute" {
 					continue
@@ -1373,7 +1373,7 @@ func parsePhpAttribute(attr *sitter.Node, src []byte) phpAttribute {
 	if nameNode == nil {
 		// Grammar sometimes lacks the field name; fall back to the
 		// first child of type "name".
-		for i := 0; i < int(attr.NamedChildCount()); i++ {
+		for i, _nc := 0, int(attr.NamedChildCount()); i < _nc; i++ {
 			c := attr.NamedChild(i)
 			if c != nil && (c.Type() == "name" || c.Type() == "qualified_name") {
 				nameNode = c
@@ -1389,7 +1389,7 @@ func parsePhpAttribute(attr *sitter.Node, src []byte) phpAttribute {
 	args := attr.ChildByFieldName("arguments")
 	if args == nil {
 		// Some grammars expose arguments as a positional NamedChild.
-		for i := 0; i < int(attr.NamedChildCount()); i++ {
+		for i, _nc := 0, int(attr.NamedChildCount()); i < _nc; i++ {
 			c := attr.NamedChild(i)
 			if c != nil && c.Type() == "arguments" {
 				args = c
@@ -1401,7 +1401,7 @@ func parsePhpAttribute(attr *sitter.Node, src []byte) phpAttribute {
 		return out
 	}
 	out.args = make(map[string]string)
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg == nil || arg.Type() != "argument" {
 			continue
@@ -1409,7 +1409,7 @@ func parsePhpAttribute(attr *sitter.Node, src []byte) phpAttribute {
 		// Named arguments have a `name` child first, then the value.
 		var key string
 		var valNode *sitter.Node
-		for j := 0; j < int(arg.NamedChildCount()); j++ {
+		for j, _nc := 0, int(arg.NamedChildCount()); j < _nc; j++ {
 			c := arg.NamedChild(j)
 			if c == nil {
 				continue
@@ -1478,12 +1478,12 @@ func extractPhpParentClass(classNode *sitter.Node, src []byte) string {
 	if classNode == nil {
 		return ""
 	}
-	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(classNode.NamedChildCount()); i < _nc; i++ {
 		child := classNode.NamedChild(i)
 		if child.Type() != "base_clause" {
 			continue
 		}
-		for j := 0; j < int(child.NamedChildCount()); j++ {
+		for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 			sub := child.NamedChild(j)
 			switch sub.Type() {
 			case "name", "qualified_name":
@@ -1505,7 +1505,7 @@ func phpMemberVisibility(member *sitter.Node, src []byte) string {
 	if member == nil {
 		return VisibilityPublic
 	}
-	for i := 0; i < int(member.ChildCount()); i++ {
+	for i, _nc := 0, int(member.ChildCount()); i < _nc; i++ {
 		c := member.Child(i)
 		if c == nil {
 			continue

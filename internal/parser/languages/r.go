@@ -245,7 +245,7 @@ func (e *RExtractor) extractRClassSystems(src []byte, filePath string, res *pars
 				}
 			}
 		}
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			walk(n.Child(i))
 		}
 	}
@@ -319,7 +319,7 @@ func (e *RExtractor) extractRNamespaceCalls(src []byte, filePath string, res *pa
 				}
 			}
 		}
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			walk(n.Child(i))
 		}
 	}
@@ -331,7 +331,7 @@ func (e *RExtractor) extractRNamespaceCalls(src []byte, filePath string, res *pa
 // node — the package + function, or the receiver + member.
 func rNamespaceParts(op *sitter.Node, src []byte) (string, string) {
 	var ids []string
-	for i := 0; i < int(op.ChildCount()); i++ {
+	for i, _nc := 0, int(op.ChildCount()); i < _nc; i++ {
 		if c := op.Child(i); c != nil && c.Type() == "identifier" {
 			ids = append(ids, c.Content(src))
 		}
@@ -344,7 +344,7 @@ func rNamespaceParts(op *sitter.Node, src []byte) (string, string) {
 
 // rCallee returns the function name of an R call (its leading identifier).
 func rCallee(call *sitter.Node, src []byte) string {
-	for i := 0; i < int(call.ChildCount()); i++ {
+	for i, _nc := 0, int(call.ChildCount()); i < _nc; i++ {
 		c := call.Child(i)
 		if c.Type() == "identifier" {
 			return c.Content(src)
@@ -368,7 +368,7 @@ type rArg struct {
 // rCallArgs parses an R call's argument list into name/value pairs.
 func rCallArgs(call *sitter.Node, src []byte) []rArg {
 	var argsNode *sitter.Node
-	for i := 0; i < int(call.ChildCount()); i++ {
+	for i, _nc := 0, int(call.ChildCount()); i < _nc; i++ {
 		if call.Child(i).Type() == "arguments" {
 			argsNode = call.Child(i)
 			break
@@ -378,13 +378,13 @@ func rCallArgs(call *sitter.Node, src []byte) []rArg {
 		return nil
 	}
 	var out []rArg
-	for i := 0; i < int(argsNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(argsNode.NamedChildCount()); i < _nc; i++ {
 		arg := argsNode.NamedChild(i)
 		if arg.Type() != "argument" {
 			continue
 		}
 		var kids []*sitter.Node
-		for j := 0; j < int(arg.NamedChildCount()); j++ {
+		for j, _nc := 0, int(arg.NamedChildCount()); j < _nc; j++ {
 			kids = append(kids, arg.NamedChild(j))
 		}
 		var a rArg
@@ -407,7 +407,7 @@ func rCallArgs(call *sitter.Node, src []byte) []rArg {
 }
 
 func rStringContent(strNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(strNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(strNode.NamedChildCount()); i < _nc; i++ {
 		if c := strNode.NamedChild(i); c.Type() == "string_content" {
 			return c.Content(src)
 		}

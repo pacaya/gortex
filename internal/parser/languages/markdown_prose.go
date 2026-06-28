@@ -96,7 +96,7 @@ func (e *MarkdownExtractor) extractProseSections(root *sitter.Node, src []byte, 
 			appendText(int(node.StartPoint().Row)+1, node.Content(src))
 			return
 		}
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			walk(node.NamedChild(i))
 		}
 	}
@@ -145,7 +145,7 @@ func (e *MarkdownExtractor) extractProseSections(root *sitter.Node, src []byte, 
 func headingLevelText(node *sitter.Node, src []byte) (int, string) {
 	level := 0
 	var text string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		switch child.Type() {
 		case "atx_h1_marker":

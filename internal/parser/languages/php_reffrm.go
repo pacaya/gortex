@@ -217,7 +217,7 @@ func isPHPRelativeScope(name string) bool {
 // "\App\Client"). The type is the leading type-shaped named child; `new
 // $klass()` (dynamic) and `new class {}` (anonymous) have none and yield "".
 func phpCreationTypeName(n *sitter.Node, src []byte) string {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -238,7 +238,7 @@ func phpCreationTypeName(n *sitter.Node, src []byte) string {
 // base_clause (`extends Base`) or class_interface_clause (`implements I, J`).
 func phpClauseTypeNames(clause *sitter.Node, src []byte) []string {
 	var out []string
-	for i := 0; i < int(clause.NamedChildCount()); i++ {
+	for i, _nc := 0, int(clause.NamedChildCount()); i < _nc; i++ {
 		c := clause.NamedChild(i)
 		if c == nil {
 			continue
@@ -296,7 +296,7 @@ func phpAttributeRefName(n *sitter.Node, src []byte) string {
 	if nm := n.ChildByFieldName("name"); nm != nil {
 		return strings.TrimSpace(nm.Content(src))
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue

@@ -99,7 +99,7 @@ func rubyClassExtendsActiveRecord(classNode *sitter.Node, src []byte) bool {
 // rubyClassBody returns the class's body_statement node, or nil when the
 // class is empty or shaped unexpectedly.
 func rubyClassBody(classNode *sitter.Node) *sitter.Node {
-	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(classNode.NamedChildCount()); i < _nc; i++ {
 		c := classNode.NamedChild(i)
 		if c != nil && c.Type() == "body_statement" {
 			return c
@@ -111,7 +111,7 @@ func rubyClassBody(classNode *sitter.Node) *sitter.Node {
 // rubyClassTableNameAssign returns the literal of a top-level
 // `self.table_name = "..."` assignment in body, or ("", "") when absent.
 func rubyClassTableNameAssign(body *sitter.Node, src []byte) (string, string) {
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		stmt := body.NamedChild(i)
 		if stmt == nil || stmt.Type() != "assignment" {
 			continue
@@ -137,7 +137,7 @@ func rubyClassTableNameAssign(body *sitter.Node, src []byte) (string, string) {
 // the literal characters. Strips surrounding quotes when no
 // string_content child is present.
 func rubyStringContent(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c != nil && c.Type() == "string_content" {
 			return c.Content(src)

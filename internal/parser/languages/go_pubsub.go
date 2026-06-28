@@ -63,7 +63,7 @@ func firstGoStringLiteralArg(callExpr *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue

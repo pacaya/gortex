@@ -27,7 +27,7 @@ func emitTSConstraintRefs(declNode *sitter.Node, ownerID, filePath string, src [
 	if tparams == nil {
 		return
 	}
-	for i := 0; i < int(tparams.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tparams.NamedChildCount()); i < _nc; i++ {
 		tp := tparams.NamedChild(i)
 		if tp == nil || tp.Type() != "type_parameter" {
 			continue
@@ -96,7 +96,7 @@ func emitTSTypeNodeRefs(typeNode *sitter.Node, ownerID, filePath, useKind string
 			// member-expression child, not a type_identifier, so the
 			// type_identifier walk above skips it. Reference its (last) name
 			// so `InstanceType<typeof App>` reaches App.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil {
 					continue

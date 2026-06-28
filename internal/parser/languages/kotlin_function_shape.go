@@ -71,7 +71,7 @@ func emitKotlinAsyncSpawns(ownerID string, body *sitter.Node, src []byte, filePa
 						continue
 					}
 					if c.Type() == "navigation_suffix" {
-						for j := 0; j < int(c.NamedChildCount()); j++ {
+						for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 							cc := c.NamedChild(j)
 							if cc != nil && cc.Type() == "simple_identifier" {
 								name = cc.Content(src)
@@ -107,7 +107,7 @@ func walkKotlinNodes(n *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(n) {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkKotlinNodes(n.NamedChild(i), visit)
 	}
 }
@@ -121,7 +121,7 @@ func emitKotlinGenericParamNodes(ownerID string, decl *sitter.Node, src []byte, 
 	}
 	tparams := decl.ChildByFieldName("type_parameters")
 	if tparams == nil {
-		for i := 0; i < int(decl.NamedChildCount()); i++ {
+		for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 			c := decl.NamedChild(i)
 			if c != nil && c.Type() == "type_parameters" {
 				tparams = c
@@ -132,13 +132,13 @@ func emitKotlinGenericParamNodes(ownerID string, decl *sitter.Node, src []byte, 
 	if tparams == nil {
 		return
 	}
-	for i := 0; i < int(tparams.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tparams.NamedChildCount()); i < _nc; i++ {
 		tp := tparams.NamedChild(i)
 		if tp == nil || tp.Type() != "type_parameter" {
 			continue
 		}
 		var name string
-		for j := 0; j < int(tp.NamedChildCount()); j++ {
+		for j, _nc := 0, int(tp.NamedChildCount()); j < _nc; j++ {
 			c := tp.NamedChild(j)
 			if c != nil && (c.Type() == "type_identifier" || c.Type() == "simple_identifier") && name == "" {
 				name = c.Content(src)
@@ -180,7 +180,7 @@ func kotlinFunctionBody(funcNode *sitter.Node) *sitter.Node {
 	if b := funcNode.ChildByFieldName("body"); b != nil {
 		return b
 	}
-	for i := 0; i < int(funcNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(funcNode.NamedChildCount()); i < _nc; i++ {
 		c := funcNode.NamedChild(i)
 		if c != nil && (c.Type() == "function_body" || c.Type() == "block") {
 			return c
@@ -223,7 +223,7 @@ func kotlinParamsList(funcNode *sitter.Node) *sitter.Node {
 	if funcNode == nil {
 		return nil
 	}
-	for i := 0; i < int(funcNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(funcNode.NamedChildCount()); i < _nc; i++ {
 		c := funcNode.NamedChild(i)
 		if c != nil && c.Type() == "function_value_parameters" {
 			return c
@@ -245,13 +245,13 @@ func emitKotlinParamShape(ownerID string, funcNode *sitter.Node, src []byte, fil
 		return
 	}
 	pos := 0
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		p := params.NamedChild(i)
 		if p == nil || p.Type() != "parameter" {
 			continue
 		}
 		var name, typeText string
-		for j := 0; j < int(p.NamedChildCount()); j++ {
+		for j, _nc := 0, int(p.NamedChildCount()); j < _nc; j++ {
 			c := p.NamedChild(j)
 			if c == nil {
 				continue
@@ -312,7 +312,7 @@ func emitKotlinReturnEdges(ownerID string, funcNode *sitter.Node, src []byte, fi
 		return
 	}
 	pastParams := false
-	for i := 0; i < int(funcNode.ChildCount()); i++ {
+	for i, _nc := 0, int(funcNode.ChildCount()); i < _nc; i++ {
 		child := funcNode.Child(i)
 		if child == nil {
 			continue

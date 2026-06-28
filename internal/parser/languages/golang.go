@@ -1312,7 +1312,7 @@ func goFuncBody(decl *sitter.Node) *sitter.Node {
 	if b := decl.ChildByFieldName("body"); b != nil {
 		return b
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c != nil && c.Type() == "block" {
 			return c
@@ -1432,7 +1432,7 @@ func goTypeParams(decl *sitter.Node, src []byte) []map[string]string {
 	if tps == nil {
 		// type_spec uses a different field shape — fall back to a
 		// child-type scan.
-		for i := 0; i < int(decl.ChildCount()); i++ {
+		for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 			c := decl.Child(i)
 			if c != nil && c.Type() == "type_parameter_list" {
 				tps = c
@@ -1444,7 +1444,7 @@ func goTypeParams(decl *sitter.Node, src []byte) []map[string]string {
 		return nil
 	}
 	var out []map[string]string
-	for i := 0; i < int(tps.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tps.NamedChildCount()); i < _nc; i++ {
 		pd := tps.NamedChild(i)
 		if pd == nil {
 			continue
@@ -1461,7 +1461,7 @@ func goTypeParams(decl *sitter.Node, src []byte) []map[string]string {
 		// field 'name' for the leading identifier list. For multi-name
 		// declarations the grammar emits multiple entries with the
 		// same field name; we walk children to find them all.
-		for j := 0; j < int(pd.ChildCount()); j++ {
+		for j, _nc := 0, int(pd.ChildCount()); j < _nc; j++ {
 			c := pd.Child(j)
 			if c == nil {
 				continue
@@ -1662,7 +1662,7 @@ func emitGoStructFields(structNode *sitter.Node, src []byte, ownerID, ownerName,
 		return
 	}
 	var fieldList *sitter.Node
-	for i := 0; i < int(structNode.ChildCount()); i++ {
+	for i, _nc := 0, int(structNode.ChildCount()); i < _nc; i++ {
 		c := structNode.Child(i)
 		if c != nil && c.Type() == "field_declaration_list" {
 			fieldList = c
@@ -1672,7 +1672,7 @@ func emitGoStructFields(structNode *sitter.Node, src []byte, ownerID, ownerName,
 	if fieldList == nil {
 		return
 	}
-	for i := 0; i < int(fieldList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(fieldList.NamedChildCount()); i < _nc; i++ {
 		decl := fieldList.NamedChild(i)
 		if decl == nil || decl.Type() != "field_declaration" {
 			continue
@@ -1685,7 +1685,7 @@ func emitGoStructFields(structNode *sitter.Node, src []byte, ownerID, ownerName,
 		// reliable form.
 		var nameNodes []*sitter.Node
 		var typeNode *sitter.Node
-		for j := 0; j < int(decl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 			c := decl.NamedChild(j)
 			if c == nil {
 				continue
@@ -1779,7 +1779,7 @@ func embeddedFieldName(typeNode *sitter.Node, src []byte) string {
 		return typeNode.Content(src)
 	case "pointer_type":
 		// Recurse into the pointed-to type.
-		for i := 0; i < int(typeNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(typeNode.NamedChildCount()); i < _nc; i++ {
 			if n := embeddedFieldName(typeNode.NamedChild(i), src); n != "" {
 				return n
 			}
@@ -1794,7 +1794,7 @@ func embeddedFieldName(typeNode *sitter.Node, src []byte) string {
 		}
 	case "generic_type":
 		// Foo[T] — name is the inner type_identifier.
-		for i := 0; i < int(typeNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(typeNode.NamedChildCount()); i < _nc; i++ {
 			if n := embeddedFieldName(typeNode.NamedChild(i), src); n != "" {
 				return n
 			}
@@ -2068,7 +2068,7 @@ func goFuncSingleReturnLiteral(declNode *sitter.Node, src []byte) (string, bool)
 	}
 	var ret *sitter.Node
 	stmts := 0
-	for i := 0; i < int(stmtParent.NamedChildCount()); i++ {
+	for i, _nc := 0, int(stmtParent.NamedChildCount()); i < _nc; i++ {
 		c := stmtParent.NamedChild(i)
 		if c == nil || c.Type() == "comment" {
 			continue
@@ -2083,7 +2083,7 @@ func goFuncSingleReturnLiteral(declNode *sitter.Node, src []byte) (string, bool)
 	}
 	// return_statement -> expression_list -> single string literal
 	var expr *sitter.Node
-	for i := 0; i < int(ret.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ret.NamedChildCount()); i < _nc; i++ {
 		n := ret.NamedChild(i)
 		if n == nil {
 			continue
@@ -2133,7 +2133,7 @@ func goConstLiteralValue(constSpec *sitter.Node, name string, src []byte) (strin
 		// one and no name match (defensive).
 		var found, only *sitter.Node
 		count := 0
-		for i := 0; i < int(spec.NamedChildCount()); i++ {
+		for i, _nc := 0, int(spec.NamedChildCount()); i < _nc; i++ {
 			c := spec.NamedChild(i)
 			if c == nil || c.Type() != "const_spec" {
 				continue
@@ -2181,7 +2181,7 @@ func goConstRefName(constDecl *sitter.Node, name string, src []byte) (string, bo
 	if constDecl == nil {
 		return "", false
 	}
-	for i := 0; i < int(constDecl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(constDecl.NamedChildCount()); i < _nc; i++ {
 		spec := constDecl.NamedChild(i)
 		if spec == nil || spec.Type() != "const_spec" {
 			continue
@@ -2383,7 +2383,7 @@ func grpcRegisterArgNode(callNode *sitter.Node, funcName string) (service string
 	}
 	// Second positional argument names the server implementation.
 	count := 0
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -2509,7 +2509,7 @@ func extractGoParamNames(paramList *sitter.Node, src []byte) map[string]bool {
 		return nil
 	}
 	out := map[string]bool{}
-	for i := 0; i < int(paramList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(paramList.NamedChildCount()); i < _nc; i++ {
 		decl := paramList.NamedChild(i)
 		if decl == nil {
 			continue
@@ -2518,7 +2518,7 @@ func extractGoParamNames(paramList *sitter.Node, src []byte) map[string]bool {
 			continue
 		}
 		typeNode := decl.ChildByFieldName("type")
-		for j := 0; j < int(decl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 			c := decl.NamedChild(j)
 			if c == nil || c == typeNode {
 				continue
@@ -2536,7 +2536,7 @@ func extractGoParamTypes(paramList *sitter.Node, src []byte) typeEnv {
 		return nil
 	}
 	out := typeEnv{}
-	for i := 0; i < int(paramList.NamedChildCount()); i++ {
+	for i, _nc := 0, int(paramList.NamedChildCount()); i < _nc; i++ {
 		decl := paramList.NamedChild(i)
 		if decl == nil {
 			continue
@@ -2556,7 +2556,7 @@ func extractGoParamTypes(paramList *sitter.Node, src []byte) typeEnv {
 		// Walk all identifier children — Go allows multiple names per
 		// parameter declaration sharing one type. Skip the type node
 		// itself (which may also be reported as a named child).
-		for j := 0; j < int(decl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 			c := decl.NamedChild(j)
 			if c == nil || c == typeNode {
 				continue
@@ -2606,10 +2606,10 @@ func buildMethodSignature(receiver, name string, params, result *parser.Captured
 // and returns the names of all method_spec / method_elem entries.
 func extractInterfaceMethods(ifaceNode *sitter.Node, src []byte) []string {
 	var methods []string
-	for i := 0; i < int(ifaceNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ifaceNode.NamedChildCount()); i < _nc; i++ {
 		child := ifaceNode.NamedChild(i)
 		if child.Type() == "method_elem" || child.Type() == "method_spec" {
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				nameNode := child.NamedChild(j)
 				if nameNode.Type() == "field_identifier" {
 					methods = append(methods, nameNode.Content(src))
@@ -2642,7 +2642,7 @@ func extractEmbeddedInterfaceTypes(ifaceNode *sitter.Node, src []byte) []string 
 			}
 		}
 	}
-	for i := 0; i < int(ifaceNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ifaceNode.NamedChildCount()); i < _nc; i++ {
 		child := ifaceNode.NamedChild(i)
 		if child == nil {
 			continue
@@ -2652,7 +2652,7 @@ func extractEmbeddedInterfaceTypes(ifaceNode *sitter.Node, src []byte) []string 
 			// Modern grammar: each embedded type is one type_elem
 			// child. The named child of type_elem is the type
 			// reference itself.
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				visit(child.NamedChild(j))
 			}
 		case "type_identifier", "qualified_type", "generic_type":
@@ -2729,7 +2729,7 @@ func inferTypeFromGoExpr(node *sitter.Node, src []byte) string {
 	case "unary_expression":
 		// `&Foo{...}` — operator is "&" (first child), operand is
 		// the composite literal.
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			c := node.NamedChild(i)
 			if c != nil && c.Type() == "composite_literal" {
 				return compositeLiteralType(c, src)
@@ -2777,7 +2777,7 @@ func compositeLiteralType(lit *sitter.Node, src []byte) string {
 		}
 	case "pointer_type":
 		// *Foo{...} — rare but defensible.
-		for i := 0; i < int(t.NamedChildCount()); i++ {
+		for i, _nc := 0, int(t.NamedChildCount()); i < _nc; i++ {
 			c := t.NamedChild(i)
 			if c != nil && c.Type() == "type_identifier" {
 				return c.Content(src)

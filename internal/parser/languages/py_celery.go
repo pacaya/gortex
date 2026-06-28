@@ -187,7 +187,7 @@ func celeryFirstStringArg(call *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		a := args.NamedChild(i)
 		if a != nil && a.Type() == "string" {
 			return pyStringLiteralContent(a, src)
@@ -202,7 +202,7 @@ func celeryWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		celeryWalk(n.NamedChild(i), fn)
 	}
 }

@@ -46,7 +46,7 @@ func normalizeFnRefSpecial(n *sitter.Node, src []byte) (refName, recvHint string
 // identifier is the member, an optional leading type/expression the qualifier.
 func splitColonColonRef(n *sitter.Node, src []byte) (refName, recvHint string, ok bool) {
 	var first, last *sitter.Node
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -105,7 +105,7 @@ func rubyMethodSymbol(n *sitter.Node, src []byte) (refName, recvHint string, ok 
 	if args == nil {
 		return "", "", false
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		if a := args.NamedChild(i); a != nil && a.Type() == "simple_symbol" {
 			if name := strings.TrimPrefix(strings.TrimSpace(a.Content(src)), ":"); name != "" {
 				return name, "<self>", true
@@ -118,7 +118,7 @@ func rubyMethodSymbol(n *sitter.Node, src []byte) (refName, recvHint string, ok 
 // rubySymbolProc handles Ruby `&:sym` symbol-to-proc — the symbol names the
 // method invoked on each element; resolved repo-wide.
 func rubySymbolProc(n *sitter.Node, src []byte) (refName, recvHint string, ok bool) {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		if c := n.NamedChild(i); c != nil && c.Type() == "simple_symbol" {
 			if name := strings.TrimPrefix(strings.TrimSpace(c.Content(src)), ":"); name != "" {
 				return name, "", true

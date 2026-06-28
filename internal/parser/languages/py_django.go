@@ -87,7 +87,7 @@ func djangoWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		djangoWalk(n.NamedChild(i), fn)
 	}
 }

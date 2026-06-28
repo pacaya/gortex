@@ -128,7 +128,7 @@ func (e *YAMLExtractor) findTopLevelPairs(node *sitter.Node, src []byte, filePat
 		return // Don't recurse into nested mappings.
 	}
 
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil {
 			e.findTopLevelPairs(child, src, filePath, fileID, result, seen, depth+1)

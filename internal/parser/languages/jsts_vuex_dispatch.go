@@ -90,7 +90,7 @@ func vuexConfigObject(n *sitter.Node, src []byte) *sitter.Node {
 	if args == nil {
 		return nil
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		obj := args.NamedChild(i)
 		if obj == nil || obj.Type() != "object" {
 			continue
@@ -107,7 +107,7 @@ func vuexConfigObject(n *sitter.Node, src []byte) *sitter.Node {
 // modules (whose key joins the prefix only when `namespaced: true`).
 func processVuexConfig(obj *sitter.Node, prefix string, src []byte, nodesByLine map[int][]*graph.Node) {
 	namespace := strings.TrimSuffix(prefix, "/")
-	for i := 0; i < int(obj.NamedChildCount()); i++ {
+	for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 		pair := obj.NamedChild(i)
 		if pair == nil || pair.Type() != "pair" {
 			continue
@@ -128,7 +128,7 @@ func processVuexConfig(obj *sitter.Node, prefix string, src []byte, nodesByLine 
 			}
 		case "modules":
 			if val.Type() == "object" {
-				for j := 0; j < int(val.NamedChildCount()); j++ {
+				for j, _nc := 0, int(val.NamedChildCount()); j < _nc; j++ {
 					mod := val.NamedChild(j)
 					if mod == nil || mod.Type() != "pair" {
 						continue
@@ -151,7 +151,7 @@ func processVuexConfig(obj *sitter.Node, prefix string, src []byte, nodesByLine 
 // vuexTagMembers stamps the action/mutation functions of an object literal
 // with their Vuex namespace, name, and kind.
 func vuexTagMembers(obj *sitter.Node, namespace, kind string, src []byte, nodesByLine map[int][]*graph.Node) {
-	for i := 0; i < int(obj.NamedChildCount()); i++ {
+	for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 		c := obj.NamedChild(i)
 		if c == nil {
 			continue
@@ -223,7 +223,7 @@ func vuexEmitMapHelper(result *parser.ExtractionResult, call *sitter.Node, calle
 	}
 	namespace := ""
 	var names []string
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		a := args.NamedChild(i)
 		if a == nil {
 			continue
@@ -232,7 +232,7 @@ func vuexEmitMapHelper(result *parser.ExtractionResult, call *sitter.Node, calle
 		case "string":
 			namespace = jsStringLiteralContent(a, src)
 		case "array":
-			for j := 0; j < int(a.NamedChildCount()); j++ {
+			for j, _nc := 0, int(a.NamedChildCount()); j < _nc; j++ {
 				if el := a.NamedChild(j); el != nil && el.Type() == "string" {
 					if s := jsStringLiteralContent(el, src); s != "" {
 						names = append(names, s)
@@ -279,7 +279,7 @@ func vuexAppendPlaceholder(result *parser.ExtractionResult, from, name, key, kin
 }
 
 func vuexHasKey(obj *sitter.Node, key string, src []byte) bool {
-	for i := 0; i < int(obj.NamedChildCount()); i++ {
+	for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 		pair := obj.NamedChild(i)
 		if pair != nil && pair.Type() == "pair" && rtkPairKey(pair, src) == key {
 			return true
@@ -289,7 +289,7 @@ func vuexHasKey(obj *sitter.Node, key string, src []byte) bool {
 }
 
 func vuexIsNamespaced(obj *sitter.Node, src []byte) bool {
-	for i := 0; i < int(obj.NamedChildCount()); i++ {
+	for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 		pair := obj.NamedChild(i)
 		if pair == nil || pair.Type() != "pair" || rtkPairKey(pair, src) != "namespaced" {
 			continue
@@ -327,7 +327,7 @@ func vuexWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		vuexWalk(n.NamedChild(i), fn)
 	}
 }

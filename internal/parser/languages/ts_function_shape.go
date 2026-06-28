@@ -249,13 +249,13 @@ func walkTSNodes(n *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(n) {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkTSNodes(n.NamedChild(i), visit)
 	}
 }
 
 func tsFindCallExpression(n *sitter.Node) *sitter.Node {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -297,7 +297,7 @@ func tsReturnTypeRaw(decl *sitter.Node, src []byte) string {
 	if decl == nil {
 		return ""
 	}
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "type_annotation" {
 			continue
@@ -328,7 +328,7 @@ func tsParamName(p *sitter.Node, src []byte) string {
 			return pattern.Content(src)
 		case "rest_pattern":
 			// rest_pattern wraps an identifier child.
-			for i := 0; i < int(pattern.NamedChildCount()); i++ {
+			for i, _nc := 0, int(pattern.NamedChildCount()); i < _nc; i++ {
 				c := pattern.NamedChild(i)
 				if c != nil && c.Type() == "identifier" {
 					return c.Content(src)
@@ -338,7 +338,7 @@ func tsParamName(p *sitter.Node, src []byte) string {
 	}
 	// Fallback: scan named children for an identifier (older grammar
 	// shapes don't always set the pattern field).
-	for i := 0; i < int(p.NamedChildCount()); i++ {
+	for i, _nc := 0, int(p.NamedChildCount()); i < _nc; i++ {
 		c := p.NamedChild(i)
 		if c == nil {
 			continue
@@ -347,7 +347,7 @@ func tsParamName(p *sitter.Node, src []byte) string {
 			return c.Content(src)
 		}
 		if c.Type() == "rest_pattern" {
-			for j := 0; j < int(c.NamedChildCount()); j++ {
+			for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 				cc := c.NamedChild(j)
 				if cc != nil && cc.Type() == "identifier" {
 					return cc.Content(src)
@@ -367,7 +367,7 @@ func tsParamTypeRaw(p *sitter.Node, src []byte) string {
 	}
 	ta := p.ChildByFieldName("type")
 	if ta == nil {
-		for i := 0; i < int(p.NamedChildCount()); i++ {
+		for i, _nc := 0, int(p.NamedChildCount()); i < _nc; i++ {
 			c := p.NamedChild(i)
 			if c != nil && c.Type() == "type_annotation" {
 				ta = c
@@ -378,7 +378,7 @@ func tsParamTypeRaw(p *sitter.Node, src []byte) string {
 	if ta == nil {
 		return ""
 	}
-	for i := 0; i < int(ta.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ta.NamedChildCount()); i < _nc; i++ {
 		c := ta.NamedChild(i)
 		if c == nil {
 			continue
@@ -400,7 +400,7 @@ func tsParamsList(decl *sitter.Node) *sitter.Node {
 	}
 	// Some grammar shapes use a formal_parameters child directly
 	// without a field name.
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c != nil && (c.Type() == "formal_parameters" || c.Type() == "call_signature") {
 			return c
@@ -414,7 +414,7 @@ func tsParamsList(decl *sitter.Node) *sitter.Node {
 // present) EdgeTypedAs.
 func emitTSParamNodes(ownerID string, params *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
 	pos := 0
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		decl := params.NamedChild(i)
 		if decl == nil {
 			continue
@@ -920,7 +920,7 @@ func emitTSCastTypeRefs(root *sitter.Node, src []byte, filePath, fileID string, 
 			// type_arguments text carries the surrounding `<…>`; the
 			// inner type_identifier(s) are the real reference, so trim
 			// the brackets before decomposing.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c != nil && c.Type() == "type_arguments" {
 					inner := strings.TrimSpace(c.Content(src))

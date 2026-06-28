@@ -20,7 +20,7 @@ const jsImportBindingCap = 64
 // exported name (re-exports). Returns ("", "") when no identifier is present.
 func jsSpecifierNames(spec *sitter.Node, src []byte) (orig, alias string) {
 	var ids []*sitter.Node
-	for i := 0; i < int(spec.NamedChildCount()); i++ {
+	for i, _nc := 0, int(spec.NamedChildCount()); i < _nc; i++ {
 		if c := spec.NamedChild(i); c != nil && c.Type() == "identifier" {
 			ids = append(ids, c)
 		}
@@ -37,7 +37,7 @@ func jsSpecifierNames(spec *sitter.Node, src []byte) (orig, alias string) {
 // jsCollectChildren returns every direct child of node whose type matches t.
 func jsCollectChildren(node *sitter.Node, t string) []*sitter.Node {
 	var out []*sitter.Node
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		if c := node.Child(i); c != nil && c.Type() == t {
 			out = append(out, c)
 		}

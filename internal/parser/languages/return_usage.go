@@ -181,7 +181,7 @@ func classifyAssign(parent, child *sitter.Node, sinkField string, src []byte, sp
 		return graph.ReturnUsageAssigned
 	}
 	total, blank := 0, 0
-	for i := 0; i < int(parent.ChildCount()); i++ {
+	for i, _nc := 0, int(parent.ChildCount()); i < _nc; i++ {
 		if parent.FieldNameForChild(i) != sinkField {
 			continue
 		}
@@ -224,7 +224,7 @@ func countSinkLeaves(n *sitter.Node, src []byte, spec *returnUsageSpec) (total, 
 		return strings.TrimSpace(c.Content(src)) == "_"
 	}
 	if spec.sinkLists[n.Type()] {
-		for i := 0; i < int(n.ChildCount()); i++ {
+		for i, _nc := 0, int(n.ChildCount()); i < _nc; i++ {
 			c := n.Child(i)
 			if c == nil {
 				continue

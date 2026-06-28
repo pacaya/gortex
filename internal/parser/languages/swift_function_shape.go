@@ -189,7 +189,7 @@ func emitSwiftFunctionTypeEdges(ownerID string, decl *sitter.Node, src []byte, f
 		}
 	}
 
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil {
 			continue
@@ -214,7 +214,7 @@ func swiftParamTypeNode(param *sitter.Node) *sitter.Node {
 	if param == nil {
 		return nil
 	}
-	for i := 0; i < int(param.NamedChildCount()); i++ {
+	for i, _nc := 0, int(param.NamedChildCount()); i < _nc; i++ {
 		c := param.NamedChild(i)
 		if c == nil {
 			continue
@@ -237,17 +237,17 @@ func swiftTypeParameterNames(decl *sitter.Node, src []byte) map[string]bool {
 	if decl == nil {
 		return out
 	}
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "type_parameters" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			tp := c.NamedChild(j)
 			if tp == nil || tp.Type() != "type_parameter" {
 				continue
 			}
-			for k := 0; k < int(tp.NamedChildCount()); k++ {
+			for k, _nc := 0, int(tp.NamedChildCount()); k < _nc; k++ {
 				id := tp.NamedChild(k)
 				if id != nil && id.Type() == "type_identifier" {
 					out[strings.TrimSpace(id.Content(src))] = true

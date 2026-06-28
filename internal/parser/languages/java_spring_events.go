@@ -50,7 +50,7 @@ func captureSpringEvents(result *parser.ExtractionResult, root *sitter.Node, fil
 				return
 			}
 			if body := n.ChildByFieldName("body"); body != nil {
-				for i := 0; i < int(body.NamedChildCount()); i++ {
+				for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 					m := body.NamedChild(i)
 					if m != nil && m.Type() == "method_declaration" && springMethodName(m, src) == "onApplicationEvent" {
 						springTagListener(nodesByLine, m, src, evType)
@@ -131,7 +131,7 @@ func springFirstParamType(method *sitter.Node, src []byte) string {
 	if params == nil {
 		return ""
 	}
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		p := params.NamedChild(i)
 		if p == nil || p.Type() != "formal_parameter" {
 			continue
@@ -157,7 +157,7 @@ func springApplicationListenerArg(classDecl *sitter.Node, src []byte) string {
 			return
 		}
 		var base, args *sitter.Node
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			switch {
 			case c == nil:
@@ -170,7 +170,7 @@ func springApplicationListenerArg(classDecl *sitter.Node, src []byte) string {
 		if base == nil || args == nil || springSimpleTypeName(base.Content(src)) != "ApplicationListener" {
 			return
 		}
-		for i := 0; i < int(args.NamedChildCount()); i++ {
+		for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 			a := args.NamedChild(i)
 			if a != nil && a.IsNamed() {
 				found = springSimpleTypeName(a.Content(src))
@@ -188,7 +188,7 @@ func springPublishedType(call *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		a := args.NamedChild(i)
 		if a == nil {
 			continue
@@ -227,7 +227,7 @@ func springWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		springWalk(n.NamedChild(i), fn)
 	}
 }

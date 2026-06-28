@@ -39,7 +39,7 @@ func walkComplexity(n *sitter.Node, decisionTypes, skipDescent map[string]bool, 
 	if skipDescent != nil && skipDescent[t] {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkComplexity(n.NamedChild(i), decisionTypes, skipDescent, score)
 	}
 }
@@ -57,8 +57,8 @@ func walkComplexity(n *sitter.Node, decisionTypes, skipDescent map[string]bool, 
 // post-filter that checks the operator text.
 
 var goComplexityNodes = map[string]bool{
-	"if_statement":       true,
-	"for_statement":      true,
+	"if_statement":                true,
+	"for_statement":               true,
 	"expression_switch_statement": true,
 	"type_switch_statement":       true,
 	"select_statement":            true,
@@ -74,16 +74,16 @@ var goComplexitySkip = map[string]bool{
 }
 
 var tsComplexityNodes = map[string]bool{
-	"if_statement":          true,
-	"for_statement":         true,
-	"for_in_statement":      true,
-	"for_of_statement":      true,
-	"while_statement":       true,
-	"do_statement":          true,
-	"switch_case":           true,
-	"switch_default":        true,
-	"catch_clause":          true,
-	"ternary_expression":    true,
+	"if_statement":           true,
+	"for_statement":          true,
+	"for_in_statement":       true,
+	"for_of_statement":       true,
+	"while_statement":        true,
+	"do_statement":           true,
+	"switch_case":            true,
+	"switch_default":         true,
+	"catch_clause":           true,
+	"ternary_expression":     true,
 	"conditional_expression": true,
 }
 
@@ -96,18 +96,18 @@ var tsComplexitySkip = map[string]bool{
 }
 
 var pyComplexityNodes = map[string]bool{
-	"if_statement":          true,
-	"elif_clause":           true,
-	"for_statement":         true,
-	"while_statement":       true,
-	"except_clause":         true,
-	"match_statement":       true,
-	"case_clause":           true,
-	"conditional_expression": true,
-	"list_comprehension":    true,
+	"if_statement":             true,
+	"elif_clause":              true,
+	"for_statement":            true,
+	"while_statement":          true,
+	"except_clause":            true,
+	"match_statement":          true,
+	"case_clause":              true,
+	"conditional_expression":   true,
+	"list_comprehension":       true,
 	"dictionary_comprehension": true,
-	"set_comprehension":     true,
-	"generator_expression":  true,
+	"set_comprehension":        true,
+	"generator_expression":     true,
 }
 
 var pyComplexitySkip = map[string]bool{
@@ -118,30 +118,30 @@ var pyComplexitySkip = map[string]bool{
 }
 
 var rustComplexityNodes = map[string]bool{
-	"if_expression":      true,
-	"if_let_expression":  true,
-	"for_expression":     true,
-	"while_expression":   true,
-	"loop_expression":    true,
-	"match_arm":          true,
-	"match_expression":   true,
+	"if_expression":     true,
+	"if_let_expression": true,
+	"for_expression":    true,
+	"while_expression":  true,
+	"loop_expression":   true,
+	"match_arm":         true,
+	"match_expression":  true,
 }
 
 var rustComplexitySkip = map[string]bool{
-	"function_item":     true,
+	"function_item":      true,
 	"closure_expression": true,
 }
 
 var javaComplexityNodes = map[string]bool{
-	"if_statement":         true,
-	"for_statement":        true,
-	"enhanced_for_statement": true,
-	"while_statement":      true,
-	"do_statement":         true,
-	"switch_label":         true,
+	"if_statement":                 true,
+	"for_statement":                true,
+	"enhanced_for_statement":       true,
+	"while_statement":              true,
+	"do_statement":                 true,
+	"switch_label":                 true,
 	"switch_block_statement_group": true,
-	"catch_clause":         true,
-	"ternary_expression":   true,
+	"catch_clause":                 true,
+	"ternary_expression":           true,
 }
 
 var javaComplexitySkip = map[string]bool{
@@ -256,7 +256,7 @@ func CognitiveComplexity(body *sitter.Node, decisionTypes, nestingTypes, skipDes
 		if nestingTypes[t] {
 			childNesting++
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i), childNesting)
 		}
 	}
@@ -287,7 +287,7 @@ func MaxLoopDepth(body *sitter.Node, loopTypes, skipDescent map[string]bool) int
 		if skipDescent != nil && skipDescent[t] {
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i), d)
 		}
 	}

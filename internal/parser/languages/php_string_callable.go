@@ -96,7 +96,7 @@ func (e *PHPExtractor) capturePHPStringCallables(result *parser.ExtractionResult
 		// callbacks live on the value side, so resolve each value rather than
 		// scanning the array flat (its regex-pattern keys are not callables).
 		callbackArray := calleeLower == "preg_replace_callback_array"
-		for i := 0; i < int(args.NamedChildCount()); i++ {
+		for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 			a := args.NamedChild(i)
 			if a == nil {
 				continue
@@ -170,7 +170,7 @@ func (e *PHPExtractor) phpCallbackArrayValues(a *sitter.Node, src []byte) []phpC
 		return nil
 	}
 	var out []phpCallableRef
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		el := node.NamedChild(i)
 		if el == nil || el.Type() != "array_element_initializer" {
 			continue

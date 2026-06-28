@@ -334,13 +334,13 @@ func (e *SwiftExtractor) emitTypeContainer(m parser.QueryResult, prefix, filePat
 	if prefix != "enum" || bodyNode == nil {
 		return
 	}
-	for i := 0; i < int(bodyNode.ChildCount()); i++ {
+	for i, _nc := 0, int(bodyNode.ChildCount()); i < _nc; i++ {
 		entry := bodyNode.Child(i)
 		if entry == nil || entry.Type() != "enum_entry" {
 			continue
 		}
 		var caseName string
-		for j := 0; j < int(entry.ChildCount()); j++ {
+		for j, _nc := 0, int(entry.ChildCount()); j < _nc; j++ {
 			ch := entry.Child(j)
 			if ch != nil && ch.Type() == "simple_identifier" {
 				caseName = ch.Content(src)
@@ -563,7 +563,7 @@ func (e *SwiftExtractor) emitProperty(m parser.QueryResult, filePath, fileID str
 // swiftPropertyIsMutable reports whether a property is declared with `var`
 // (mutable) rather than `let`, reading the value_binding_pattern child.
 func swiftPropertyIsMutable(decl *sitter.Node, src []byte) bool {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		if c := decl.NamedChild(i); c != nil && c.Type() == "value_binding_pattern" {
 			return strings.Contains(c.Content(src), "var")
 		}
@@ -574,7 +574,7 @@ func swiftPropertyIsMutable(decl *sitter.Node, src []byte) bool {
 // swiftPropertyType returns the base type named in a property's
 // type_annotation (`: [Foo]?` → "Foo"), or "" when the type is inferred.
 func swiftPropertyType(decl *sitter.Node, src []byte) string {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "type_annotation" {
 			continue
@@ -769,7 +769,7 @@ func swiftVisibility(decl *sitter.Node, src []byte) string {
 	if decl == nil {
 		return VisibilityInternal
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil {
 			continue

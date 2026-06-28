@@ -116,14 +116,14 @@ func emitJavaReferenceForms(root *sitter.Node, src []byte, filePath, fileID stri
 					return
 				}
 				if c.Type() == "wildcard" {
-					for j := 0; j < int(c.NamedChildCount()); j++ {
+					for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 						if w := c.NamedChild(j); w != nil && isJavaTypeNode(w.Type()) {
 							emit(strings.TrimSpace(w.Content(src)), line, "generic_arg", graph.EdgeReferences, graph.OriginASTResolved)
 						}
 					}
 				}
 			}
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				emitArg(n.NamedChild(i))
 			}
 
@@ -191,7 +191,7 @@ func emitJavaReferenceForms(root *sitter.Node, src []byte, filePath, fileID stri
 
 		case "super_interfaces":
 			// `implements Bar, Baz` — every interface in the type_list.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil {
 					continue
@@ -224,7 +224,7 @@ func isJavaTypeNode(t string) bool {
 // walk reaches when it descends into the child `generic_type` node — so
 // this helper deliberately does not recurse into them.
 func emitJavaTypeChildRefs(node *sitter.Node, src []byte, line int, useKind string, kind graph.EdgeKind, origin string, emit func(string, int, string, graph.EdgeKind, string)) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil || !isJavaTypeNode(c.Type()) {
 			continue
@@ -245,7 +245,7 @@ func javaCreatedTypeText(node *sitter.Node, src []byte) string {
 // of node that names a type (type_identifier / scoped_type_identifier /
 // generic_type), or "".
 func javaFirstTypeChildText(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil || !isJavaTypeNode(c.Type()) {
 			continue

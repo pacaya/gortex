@@ -96,7 +96,7 @@ func (e *TOMLExtractor) walk(node *sitter.Node, src []byte, filePath, fileID str
 		}
 	}
 
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil {
 			e.walk(child, src, filePath, fileID, result, seen)
@@ -106,7 +106,7 @@ func (e *TOMLExtractor) walk(node *sitter.Node, src []byte, filePath, fileID str
 
 func (e *TOMLExtractor) extractTableName(tableNode *sitter.Node, src []byte) string {
 	// Walk children looking for bare_key or dotted_key inside brackets.
-	for i := 0; i < int(tableNode.ChildCount()); i++ {
+	for i, _nc := 0, int(tableNode.ChildCount()); i < _nc; i++ {
 		child := tableNode.Child(i)
 		if child == nil {
 			continue
@@ -127,7 +127,7 @@ func (e *TOMLExtractor) extractTableName(tableNode *sitter.Node, src []byte) str
 }
 
 func (e *TOMLExtractor) findChild(node *sitter.Node, childType string) *sitter.Node {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child != nil && child.Type() == childType {
 			return child

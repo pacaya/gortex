@@ -568,12 +568,12 @@ func javaVisibility(decl *sitter.Node, src []byte, defaultVis string) string {
 	if decl == nil {
 		return defaultVis
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			tok := c.Child(j)
 			if tok == nil {
 				continue
@@ -937,12 +937,12 @@ func javaIsStaticFinal(decl *sitter.Node, src []byte) bool {
 		return false
 	}
 	hasStatic, hasFinal := false, false
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			switch c.Child(j).Type() {
 			case "static":
 				hasStatic = true
@@ -957,12 +957,12 @@ func javaIsStaticFinal(decl *sitter.Node, src []byte) bool {
 // javaPackageName returns the dotted name of the file's `package` declaration,
 // or "".
 func javaPackageName(root *sitter.Node, src []byte) string {
-	for i := 0; i < int(root.NamedChildCount()); i++ {
+	for i, _nc := 0, int(root.NamedChildCount()); i < _nc; i++ {
 		c := root.NamedChild(i)
 		if c.Type() != "package_declaration" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			id := c.NamedChild(j)
 			if t := id.Type(); t == "scoped_identifier" || t == "identifier" {
 				return strings.TrimSpace(id.Content(src))
@@ -998,12 +998,12 @@ func javaStaticFinalStringValue(decl *sitter.Node, src []byte) (string, bool) {
 		return "", false
 	}
 	hasStatic, hasFinal := false, false
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			tok := c.Child(j)
 			if tok == nil {
 				continue
@@ -1019,7 +1019,7 @@ func javaStaticFinalStringValue(decl *sitter.Node, src []byte) (string, bool) {
 	if !hasStatic || !hasFinal {
 		return "", false
 	}
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "variable_declarator" {
 			continue
@@ -1117,7 +1117,7 @@ func javaParamsSource(methodNode *sitter.Node, src []byte) string {
 	if methodNode == nil {
 		return ""
 	}
-	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 		c := methodNode.NamedChild(i)
 		if c != nil && c.Type() == "formal_parameters" {
 			return c.Content(src)
@@ -1135,12 +1135,12 @@ func javaCollectAnnotations(decl *sitter.Node, src []byte) []javaAnnotation {
 		return nil
 	}
 	var out []javaAnnotation
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			m := c.NamedChild(j)
 			if m == nil {
 				continue
@@ -1185,12 +1185,12 @@ func emitJavaThrowsEdges(methodNode *sitter.Node, src []byte, fromID, filePath s
 	if methodNode == nil {
 		return
 	}
-	for i := 0; i < int(methodNode.ChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.ChildCount()); i < _nc; i++ {
 		c := methodNode.Child(i)
 		if c == nil || c.Type() != "throws" {
 			continue
 		}
-		for j := 0; j < int(c.ChildCount()); j++ {
+		for j, _nc := 0, int(c.ChildCount()); j < _nc; j++ {
 			t := c.Child(j)
 			if t == nil {
 				continue
@@ -1239,12 +1239,12 @@ func emitJavaAnnotationEdges(anns []javaAnnotation, fromID, filePath string, res
 // a `modifiers` wrapper as either `marker_annotation` (no args) or
 // `annotation` (with args). Name is the bare identifier after @.
 func javaMethodHasAnnotation(methodNode *sitter.Node, src []byte, name string) bool {
-	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 		c := methodNode.NamedChild(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			m := c.NamedChild(j)
 			if m == nil {
 				continue
@@ -1265,7 +1265,7 @@ func javaMethodHasAnnotation(methodNode *sitter.Node, src []byte, name string) b
 // the return type child (typically a type_identifier) and returns the
 // normalized type name.
 func extractJavaMethodReturnType(methodNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 		child := methodNode.NamedChild(i)
 		switch child.Type() {
 		case "type_identifier":
@@ -1295,7 +1295,7 @@ func extractJavaParentClass(classNode *sitter.Node, src []byte) string {
 	if sup == nil {
 		return ""
 	}
-	for i := 0; i < int(sup.NamedChildCount()); i++ {
+	for i, _nc := 0, int(sup.NamedChildCount()); i < _nc; i++ {
 		child := sup.NamedChild(i)
 		switch child.Type() {
 		case "type_identifier", "generic_type", "scoped_type_identifier":
@@ -1317,7 +1317,7 @@ func extractJavaParentClass(classNode *sitter.Node, src []byte) string {
 // inferTypeFromJavaNewExpr extracts the class name from an object_creation_expression node.
 // new User(...) -> "User", new ArrayList<String>() -> "ArrayList"
 func inferTypeFromJavaNewExpr(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "type_identifier" {
 			name := child.Content(src)

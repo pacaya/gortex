@@ -113,7 +113,7 @@ func pyClassBaseNames(classNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var out []string
-	for i := 0; i < int(supers.NamedChildCount()); i++ {
+	for i, _nc := 0, int(supers.NamedChildCount()); i < _nc; i++ {
 		c := supers.NamedChild(i)
 		if c == nil {
 			continue
@@ -171,7 +171,7 @@ func pyORMFlavor(bases []string) string {
 // the attribute the table came from (`__tablename__` / `db_table`).
 // Empty name when neither is set.
 func pyClassExplicitTableName(body *sitter.Node, src []byte) (string, string) {
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		stmt := body.NamedChild(i)
 		if stmt == nil {
 			continue
@@ -193,7 +193,7 @@ func pyClassExplicitTableName(body *sitter.Node, src []byte) (string, string) {
 			if metaBody == nil {
 				continue
 			}
-			for j := 0; j < int(metaBody.NamedChildCount()); j++ {
+			for j, _nc := 0, int(metaBody.NamedChildCount()); j < _nc; j++ {
 				sub := metaBody.NamedChild(j)
 				if sub == nil {
 					continue
@@ -259,7 +259,7 @@ func pyAssignmentStringLiteral(stmt *sitter.Node, src []byte) (string, bool) {
 	}
 	// Walk the string node to find the string_content child.
 	var content string
-	for i := 0; i < int(right.NamedChildCount()); i++ {
+	for i, _nc := 0, int(right.NamedChildCount()); i < _nc; i++ {
 		c := right.NamedChild(i)
 		if c != nil && c.Type() == "string_content" {
 			content = c.Content(src)

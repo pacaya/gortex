@@ -29,7 +29,7 @@ func javaFormalParameters(methodNode *sitter.Node) *sitter.Node {
 	if p := methodNode.ChildByFieldName("parameters"); p != nil {
 		return p
 	}
-	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 		c := methodNode.NamedChild(i)
 		if c != nil && c.Type() == "formal_parameters" {
 			return c
@@ -40,7 +40,7 @@ func javaFormalParameters(methodNode *sitter.Node) *sitter.Node {
 
 func emitJavaParamNodes(ownerID string, params *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
 	pos := 0
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		decl := params.NamedChild(i)
 		if decl == nil {
 			continue
@@ -60,7 +60,7 @@ func emitJavaParamNodes(ownerID string, params *sitter.Node, src []byte, filePat
 		// Some grammar shapes (spread_parameter) wrap the name in a
 		// (variable_declarator name: (identifier)) — fall back.
 		if name == "" {
-			for j := 0; j < int(decl.NamedChildCount()); j++ {
+			for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 				c := decl.NamedChild(j)
 				if c == nil {
 					continue
@@ -178,7 +178,7 @@ func emitJavaGenericParamNodes(ownerID string, methodNode *sitter.Node, src []by
 	tparams := methodNode.ChildByFieldName("type_parameters")
 	if tparams == nil {
 		// Look for unnamed type_parameters child.
-		for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 			c := methodNode.NamedChild(i)
 			if c != nil && c.Type() == "type_parameters" {
 				tparams = c
@@ -189,13 +189,13 @@ func emitJavaGenericParamNodes(ownerID string, methodNode *sitter.Node, src []by
 	if tparams == nil {
 		return
 	}
-	for i := 0; i < int(tparams.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tparams.NamedChildCount()); i < _nc; i++ {
 		tp := tparams.NamedChild(i)
 		if tp == nil || tp.Type() != "type_parameter" {
 			continue
 		}
 		var name, bound string
-		for j := 0; j < int(tp.NamedChildCount()); j++ {
+		for j, _nc := 0, int(tp.NamedChildCount()); j < _nc; j++ {
 			c := tp.NamedChild(j)
 			if c == nil {
 				continue

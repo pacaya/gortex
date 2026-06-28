@@ -55,7 +55,7 @@ func (e *OCamlExtractor) walkExtract(
 	node *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child == nil {
 			continue
@@ -95,7 +95,7 @@ func (e *OCamlExtractor) extractValueDef(
 	node *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child == nil {
 			continue
@@ -107,7 +107,7 @@ func (e *OCamlExtractor) extractValueDef(
 			hasParams := false
 
 			// Walk let_binding children to find pattern (name) and check for parameters.
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				part := child.NamedChild(j)
 				if part == nil {
 					continue
@@ -166,14 +166,14 @@ func (e *OCamlExtractor) extractTypeDef(
 	node *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child == nil || child.Type() != "type_binding" {
 			continue
 		}
 
 		name := ""
-		for j := 0; j < int(child.NamedChildCount()); j++ {
+		for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 			part := child.NamedChild(j)
 			if part != nil && (part.Type() == "type_constructor" || part.Type() == "type_variable") {
 				name = part.Content(src)
@@ -225,14 +225,14 @@ func (e *OCamlExtractor) extractModuleDef(
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
 	// Find module_binding child.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		binding := node.NamedChild(i)
 		if binding == nil || binding.Type() != "module_binding" {
 			continue
 		}
 
 		name := ""
-		for j := 0; j < int(binding.NamedChildCount()); j++ {
+		for j, _nc := 0, int(binding.NamedChildCount()); j < _nc; j++ {
 			child := binding.NamedChild(j)
 			if child != nil && child.Type() == "module_name" {
 				name = child.Content(src)
@@ -268,7 +268,7 @@ func (e *OCamlExtractor) extractModuleDef(
 		})
 
 		// Recurse into module body (structure node) for nested definitions.
-		for j := 0; j < int(binding.NamedChildCount()); j++ {
+		for j, _nc := 0, int(binding.NamedChildCount()); j < _nc; j++ {
 			child := binding.NamedChild(j)
 			if child != nil && (child.Type() == "structure" || child.Type() == "struct_expression") {
 				e.walkExtract(child, src, filePath, fileNode, result, seen, qualName)
@@ -283,7 +283,7 @@ func (e *OCamlExtractor) extractModuleTypeDef(
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
 	name := ""
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child != nil && child.Type() == "module_type_name" {
 			name = child.Content(src)
@@ -323,7 +323,7 @@ func (e *OCamlExtractor) extractOpen(
 	node *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult,
 ) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child != nil && (child.Type() == "module_path" || child.Type() == "module_name" || child.Type() == "extended_module_path") {
 			moduleName := child.Content(src)
@@ -341,14 +341,14 @@ func (e *OCamlExtractor) extractClassDef(
 	node *sitter.Node, src []byte, filePath string, fileNode *graph.Node,
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child == nil || child.Type() != "class_binding" {
 			continue
 		}
 
 		name := ""
-		for j := 0; j < int(child.NamedChildCount()); j++ {
+		for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 			part := child.NamedChild(j)
 			if part != nil && (part.Type() == "class_name" || part.Type() == "value_name") {
 				name = part.Content(src)
@@ -398,7 +398,7 @@ func (e *OCamlExtractor) extractMethods(
 			return
 		}
 		name := ""
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			child := node.NamedChild(i)
 			if child != nil && child.Type() == "method_name" {
 				name = child.Content(src)
@@ -440,7 +440,7 @@ func (e *OCamlExtractor) extractExternal(
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
 	name := ""
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child != nil && child.Type() == "value_name" {
 			name = child.Content(src)
@@ -482,7 +482,7 @@ func (e *OCamlExtractor) extractValueSpec(
 	result *parser.ExtractionResult, seen map[string]bool, modulePrefix string,
 ) {
 	name := ""
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child != nil && child.Type() == "value_name" {
 			name = child.Content(src)

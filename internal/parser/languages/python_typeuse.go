@@ -115,7 +115,7 @@ func emitPythonReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 // for a wrapper like `List[Foo]` yields the inner element (`Foo`).
 func emitPyGenericArgReferences(tparam *sitter.Node, src []byte, emit func(string, int, graph.EdgeKind, string)) {
 	line := int(tparam.StartPoint().Row) + 1
-	for i := 0; i < int(tparam.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tparam.NamedChildCount()); i < _nc; i++ {
 		c := tparam.NamedChild(i)
 		if c == nil || c.Type() != "type" {
 			continue
@@ -192,7 +192,7 @@ func emitPyTypeTestArgs(call *sitter.Node, src []byte, line int, emit func(strin
 	}
 	// Collect positional args (skip keyword_argument and the separators).
 	var positional []*sitter.Node
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -220,7 +220,7 @@ func emitPyTypeOperand(n *sitter.Node, src []byte, line int, emit func(string, i
 			emit(a.Content(src), line, graph.EdgeReferences, "cast")
 		}
 	case "tuple", "parenthesized_expression":
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			emitPyTypeOperand(n.NamedChild(i), src, line, emit)
 		}
 	}
@@ -235,7 +235,7 @@ func emitPyInheritanceReferences(class *sitter.Node, src []byte, emit func(strin
 		return
 	}
 	line := int(class.StartPoint().Row) + 1
-	for i := 0; i < int(supers.NamedChildCount()); i++ {
+	for i, _nc := 0, int(supers.NamedChildCount()); i < _nc; i++ {
 		c := supers.NamedChild(i)
 		if c == nil {
 			continue
@@ -291,7 +291,7 @@ func emitPyStaticAccessReference(attr *sitter.Node, src []byte, emit func(string
 // `@app.route`) are excluded by the Capitalization gate.
 func emitPyDecoratorReference(dec *sitter.Node, src []byte, emit func(string, int, graph.EdgeKind, string)) {
 	line := int(dec.StartPoint().Row) + 1
-	for i := 0; i < int(dec.NamedChildCount()); i++ {
+	for i, _nc := 0, int(dec.NamedChildCount()); i < _nc; i++ {
 		c := dec.NamedChild(i)
 		if c == nil {
 			continue

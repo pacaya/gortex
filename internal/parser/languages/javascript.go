@@ -523,7 +523,7 @@ func jsArrowFunctionFromDef(def *sitter.Node) *sitter.Node {
 	if def == nil {
 		return nil
 	}
-	for i := 0; i < int(def.NamedChildCount()); i++ {
+	for i, _nc := 0, int(def.NamedChildCount()); i < _nc; i++ {
 		c := def.NamedChild(i)
 		if c == nil || c.Type() != "variable_declarator" {
 			continue

@@ -47,7 +47,7 @@ func emitCMacro(defNode *sitter.Node, isFunc bool, filePath, fileID, lang string
 	}
 	var name, replacement string
 	var params []string
-	for i := 0; i < int(defNode.ChildCount()); i++ {
+	for i, _nc := 0, int(defNode.ChildCount()); i < _nc; i++ {
 		c := defNode.Child(i)
 		if c == nil {
 			continue
@@ -58,7 +58,7 @@ func emitCMacro(defNode *sitter.Node, isFunc bool, filePath, fileID, lang string
 				name = c.Content(src)
 			}
 		case "preproc_params":
-			for j := 0; j < int(c.NamedChildCount()); j++ {
+			for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 				p := c.NamedChild(j)
 				if p != nil && p.Type() == "identifier" {
 					params = append(params, p.Content(src))

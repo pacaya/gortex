@@ -138,7 +138,7 @@ func reduxThunkPayloadCreator(call *sitter.Node) *sitter.Node {
 	if args == nil {
 		return nil
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -172,7 +172,7 @@ func reduxThunkWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		reduxThunkWalk(n.NamedChild(i), fn)
 	}
 }

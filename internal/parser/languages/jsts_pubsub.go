@@ -66,7 +66,7 @@ func firstJSPubsubTopicArg(callExpr *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -89,7 +89,7 @@ func firstJSPubsubTopicArg(callExpr *sitter.Node, src []byte) string {
 // `string` node. The grammar wraps the body in a `string_fragment`
 // child; an empty literal (`""`) has no fragment and yields "".
 func jsStringLiteralContent(strNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(strNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(strNode.NamedChildCount()); i < _nc; i++ {
 		c := strNode.NamedChild(i)
 		if c != nil && c.Type() == "string_fragment" {
 			return strings.TrimSpace(c.Content(src))
@@ -104,7 +104,7 @@ func jsStringLiteralContent(strNode *sitter.Node, src []byte) string {
 // subject / …) and whose value is a string literal, returning that
 // string. Used for kafkajs-style option-object call shapes.
 func jsObjectTopicValue(objNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(objNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(objNode.NamedChildCount()); i < _nc; i++ {
 		pair := objNode.NamedChild(i)
 		if pair == nil || pair.Type() != "pair" {
 			continue

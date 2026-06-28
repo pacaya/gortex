@@ -53,7 +53,7 @@ func captureRTKQueryEndpoints(result *parser.ExtractionResult, root *sitter.Node
 		if obj == nil {
 			return
 		}
-		for i := 0; i < int(obj.NamedChildCount()); i++ {
+		for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 			pair := obj.NamedChild(i)
 			if pair == nil || pair.Type() != "pair" {
 				continue
@@ -118,12 +118,12 @@ func rtkEndpointsArrow(call *sitter.Node, src []byte) *sitter.Node {
 	if args == nil {
 		return nil
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		obj := args.NamedChild(i)
 		if obj == nil || obj.Type() != "object" {
 			continue
 		}
-		for j := 0; j < int(obj.NamedChildCount()); j++ {
+		for j, _nc := 0, int(obj.NamedChildCount()); j < _nc; j++ {
 			pair := obj.NamedChild(j)
 			if pair == nil || pair.Type() != "pair" {
 				continue
@@ -163,16 +163,16 @@ func rtkUnwrapObject(n *sitter.Node) *sitter.Node {
 	case "object":
 		return n
 	case "parenthesized_expression":
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			if o := rtkUnwrapObject(n.NamedChild(i)); o != nil {
 				return o
 			}
 		}
 	case "statement_block":
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c != nil && c.Type() == "return_statement" {
-				for j := 0; j < int(c.NamedChildCount()); j++ {
+				for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 					if o := rtkUnwrapObject(c.NamedChild(j)); o != nil {
 						return o
 					}
@@ -214,7 +214,7 @@ func rtkWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		rtkWalk(n.NamedChild(i), fn)
 	}
 }

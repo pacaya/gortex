@@ -53,9 +53,9 @@ var goMetricMethods = map[string]bool{
 // heuristic — `errors.New(...)` and `fmt.Errorf(...)` are by far the
 // dominant idioms.
 var goErrorMessageCalls = map[[2]string]bool{
-	{"errors", "New"}:    true,
-	{"fmt", "Errorf"}:    true,
-	{"xerrors", "New"}:   true, // golang.org/x/xerrors
+	{"errors", "New"}:     true,
+	{"fmt", "Errorf"}:     true,
+	{"xerrors", "New"}:    true, // golang.org/x/xerrors
 	{"xerrors", "Errorf"}: true,
 }
 
@@ -188,7 +188,7 @@ func firstStringLiteralArg(callExpr *sitter.Node, src []byte) (string, bool) {
 	if args == nil {
 		return "", false
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue

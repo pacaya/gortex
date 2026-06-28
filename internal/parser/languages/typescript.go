@@ -341,7 +341,7 @@ func (e *TypeScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 			if n.Type() != "variable_declarator" {
 				return
 			}
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				child := n.NamedChild(i)
 				if child.Type() == "new_expression" {
 					if tn := inferTypeFromNewExpr(child, src); tn != "" {
@@ -396,7 +396,7 @@ func (e *TypeScriptExtractor) Extract(filePath string, src []byte) (*parser.Extr
 		}
 		ctor := n.ChildByFieldName("constructor")
 		if ctor == nil {
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if t := c.Type(); t == "identifier" || t == "member_expression" || t == "generic_type" {
 					ctor = c
@@ -702,7 +702,7 @@ func tsFunctionBody(decl *sitter.Node) *sitter.Node {
 	if b := decl.ChildByFieldName("body"); b != nil {
 		return b
 	}
-	for i := 0; i < int(decl.ChildCount()); i++ {
+	for i, _nc := 0, int(decl.ChildCount()); i < _nc; i++ {
 		c := decl.Child(i)
 		if c != nil && (c.Type() == "statement_block" || c.Type() == "block") {
 			return c
@@ -935,7 +935,7 @@ func (e *TypeScriptExtractor) emitInterface(m parser.QueryResult, filePath, file
 // surface), which name-only member extraction misses.
 func emitTSInterfaceMemberTypeRefs(ifaceNode *sitter.Node, src []byte, ifaceID, filePath string, result *parser.ExtractionResult) {
 	var body *sitter.Node
-	for i := 0; i < int(ifaceNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ifaceNode.NamedChildCount()); i < _nc; i++ {
 		c := ifaceNode.NamedChild(i)
 		if c.Type() == "interface_body" || c.Type() == "object_type" {
 			body = c
@@ -945,7 +945,7 @@ func emitTSInterfaceMemberTypeRefs(ifaceNode *sitter.Node, src []byte, ifaceID, 
 	if body == nil {
 		return
 	}
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		member := body.NamedChild(i)
 		ctx := ""
 		switch member.Type() {
@@ -983,7 +983,7 @@ func emitTSInterfaceMemberTypeRefs(ifaceNode *sitter.Node, src []byte, ifaceID, 
 					// — the queried value is a plain identifier / member access,
 					// not a type_identifier; reference its (last) name so a
 					// component referenced only through a typeof query surfaces.
-					for k := 0; k < int(n.NamedChildCount()); k++ {
+					for k, _nc := 0, int(n.NamedChildCount()); k < _nc; k++ {
 						q := n.NamedChild(k)
 						if q == nil {
 							continue
@@ -998,7 +998,7 @@ func emitTSInterfaceMemberTypeRefs(ifaceNode *sitter.Node, src []byte, ifaceID, 
 				}
 			})
 		}
-		for j := 0; j < int(member.NamedChildCount()); j++ {
+		for j, _nc := 0, int(member.NamedChildCount()); j < _nc; j++ {
 			child := member.NamedChild(j)
 			switch child.Type() {
 			case "type_annotation":
@@ -1026,7 +1026,7 @@ func tsCtorTypeName(ctor *sitter.Node, src []byte) string {
 			return p.Content(src)
 		}
 	case "generic_type":
-		for i := 0; i < int(ctor.NamedChildCount()); i++ {
+		for i, _nc := 0, int(ctor.NamedChildCount()); i < _nc; i++ {
 			c := ctor.NamedChild(i)
 			if t := c.Type(); t == "type_identifier" || t == "identifier" {
 				return c.Content(src)
@@ -1100,12 +1100,12 @@ func (e *TypeScriptExtractor) emitEnum(m parser.QueryResult, filePath, fileID st
 	}
 	// Walk the enum body for member names. The grammar yields enum_body
 	// → (property_identifier | enum_assignment) children; handle both.
-	for i := 0; i < int(def.Node.ChildCount()); i++ {
+	for i, _nc := 0, int(def.Node.ChildCount()); i < _nc; i++ {
 		child := def.Node.Child(i)
 		if child == nil || child.Type() != "enum_body" {
 			continue
 		}
-		for j := 0; j < int(child.ChildCount()); j++ {
+		for j, _nc := 0, int(child.ChildCount()); j < _nc; j++ {
 			mem := child.Child(j)
 			if mem == nil {
 				continue
@@ -1192,18 +1192,18 @@ func (e *TypeScriptExtractor) emitImport(m parser.QueryResult, filePath, fileID 
 	}
 	// Per-binding edges (`import { a, b as c }`) on top of the module edge.
 	emitJSPerBindingImports(defCap.Node, importPath, fileID, filePath, src, result)
-	for i := 0; i < int(defCap.Node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(defCap.Node.NamedChildCount()); i < _nc; i++ {
 		child := defCap.Node.NamedChild(i)
 		if child.Type() != "import_clause" {
 			continue
 		}
-		for j := 0; j < int(child.NamedChildCount()); j++ {
+		for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 			c := child.NamedChild(j)
 			switch c.Type() {
 			case "identifier": // default: `import Foo from ...`
 				imports[c.Content(src)] = importPath
 			case "namespace_import": // `import * as Foo from ...`
-				for k := 0; k < int(c.NamedChildCount()); k++ {
+				for k, _nc := 0, int(c.NamedChildCount()); k < _nc; k++ {
 					if id := c.NamedChild(k); id.Type() == "identifier" {
 						imports[id.Content(src)] = importPath
 					}
@@ -1409,7 +1409,7 @@ func (e *TypeScriptExtractor) emitClassProperty(m parser.QueryResult, filePath s
 	for sib := def.Node.PrevSibling(); sib != nil && sib.Type() == "decorator"; sib = sib.PrevSibling() {
 		emitTSAnnotationEdges([]*sitter.Node{sib}, id, filePath, src, result, annotationSeen)
 	}
-	for i := 0; i < int(def.Node.ChildCount()); i++ {
+	for i, _nc := 0, int(def.Node.ChildCount()); i < _nc; i++ {
 		c := def.Node.Child(i)
 		if c != nil && c.Type() == "decorator" {
 			emitTSAnnotationEdges([]*sitter.Node{c}, id, filePath, src, result, annotationSeen)
@@ -1437,7 +1437,7 @@ func findEnclosingClass(n *sitter.Node) *sitter.Node {
 func extractTSInterfaceMethods(ifaceNode *sitter.Node, src []byte) []string {
 	var methods []string
 	var body *sitter.Node
-	for i := 0; i < int(ifaceNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ifaceNode.NamedChildCount()); i < _nc; i++ {
 		child := ifaceNode.NamedChild(i)
 		if child.Type() == "interface_body" || child.Type() == "object_type" {
 			body = child
@@ -1447,11 +1447,11 @@ func extractTSInterfaceMethods(ifaceNode *sitter.Node, src []byte) []string {
 	if body == nil {
 		return methods
 	}
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		child := body.NamedChild(i)
 		switch child.Type() {
 		case "method_signature", "property_signature":
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				nameNode := child.NamedChild(j)
 				if nameNode.Type() == "property_identifier" {
 					methods = append(methods, nameNode.Content(src))
@@ -1487,7 +1487,7 @@ func emitModuleBindings(classNode *sitter.Node, src []byte, classID, filePath st
 			continue
 		}
 		var config *sitter.Node
-		for i := 0; i < int(args.NamedChildCount()); i++ {
+		for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 			c := args.NamedChild(i)
 			if c != nil && c.Type() == "object" {
 				config = c
@@ -1510,7 +1510,7 @@ func emitProvidersFromObject(config *sitter.Node, src []byte, classID, filePath 
 	if providersNode == nil || providersNode.Type() != "array" {
 		return
 	}
-	for i := 0; i < int(providersNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(providersNode.NamedChildCount()); i < _nc; i++ {
 		entry := providersNode.NamedChild(i)
 		if entry == nil || entry.Type() != "object" {
 			continue
@@ -1634,13 +1634,13 @@ func dispatchConstructorMembers(method *sitter.Node, src []byte, classID, filePa
 	if params == nil {
 		return
 	}
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		p := params.NamedChild(i)
 		if p == nil {
 			continue
 		}
 		// @Inject decorator on the parameter → consumer edge.
-		for j := 0; j < int(p.ChildCount()); j++ {
+		for j, _nc := 0, int(p.ChildCount()); j < _nc; j++ {
 			c := p.Child(j)
 			if c != nil && c.Type() == "decorator" {
 				emitInjectFromDecorator(c, src, classID, filePath, result, seenInject)
@@ -1670,7 +1670,7 @@ func dispatchConstructorMembers(method *sitter.Node, src []byte, classID, filePa
 // type annotation; falls back to the type inferred from an
 // `inject(Foo)` initializer.
 func dispatchClassField(field *sitter.Node, src []byte, classID, filePath string, result *parser.ExtractionResult, tenv typeEnv, seenInject map[string]struct{}) {
-	for i := 0; i < int(field.ChildCount()); i++ {
+	for i, _nc := 0, int(field.ChildCount()); i < _nc; i++ {
 		c := field.Child(i)
 		if c != nil && c.Type() == "decorator" {
 			emitInjectFromDecorator(c, src, classID, filePath, result, seenInject)
@@ -1723,7 +1723,7 @@ func findReturnedConfigObject(body *sitter.Node) *sitter.Node {
 		if cfg != nil || m.Type() != "return_statement" {
 			return
 		}
-		for i := 0; i < int(m.NamedChildCount()); i++ {
+		for i, _nc := 0, int(m.NamedChildCount()); i < _nc; i++ {
 			c := m.NamedChild(i)
 			if c != nil && c.Type() == "object" {
 				cfg = c
@@ -1735,7 +1735,7 @@ func findReturnedConfigObject(body *sitter.Node) *sitter.Node {
 }
 
 func methodIsStatic(m *sitter.Node) bool {
-	for i := 0; i < int(m.ChildCount()); i++ {
+	for i, _nc := 0, int(m.ChildCount()); i < _nc; i++ {
 		c := m.Child(i)
 		if c != nil && c.Type() == "static" {
 			return true
@@ -1746,7 +1746,7 @@ func methodIsStatic(m *sitter.Node) bool {
 
 func classDecorators(classNode *sitter.Node) []*sitter.Node {
 	var decs []*sitter.Node
-	for i := 0; i < int(classNode.ChildCount()); i++ {
+	for i, _nc := 0, int(classNode.ChildCount()); i < _nc; i++ {
 		c := classNode.Child(i)
 		if c != nil && c.Type() == "decorator" {
 			decs = append(decs, c)
@@ -1754,7 +1754,7 @@ func classDecorators(classNode *sitter.Node) []*sitter.Node {
 	}
 	parent := classNode.Parent()
 	if parent != nil && parent.Type() == "export_statement" {
-		for i := 0; i < int(parent.ChildCount()); i++ {
+		for i, _nc := 0, int(parent.ChildCount()); i < _nc; i++ {
 			c := parent.Child(i)
 			if c != nil && c.Type() == "decorator" {
 				decs = append(decs, c)
@@ -1776,7 +1776,7 @@ func tsDecoratorNameAndArgs(dec *sitter.Node, src []byte) (string, string) {
 	// The first named child of a decorator node is typically either an
 	// identifier (`@Foo`), a member_expression (`@Foo.bar`), or a
 	// call_expression (`@Foo(...)`).
-	for i := 0; i < int(dec.NamedChildCount()); i++ {
+	for i, _nc := 0, int(dec.NamedChildCount()); i < _nc; i++ {
 		c := dec.NamedChild(i)
 		if c == nil {
 			continue
@@ -1819,7 +1819,7 @@ func emitTSAnnotationEdges(decs []*sitter.Node, fromID, filePath string, src []b
 }
 
 func objectFieldValue(objNode *sitter.Node, src []byte, name string) *sitter.Node {
-	for i := 0; i < int(objNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(objNode.NamedChildCount()); i < _nc; i++ {
 		p := objNode.NamedChild(i)
 		if p == nil || p.Type() != "pair" {
 			continue
@@ -1874,7 +1874,7 @@ func injectDecoratorArg(dec *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg == nil {
 			continue
@@ -1916,7 +1916,7 @@ func emitDispatchFromDecorator(dec *sitter.Node, src []byte, methodID, filePath 
 	if args == nil {
 		return
 	}
-	for j := 0; j < int(args.NamedChildCount()); j++ {
+	for j, _nc := 0, int(args.NamedChildCount()); j < _nc; j++ {
 		arg := args.NamedChild(j)
 		if arg == nil || arg.Type() != "identifier" {
 			continue
@@ -1937,7 +1937,7 @@ func emitDispatchFromDecorator(dec *sitter.Node, src []byte, methodID, filePath 
 }
 
 func nestDecoratorCall(dec *sitter.Node) *sitter.Node {
-	for i := 0; i < int(dec.NamedChildCount()); i++ {
+	for i, _nc := 0, int(dec.NamedChildCount()); i < _nc; i++ {
 		c := dec.NamedChild(i)
 		if c != nil && c.Type() == "call_expression" {
 			return c
@@ -1955,12 +1955,12 @@ func classFieldName(field *sitter.Node, src []byte) string {
 }
 
 func classFieldTypeAnnotation(field *sitter.Node, src []byte) string {
-	for i := 0; i < int(field.NamedChildCount()); i++ {
+	for i, _nc := 0, int(field.NamedChildCount()); i < _nc; i++ {
 		c := field.NamedChild(i)
 		if c == nil || c.Type() != "type_annotation" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			tn := c.NamedChild(j)
 			if tn == nil {
 				continue
@@ -1984,7 +1984,7 @@ func injectInitializerType(field *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg == nil {
 			continue
@@ -1998,7 +1998,7 @@ func injectInitializerType(field *sitter.Node, src []byte) string {
 }
 
 func hasParameterPropertyModifier(p *sitter.Node) bool {
-	for i := 0; i < int(p.ChildCount()); i++ {
+	for i, _nc := 0, int(p.ChildCount()); i < _nc; i++ {
 		c := p.Child(i)
 		if c == nil {
 			continue
@@ -2018,7 +2018,7 @@ func paramIdentifier(p *sitter.Node, src []byte) string {
 	if pattern != nil && pattern.Type() == "identifier" {
 		return pattern.Content(src)
 	}
-	for i := 0; i < int(p.NamedChildCount()); i++ {
+	for i, _nc := 0, int(p.NamedChildCount()); i < _nc; i++ {
 		c := p.NamedChild(i)
 		if c != nil && c.Type() == "identifier" {
 			return c.Content(src)
@@ -2030,7 +2030,7 @@ func paramIdentifier(p *sitter.Node, src []byte) string {
 func paramTypeAnnotation(p *sitter.Node, src []byte) string {
 	ta := p.ChildByFieldName("type")
 	if ta == nil {
-		for i := 0; i < int(p.NamedChildCount()); i++ {
+		for i, _nc := 0, int(p.NamedChildCount()); i < _nc; i++ {
 			c := p.NamedChild(i)
 			if c != nil && c.Type() == "type_annotation" {
 				ta = c
@@ -2041,7 +2041,7 @@ func paramTypeAnnotation(p *sitter.Node, src []byte) string {
 	if ta == nil {
 		return ""
 	}
-	for i := 0; i < int(ta.NamedChildCount()); i++ {
+	for i, _nc := 0, int(ta.NamedChildCount()); i < _nc; i++ {
 		c := ta.NamedChild(i)
 		if c == nil {
 			continue
@@ -2113,7 +2113,7 @@ func tsMemberVisibility(member *sitter.Node, src []byte) string {
 	if member == nil {
 		return VisibilityPublic
 	}
-	for i := 0; i < int(member.ChildCount()); i++ {
+	for i, _nc := 0, int(member.ChildCount()); i < _nc; i++ {
 		c := member.Child(i)
 		if c == nil || c.Type() != "accessibility_modifier" {
 			continue
@@ -2131,7 +2131,7 @@ func tsMemberVisibility(member *sitter.Node, src []byte) string {
 }
 
 func extractTSMethodReturnType(methodNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 		child := methodNode.NamedChild(i)
 		if child.Type() == "type_annotation" {
 			if child.NamedChildCount() > 0 {
@@ -2144,7 +2144,7 @@ func extractTSMethodReturnType(methodNode *sitter.Node, src []byte) string {
 }
 
 func inferTypeFromNewExpr(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "identifier" || child.Type() == "type_identifier" {
 			name := child.Content(src)
@@ -2173,7 +2173,7 @@ func tsTypeParams(decl *sitter.Node, src []byte) []map[string]string {
 		return nil
 	}
 	var out []map[string]string
-	for i := 0; i < int(tps.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tps.NamedChildCount()); i < _nc; i++ {
 		tp := tps.NamedChild(i)
 		if tp == nil || tp.Type() != "type_parameter" {
 			continue
@@ -2183,7 +2183,7 @@ func tsTypeParams(decl *sitter.Node, src []byte) []map[string]string {
 			entry["name"] = n.Content(src)
 		}
 		// constraint child is the `extends X` part.
-		for j := 0; j < int(tp.ChildCount()); j++ {
+		for j, _nc := 0, int(tp.ChildCount()); j < _nc; j++ {
 			c := tp.Child(j)
 			if c == nil {
 				continue

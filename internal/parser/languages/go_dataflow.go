@@ -115,7 +115,6 @@ func (w *goFlowWalker) bindLocal(name string, line int) string {
 	return id
 }
 
-
 // goFlowScope tracks the most recent source IDs for each named
 // binding inside a function body. Reassignment replaces the slice
 // (the new value supersedes the old one); short_var_decl creates a
@@ -183,7 +182,7 @@ func (w *goFlowWalker) walk(n *sitter.Node) {
 		w.handleCall(n, nil)
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		w.walk(n.NamedChild(i))
 	}
 }
@@ -341,7 +340,7 @@ func (w *goFlowWalker) expressionList(n *sitter.Node) []*sitter.Node {
 		return []*sitter.Node{n}
 	}
 	out := make([]*sitter.Node, 0, n.NamedChildCount())
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -359,13 +358,13 @@ func (w *goFlowWalker) handleReturn(n *sitter.Node) {
 	// expression list — owner gets no extra edges (the function
 	// signature carries the structural contract via EdgeReturns).
 	var exprs []*sitter.Node
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
 		}
 		if c.Type() == "expression_list" {
-			for j := 0; j < int(c.NamedChildCount()); j++ {
+			for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 				e := c.NamedChild(j)
 				if e != nil {
 					exprs = append(exprs, e)
@@ -506,7 +505,7 @@ func (w *goFlowWalker) callArguments(call *sitter.Node) []*sitter.Node {
 		return nil
 	}
 	out := make([]*sitter.Node, 0, args.NamedChildCount())
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -572,7 +571,7 @@ func (w *goFlowWalker) calleeRef(call *sitter.Node) string {
 			_ = synthetic
 		}
 		// Inline: try the inner identifier.
-		for i := 0; i < int(fn.NamedChildCount()); i++ {
+		for i, _nc := 0, int(fn.NamedChildCount()); i < _nc; i++ {
 			c := fn.NamedChild(i)
 			if c == nil {
 				continue
@@ -654,7 +653,7 @@ func (w *goFlowWalker) exprSources(n *sitter.Node) []string {
 		w.handleCall(n, nil)
 		return []string{ref}
 	case "parenthesized_expression":
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			if r := w.exprSources(n.NamedChild(i)); len(r) > 0 {
 				return r
 			}
@@ -692,7 +691,7 @@ func (w *goFlowWalker) exprSources(n *sitter.Node) []string {
 		// composite_literal's element values may carry flow; collect
 		// from each named element to surface field-init dataflow.
 		var out []string
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c == nil {
 				continue
@@ -702,7 +701,7 @@ func (w *goFlowWalker) exprSources(n *sitter.Node) []string {
 		return out
 	case "keyed_element", "literal_element":
 		// Collect from whichever child carries a value subtree.
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c == nil {
 				continue

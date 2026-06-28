@@ -79,7 +79,7 @@ func uikitRoleFor(conf map[string]bool) string {
 // direct type_identifier child (the modifiers / inheritance type_identifiers
 // are nested deeper, not direct children).
 func swiftUITypeName(decl *sitter.Node, src []byte) string {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		if c := decl.NamedChild(i); c != nil && c.Type() == "type_identifier" {
 			return c.Content(src)
 		}
@@ -91,7 +91,7 @@ func swiftUITypeName(decl *sitter.Node, src []byte) string {
 // declaration's inheritance clause.
 func swiftUIConformances(decl *sitter.Node, src []byte) map[string]bool {
 	out := map[string]bool{}
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "inheritance_specifier" {
 			continue
@@ -107,7 +107,7 @@ func swiftUIConformances(decl *sitter.Node, src []byte) map[string]bool {
 
 // swiftUIHasMainAttr reports whether a declaration carries the `@main` attribute.
 func swiftUIHasMainAttr(decl *sitter.Node, src []byte) bool {
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil || c.Type() != "modifiers" {
 			continue
@@ -149,7 +149,7 @@ func swiftUIWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		swiftUIWalk(n.NamedChild(i), fn)
 	}
 }

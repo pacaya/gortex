@@ -213,14 +213,14 @@ func (e *DartExtractor) emitDartReferenceForms(
 // generic_arg walk instead. The emit closure applies the Capitalization +
 // primitive gate, so a malformed clause yields nothing.
 func emitDartInheritanceClauses(classNode *sitter.Node, src []byte, emit func(rawType string, line int, kind graph.EdgeKind, refContext string)) {
-	for i := 0; i < int(classNode.ChildCount()); i++ {
+	for i, _nc := 0, int(classNode.ChildCount()); i < _nc; i++ {
 		clause := classNode.Child(i)
 		if clause == nil {
 			continue
 		}
 		switch clause.Type() {
 		case "superclass":
-			for j := 0; j < int(clause.ChildCount()); j++ {
+			for j, _nc := 0, int(clause.ChildCount()); j < _nc; j++ {
 				c := clause.Child(j)
 				if c == nil {
 					continue
@@ -244,7 +244,7 @@ func emitDartInheritanceClauses(classNode *sitter.Node, src []byte, emit func(ra
 // emitDartClauseTypes emits an inherit reference for every type_identifier
 // child of a clause node (mixins / interfaces).
 func emitDartClauseTypes(clause *sitter.Node, src []byte, emit func(rawType string, line int, kind graph.EdgeKind, refContext string)) {
-	for i := 0; i < int(clause.ChildCount()); i++ {
+	for i, _nc := 0, int(clause.ChildCount()); i < _nc; i++ {
 		c := clause.Child(i)
 		if c != nil && c.Type() == "type_identifier" {
 			emit(c.Content(src), int(c.StartPoint().Row)+1, graph.EdgeReferences, graph.RefContextInherit)
@@ -298,7 +298,7 @@ func emitDartIdentifierHead(n *sitter.Node, src []byte, line int, localTypes map
 		}
 		isMember := false
 		isCall := false
-		for j := 0; j < int(sib.ChildCount()); j++ {
+		for j, _nc := 0, int(sib.ChildCount()); j < _nc; j++ {
 			switch sib.Child(j).Type() {
 			case "unconditional_assignable_selector",
 				"conditional_assignable_selector":
@@ -335,7 +335,7 @@ func emitDartGenericArgs(targs *sitter.Node, src []byte, line int, emit func(raw
 	if targs == nil {
 		return
 	}
-	for i := 0; i < int(targs.NamedChildCount()); i++ {
+	for i, _nc := 0, int(targs.NamedChildCount()); i < _nc; i++ {
 		c := targs.NamedChild(i)
 		if c != nil && c.Type() == "type_identifier" {
 			emit(c.Content(src), line, graph.EdgeReferences, graph.RefContextGenericArg)
@@ -350,7 +350,7 @@ func dartFirstTypeIdentifier(node *sitter.Node, src []byte) string {
 	if node == nil {
 		return ""
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		c := node.Child(i)
 		if c != nil && c.Type() == "type_identifier" {
 			return c.Content(src)

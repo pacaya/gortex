@@ -158,7 +158,7 @@ func objectRegistryBinding(obj *sitter.Node, src []byte) (string, bool) {
 // keys. Non-identifier values (nested objects, calls) are skipped.
 func objectRegistryEntries(obj *sitter.Node, src []byte) []string {
 	var out []string
-	for i := 0; i < int(obj.NamedChildCount()); i++ {
+	for i, _nc := 0, int(obj.NamedChildCount()); i < _nc; i++ {
 		pair := obj.NamedChild(i)
 		if pair == nil || pair.Type() != "pair" {
 			continue
@@ -257,7 +257,7 @@ func objectRegistryWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		objectRegistryWalk(n.NamedChild(i), fn)
 	}
 }

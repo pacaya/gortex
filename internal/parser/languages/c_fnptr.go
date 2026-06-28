@@ -48,8 +48,8 @@ func captureCFnPointerDispatch(result *parser.ExtractionResult, root *sitter.Nod
 
 // structFields holds a struct's ordered field names and its fn-pointer set.
 type structFields struct {
-	order  []string
-	fnptr  map[string]bool
+	order []string
+	fnptr map[string]bool
 }
 
 // cFnPtrTypedefs collects the names of `typedef RET (*NAME)(...)` fn-pointer
@@ -90,7 +90,7 @@ func cStructFnPtrFields(root *sitter.Node, src []byte, typedefs map[string]bool)
 		}
 		structName := nameNode.Content(src)
 		sf := &structFields{fnptr: map[string]bool{}}
-		for i := 0; i < int(body.NamedChildCount()); i++ {
+		for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 			fd := body.NamedChild(i)
 			if fd == nil || fd.Type() != "field_declaration" {
 				continue
@@ -125,7 +125,7 @@ func cVarStructTypes(root *sitter.Node, src []byte) map[string]string {
 		if st == "" {
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c == nil {
 				continue
@@ -152,7 +152,7 @@ func cEmitRegistrations(result *parser.ExtractionResult, root *sitter.Node, file
 			if sf == nil {
 				return
 			}
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				id := n.NamedChild(i)
 				if id == nil || id.Type() != "init_declarator" {
 					continue
@@ -164,7 +164,7 @@ func cEmitRegistrations(result *parser.ExtractionResult, root *sitter.Node, file
 				declTy := id.ChildByFieldName("declarator")
 				if declTy != nil && declTy.Type() == "array_declarator" {
 					// Array of structs: each element is a struct initializer.
-					for j := 0; j < int(val.NamedChildCount()); j++ {
+					for j, _nc := 0, int(val.NamedChildCount()); j < _nc; j++ {
 						if el := val.NamedChild(j); el != nil && el.Type() == "initializer_list" {
 							cEmitStructInit(result, filePath, src, st, sf, el)
 						}
@@ -183,7 +183,7 @@ func cEmitRegistrations(result *parser.ExtractionResult, root *sitter.Node, file
 // positional values by field order and designated values by field name.
 func cEmitStructInit(result *parser.ExtractionResult, filePath string, src []byte, st string, sf *structFields, init *sitter.Node) {
 	pos := 0
-	for i := 0; i < int(init.NamedChildCount()); i++ {
+	for i, _nc := 0, int(init.NamedChildCount()); i < _nc; i++ {
 		el := init.NamedChild(i)
 		if el == nil {
 			continue
@@ -356,7 +356,7 @@ func cFnValueName(val *sitter.Node, src []byte) string {
 // cDesignatorField returns the field name of an `initializer_pair`'s
 // `.field =` designator.
 func cDesignatorField(pair *sitter.Node, src []byte) string {
-	for i := 0; i < int(pair.NamedChildCount()); i++ {
+	for i, _nc := 0, int(pair.NamedChildCount()); i < _nc; i++ {
 		d := pair.NamedChild(i)
 		if d != nil && d.Type() == "field_designator" && d.NamedChildCount() > 0 {
 			return d.NamedChild(0).Content(src)
@@ -370,7 +370,7 @@ func cDesignatorField(pair *sitter.Node, src []byte) string {
 func cStructTypeOf(n *sitter.Node, src []byte) string {
 	t := n.ChildByFieldName("type")
 	if t == nil {
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			if c := n.NamedChild(i); c != nil && (c.Type() == "struct_specifier" || c.Type() == "union_specifier") {
 				t = c
 				break
@@ -437,7 +437,7 @@ func cTypeIdentifierIn(n *sitter.Node, src []byte) string {
 	if n.Type() == "type_identifier" {
 		return n.Content(src)
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		if x := cTypeIdentifierIn(n.NamedChild(i), src); x != "" {
 			return x
 		}
@@ -451,7 +451,7 @@ func cFnPtrWalk(n *sitter.Node, fn func(*sitter.Node)) {
 		return
 	}
 	fn(n)
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		cFnPtrWalk(n.NamedChild(i), fn)
 	}
 }

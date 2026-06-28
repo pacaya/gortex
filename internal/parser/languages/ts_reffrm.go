@@ -106,7 +106,7 @@ func emitTSTypeOnlyImportRefs(importNode *sitter.Node, src []byte, fileID string
 		// Default type-only import: `import type App from "mod"` binds App as a
 		// type (a specifier-level `import { type X }` carries no default form).
 		if clause := findChildByType(importNode, "import_clause"); clause != nil {
-			for i := 0; i < int(clause.NamedChildCount()); i++ {
+			for i, _nc := 0, int(clause.NamedChildCount()); i < _nc; i++ {
 				c := clause.NamedChild(i)
 				if c == nil || c.Type() != "identifier" {
 					continue
@@ -122,7 +122,7 @@ func emitTSTypeOnlyImportRefs(importNode *sitter.Node, src []byte, fileID string
 	if named == nil {
 		return
 	}
-	for i := 0; i < int(named.NamedChildCount()); i++ {
+	for i, _nc := 0, int(named.NamedChildCount()); i < _nc; i++ {
 		spec := named.NamedChild(i)
 		if spec == nil || spec.Type() != "import_specifier" {
 			continue
@@ -148,7 +148,7 @@ func emitTSTypeOnlyExportRefs(exportNode *sitter.Node, src []byte, fileID string
 		return
 	}
 	stmtTypeOnly := tsExportStatementTypeOnly(exportNode, src)
-	for i := 0; i < int(clause.NamedChildCount()); i++ {
+	for i, _nc := 0, int(clause.NamedChildCount()); i < _nc; i++ {
 		spec := clause.NamedChild(i)
 		if spec == nil || spec.Type() != "export_specifier" {
 			continue
@@ -170,7 +170,7 @@ func emitTSTypeOnlyExportRefs(exportNode *sitter.Node, src []byte, fileID string
 // the import_clause rather than a named field, so scan the statement's
 // raw children for it, stopping at the clause body.
 func tsImportStatementTypeOnly(importNode *sitter.Node, src []byte) bool {
-	for i := 0; i < int(importNode.ChildCount()); i++ {
+	for i, _nc := 0, int(importNode.ChildCount()); i < _nc; i++ {
 		c := importNode.Child(i)
 		if c == nil {
 			continue
@@ -189,7 +189,7 @@ func tsImportStatementTypeOnly(importNode *sitter.Node, src []byte) bool {
 // the statement-level `type` modifier (`export type { … } from`). The
 // keyword sits between `export` and the export_clause.
 func tsExportStatementTypeOnly(exportNode *sitter.Node, src []byte) bool {
-	for i := 0; i < int(exportNode.ChildCount()); i++ {
+	for i, _nc := 0, int(exportNode.ChildCount()); i < _nc; i++ {
 		c := exportNode.Child(i)
 		if c == nil {
 			continue
@@ -207,7 +207,7 @@ func tsExportStatementTypeOnly(exportNode *sitter.Node, src []byte) bool {
 // tsSpecifierTypeOnly reports whether a single import_specifier /
 // export_specifier carries an inline `type` modifier (`{ type Foo }`).
 func tsSpecifierTypeOnly(spec *sitter.Node, src []byte) bool {
-	for i := 0; i < int(spec.ChildCount()); i++ {
+	for i, _nc := 0, int(spec.ChildCount()); i < _nc; i++ {
 		c := spec.Child(i)
 		if c == nil {
 			continue
@@ -237,7 +237,7 @@ func emitTSClassHeritageRefs(classNode *sitter.Node, src []byte, filePath string
 	if heritage == nil {
 		return
 	}
-	for i := 0; i < int(heritage.NamedChildCount()); i++ {
+	for i, _nc := 0, int(heritage.NamedChildCount()); i < _nc; i++ {
 		clause := heritage.NamedChild(i)
 		if clause == nil {
 			continue
@@ -260,7 +260,7 @@ func emitTSClassHeritageRefs(classNode *sitter.Node, src []byte, filePath string
 			}
 		case "implements_clause":
 			line := int(clause.StartPoint().Row) + 1
-			for j := 0; j < int(clause.NamedChildCount()); j++ {
+			for j, _nc := 0, int(clause.NamedChildCount()); j < _nc; j++ {
 				t := clause.NamedChild(j)
 				if t == nil {
 					continue
@@ -287,7 +287,7 @@ func emitTSInterfaceHeritageRefs(ifaceNode *sitter.Node, src []byte, filePath st
 		return
 	}
 	line := int(clause.StartPoint().Row) + 1
-	for i := 0; i < int(clause.NamedChildCount()); i++ {
+	for i, _nc := 0, int(clause.NamedChildCount()); i < _nc; i++ {
 		t := clause.NamedChild(i)
 		if t == nil {
 			continue
@@ -336,7 +336,7 @@ func tsHeritageName(n *sitter.Node, src []byte) string {
 		if name := n.ChildByFieldName("name"); name != nil {
 			return tsHeritageName(name, src)
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c != nil && (c.Type() == "type_identifier" || c.Type() == "identifier" || c.Type() == "nested_type_identifier") {
 				return tsHeritageName(c, src)
@@ -352,7 +352,7 @@ func tsHeritageName(n *sitter.Node, src []byte) string {
 func tsTypeDeclID(declNode *sitter.Node, src []byte, filePath string) string {
 	name := declNode.ChildByFieldName("name")
 	if name == nil {
-		for i := 0; i < int(declNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(declNode.NamedChildCount()); i < _nc; i++ {
 			c := declNode.NamedChild(i)
 			if c != nil && (c.Type() == "type_identifier" || c.Type() == "identifier") {
 				name = c

@@ -169,7 +169,7 @@ func emitSwiftReferenceForms(root *sitter.Node, src []byte, filePath, fileID str
 			// dropped by emit, so a `[String]` or `Array<Int>` adds nothing.
 			line := int(n.StartPoint().Row) + 1
 			ownerID := owner(line)
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil || c.Type() != "user_type" {
 					continue
@@ -227,7 +227,7 @@ func swiftDeclaredTypeName(decl *sitter.Node, src []byte) string {
 	if decl == nil || decl.Type() != "class_declaration" {
 		return ""
 	}
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 		c := decl.NamedChild(i)
 		if c == nil {
 			continue
@@ -252,7 +252,7 @@ func swiftDeclaredTypeName(decl *sitter.Node, src []byte) string {
 // descendant child of n (the RHS type of a cast, type test, or inheritance
 // specifier), or "".
 func swiftTypeChildName(n *sitter.Node, src []byte) string {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -297,12 +297,12 @@ func isSwiftInitNavigation(n *sitter.Node, src []byte) bool {
 // swiftNavigationSuffixName returns the trailing member name of a
 // navigation_expression's navigation_suffix (`Foo.bar` → "bar"), or "".
 func swiftNavigationSuffixName(n *sitter.Node, src []byte) string {
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil || c.Type() != "navigation_suffix" {
 			continue
 		}
-		for j := 0; j < int(c.NamedChildCount()); j++ {
+		for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 			id := c.NamedChild(j)
 			if id != nil && id.Type() == "simple_identifier" {
 				return strings.TrimSpace(id.Content(src))

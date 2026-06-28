@@ -71,7 +71,7 @@ func emitPyAsyncSpawns(ownerID string, body *sitter.Node, src []byte, filePath s
 		case "await":
 			// `await foo()` parses as (await (call …)). Walk for
 			// the call node directly.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil || c.Type() != "call" {
 					continue
@@ -110,7 +110,7 @@ func walkPyNodes(n *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(n) {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkPyNodes(n.NamedChild(i), visit)
 	}
 }
@@ -137,7 +137,7 @@ func pyCallTargetName(call *sitter.Node, src []byte) string {
 
 func emitPyParamNodes(ownerID string, params *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
 	pos := 0
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		decl := params.NamedChild(i)
 		if decl == nil {
 			continue
@@ -200,7 +200,7 @@ func pyParamShape(decl *sitter.Node, src []byte) (string, string, bool) {
 		// (typed_parameter name: (identifier) type: (type))
 		var name, typ string
 		variadic := false
-		for i := 0; i < int(decl.NamedChildCount()); i++ {
+		for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 			c := decl.NamedChild(i)
 			if c == nil {
 				continue
@@ -214,7 +214,7 @@ func pyParamShape(decl *sitter.Node, src []byte) (string, string, bool) {
 				typ = strings.TrimSpace(c.Content(src))
 			case "list_splat_pattern":
 				variadic = true
-				for j := 0; j < int(c.NamedChildCount()); j++ {
+				for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 					cc := c.NamedChild(j)
 					if cc != nil && cc.Type() == "identifier" {
 						name = cc.Content(src)
@@ -222,7 +222,7 @@ func pyParamShape(decl *sitter.Node, src []byte) (string, string, bool) {
 				}
 			case "dictionary_splat_pattern":
 				variadic = true
-				for j := 0; j < int(c.NamedChildCount()); j++ {
+				for j, _nc := 0, int(c.NamedChildCount()); j < _nc; j++ {
 					cc := c.NamedChild(j)
 					if cc != nil && cc.Type() == "identifier" {
 						name = cc.Content(src)
@@ -248,7 +248,7 @@ func pyParamShape(decl *sitter.Node, src []byte) (string, string, bool) {
 		return name, typ, false
 	case "list_splat_pattern":
 		// *args bare (no annotation)
-		for i := 0; i < int(decl.NamedChildCount()); i++ {
+		for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 			c := decl.NamedChild(i)
 			if c != nil && c.Type() == "identifier" {
 				return c.Content(src), "", true
@@ -256,7 +256,7 @@ func pyParamShape(decl *sitter.Node, src []byte) (string, string, bool) {
 		}
 	case "dictionary_splat_pattern":
 		// **kwargs bare
-		for i := 0; i < int(decl.NamedChildCount()); i++ {
+		for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
 			c := decl.NamedChild(i)
 			if c != nil && c.Type() == "identifier" {
 				return c.Content(src), "", true
@@ -267,7 +267,7 @@ func pyParamShape(decl *sitter.Node, src []byte) (string, string, bool) {
 }
 
 func pyReturnTypeRaw(funcNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(funcNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(funcNode.NamedChildCount()); i < _nc; i++ {
 		c := funcNode.NamedChild(i)
 		if c != nil && c.Type() == "type" {
 			return strings.TrimSpace(c.Content(src))
@@ -329,7 +329,7 @@ func emitPyGenericParamNodes(ownerID string, funcNode *sitter.Node, src []byte, 
 	if tparams == nil {
 		return
 	}
-	for i := 0; i < int(tparams.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tparams.NamedChildCount()); i < _nc; i++ {
 		tp := tparams.NamedChild(i)
 		if tp == nil || tp.Type() != "type_parameter" {
 			continue
@@ -340,7 +340,7 @@ func emitPyGenericParamNodes(ownerID string, funcNode *sitter.Node, src []byte, 
 		}
 		if name == "" {
 			// Fallback: first identifier child.
-			for j := 0; j < int(tp.NamedChildCount()); j++ {
+			for j, _nc := 0, int(tp.NamedChildCount()); j < _nc; j++ {
 				c := tp.NamedChild(j)
 				if c != nil && c.Type() == "identifier" {
 					name = c.Content(src)

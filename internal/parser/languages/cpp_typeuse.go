@@ -277,7 +277,7 @@ func collectCppTypeUseEdges(root *sitter.Node, funcRanges []funcRange, filePath 
 				}
 			}
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}

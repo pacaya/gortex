@@ -36,7 +36,7 @@ func (e *ProtobufExtractor) Extract(filePath string, src []byte) (*parser.Extrac
 	result.Nodes = append(result.Nodes, fileNode)
 	seen := make(map[string]bool)
 
-	for i := 0; i < int(root.NamedChildCount()); i++ {
+	for i, _nc := 0, int(root.NamedChildCount()); i < _nc; i++ {
 		child := root.NamedChild(i)
 		switch child.Type() {
 		case "message":
@@ -70,10 +70,10 @@ func (e *ProtobufExtractor) extractMessage(node *sitter.Node, src []byte, filePa
 		FilePath: filePath, Line: int(node.StartPoint().Row) + 1,
 	})
 
-	for j := 0; j < int(node.NamedChildCount()); j++ {
+	for j, _nc := 0, int(node.NamedChildCount()); j < _nc; j++ {
 		body := node.NamedChild(j)
 		if body.Type() == "message_body" {
-			for k := 0; k < int(body.NamedChildCount()); k++ {
+			for k, _nc := 0, int(body.NamedChildCount()); k < _nc; k++ {
 				field := body.NamedChild(k)
 				if field.Type() == "field" {
 					fieldName := findDirectIdent(field, src)
@@ -107,7 +107,7 @@ func (e *ProtobufExtractor) extractService(node *sitter.Node, src []byte, filePa
 	id := filePath + "::" + name
 
 	var methods []string
-	for j := 0; j < int(node.NamedChildCount()); j++ {
+	for j, _nc := 0, int(node.NamedChildCount()); j < _nc; j++ {
 		child := node.NamedChild(j)
 		if child.Type() == "rpc" {
 			rpcName := findProtoName(child, "rpc_name", src)
@@ -127,7 +127,7 @@ func (e *ProtobufExtractor) extractService(node *sitter.Node, src []byte, filePa
 		FilePath: filePath, Line: int(node.StartPoint().Row) + 1,
 	})
 
-	for j := 0; j < int(node.NamedChildCount()); j++ {
+	for j, _nc := 0, int(node.NamedChildCount()); j < _nc; j++ {
 		child := node.NamedChild(j)
 		if child.Type() == "rpc" {
 			rpcName := findProtoName(child, "rpc_name", src)
@@ -173,7 +173,7 @@ func (e *ProtobufExtractor) extractEnum(node *sitter.Node, src []byte, filePath,
 }
 
 func (e *ProtobufExtractor) extractImport(node *sitter.Node, src []byte, filePath, fileID string, result *parser.ExtractionResult) {
-	for j := 0; j < int(node.NamedChildCount()); j++ {
+	for j, _nc := 0, int(node.NamedChildCount()); j < _nc; j++ {
 		child := node.NamedChild(j)
 		if child.Type() == "string" {
 			path := child.Content(src)
@@ -189,10 +189,10 @@ func (e *ProtobufExtractor) extractImport(node *sitter.Node, src []byte, filePat
 }
 
 func findProtoName(node *sitter.Node, nameType string, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == nameType {
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				id := child.NamedChild(j)
 				if id.Type() == "identifier" {
 					return id.Content(src)
@@ -205,7 +205,7 @@ func findProtoName(node *sitter.Node, nameType string, src []byte) string {
 }
 
 func findDirectIdent(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "identifier" {
 			return child.Content(src)

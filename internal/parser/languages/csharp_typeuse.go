@@ -186,7 +186,7 @@ func emitCSharpReferenceForms(root *sitter.Node, src []byte, filePath, fileID st
 			// manual recursion. Predefined primitives (`int`, `string`) parse
 			// as predefined_type and are skipped; the canon/primitive/
 			// capitalization gate in emit drops everything else lowercase.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				arg := n.NamedChild(i)
 				if arg == nil {
 					continue
@@ -232,7 +232,7 @@ func csharpFirstChildOfType(node *sitter.Node, nodeType string) *sitter.Node {
 	if node == nil {
 		return nil
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c != nil && c.Type() == nodeType {
 			return c
@@ -249,7 +249,7 @@ func csharpCreationTypeName(n *sitter.Node, src []byte) string {
 	if t := n.ChildByFieldName("type"); t != nil {
 		return strings.TrimSpace(t.Content(src))
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -269,7 +269,7 @@ func csharpArrayElementTypeName(arrayType *sitter.Node, src []byte) string {
 	if t := arrayType.ChildByFieldName("type"); t != nil {
 		return strings.TrimSpace(t.Content(src))
 	}
-	for i := 0; i < int(arrayType.NamedChildCount()); i++ {
+	for i, _nc := 0, int(arrayType.NamedChildCount()); i < _nc; i++ {
 		c := arrayType.NamedChild(i)
 		if c == nil {
 			continue
@@ -331,7 +331,7 @@ func csharpIsPatternTypeName(n *sitter.Node, src []byte) string {
 	switch pat.Type() {
 	case "declaration_pattern", "recursive_pattern":
 		// `Foo f` — the type is the leading type token.
-		for i := 0; i < int(pat.NamedChildCount()); i++ {
+		for i, _nc := 0, int(pat.NamedChildCount()); i < _nc; i++ {
 			c := pat.NamedChild(i)
 			if c == nil {
 				continue
@@ -357,7 +357,7 @@ func csharpUnaryTypeArgName(n *sitter.Node, src []byte) string {
 	if t := n.ChildByFieldName("type"); t != nil {
 		return strings.TrimSpace(t.Content(src))
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue
@@ -408,12 +408,12 @@ func csharpNameofTypeArg(n *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg == nil || arg.Type() != "argument" {
 			continue
 		}
-		for j := 0; j < int(arg.NamedChildCount()); j++ {
+		for j, _nc := 0, int(arg.NamedChildCount()); j < _nc; j++ {
 			c := arg.NamedChild(j)
 			if c == nil {
 				continue
@@ -434,7 +434,7 @@ func csharpAttributeTypeName(n *sitter.Node, src []byte) string {
 	if nm := n.ChildByFieldName("name"); nm != nil {
 		return strings.TrimSpace(nm.Content(src))
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		c := n.NamedChild(i)
 		if c == nil {
 			continue

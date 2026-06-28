@@ -34,15 +34,15 @@ var goSQLExecMethods = map[string]struct{}{
 	"Exec":            {},
 	"ExecContext":     {},
 	"Prepare":         {},
-	"PrepareContext": {},
+	"PrepareContext":  {},
 	// sqlx
-	"Get":         {},
-	"GetContext":  {},
-	"Select":      {},
+	"Get":           {},
+	"GetContext":    {},
+	"Select":        {},
 	"SelectContext": {},
-	"NamedExec":   {},
-	"NamedQuery":  {},
-	"MustExec":    {},
+	"NamedExec":     {},
+	"NamedQuery":    {},
+	"MustExec":      {},
 	// pgx
 	"QueryRowContextScan": {},
 }
@@ -81,7 +81,7 @@ func detectGoSQLCall(callExpr *sitter.Node, method string, src []byte) ([]sql.Ta
 	if args == nil {
 		return nil, nil, "", false
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		c := args.NamedChild(i)
 		if c == nil {
 			continue
@@ -111,21 +111,21 @@ func detectGoSQLCall(callExpr *sitter.Node, method string, src []byte) ([]sql.Ta
 // suffix still resolves to postgres via prefix-stripped lookup).
 var goSQLDriverDialects = map[string]string{
 	// Postgres
-	"github.com/lib/pq":               "postgres",
-	"github.com/jackc/pgx":            "postgres",
-	"github.com/jackc/pgx/v4":         "postgres",
-	"github.com/jackc/pgx/v5":         "postgres",
-	"github.com/jackc/pgconn":         "postgres",
-	"github.com/jackc/pgxpool":        "postgres",
+	"github.com/lib/pq":        "postgres",
+	"github.com/jackc/pgx":     "postgres",
+	"github.com/jackc/pgx/v4":  "postgres",
+	"github.com/jackc/pgx/v5":  "postgres",
+	"github.com/jackc/pgconn":  "postgres",
+	"github.com/jackc/pgxpool": "postgres",
 	// MySQL / MariaDB
-	"github.com/go-sql-driver/mysql": "mysql",
+	"github.com/go-sql-driver/mysql":   "mysql",
 	"github.com/go-mysql-org/go-mysql": "mysql",
 	// SQLite
-	"github.com/mattn/go-sqlite3":    "sqlite",
-	"github.com/glebarez/go-sqlite":  "sqlite",
-	"modernc.org/sqlite":             "sqlite",
+	"github.com/mattn/go-sqlite3":   "sqlite",
+	"github.com/glebarez/go-sqlite": "sqlite",
+	"modernc.org/sqlite":            "sqlite",
 	// SQL Server
-	"github.com/microsoft/go-mssqldb": "mssql",
+	"github.com/microsoft/go-mssqldb":  "mssql",
 	"github.com/denisenkom/go-mssqldb": "mssql",
 }
 

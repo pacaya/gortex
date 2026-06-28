@@ -29,7 +29,7 @@ func emitCSharpFunctionShape(ownerID string, methodNode *sitter.Node, src []byte
 
 func emitCSharpParamNodes(ownerID string, params *sitter.Node, src []byte, filePath string, declLine int, result *parser.ExtractionResult) {
 	pos := 0
-	for i := 0; i < int(params.NamedChildCount()); i++ {
+	for i, _nc := 0, int(params.NamedChildCount()); i < _nc; i++ {
 		decl := params.NamedChild(i)
 		if decl == nil {
 			continue
@@ -46,7 +46,7 @@ func emitCSharpParamNodes(ownerID string, params *sitter.Node, src []byte, fileP
 			typeRaw = strings.TrimSpace(t.Content(src))
 		}
 		// Look for `params` modifier — variadic in C#.
-		for j := 0; j < int(decl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 			c := decl.NamedChild(j)
 			if c != nil && c.Type() == "parameter_modifier" && strings.Contains(c.Content(src), "params") {
 				variadic = true
@@ -137,7 +137,7 @@ func emitCSharpReturnEdges(ownerID, returnText, filePath string, line int, resul
 func emitCSharpGenericParamNodes(ownerID string, methodNode *sitter.Node, src []byte, filePath string, line int, result *parser.ExtractionResult) {
 	tparams := methodNode.ChildByFieldName("type_parameters")
 	if tparams == nil {
-		for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+		for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 			c := methodNode.NamedChild(i)
 			if c != nil && c.Type() == "type_parameter_list" {
 				tparams = c
@@ -148,13 +148,13 @@ func emitCSharpGenericParamNodes(ownerID string, methodNode *sitter.Node, src []
 	if tparams == nil {
 		return
 	}
-	for i := 0; i < int(tparams.NamedChildCount()); i++ {
+	for i, _nc := 0, int(tparams.NamedChildCount()); i < _nc; i++ {
 		tp := tparams.NamedChild(i)
 		if tp == nil || tp.Type() != "type_parameter" {
 			continue
 		}
 		var name string
-		for j := 0; j < int(tp.NamedChildCount()); j++ {
+		for j, _nc := 0, int(tp.NamedChildCount()); j < _nc; j++ {
 			c := tp.NamedChild(j)
 			if c != nil && c.Type() == "identifier" {
 				name = c.Content(src)
@@ -296,7 +296,7 @@ func emitCSharpAsyncSpawns(ownerID string, body *sitter.Node, src []byte, filePa
 			line := int(n.StartPoint().Row) + 1
 			// Look for an inner invocation_expression to grab the
 			// callee name.
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c == nil {
 					continue
@@ -353,7 +353,7 @@ func walkCSharpNodes(n *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(n) {
 		return
 	}
-	for i := 0; i < int(n.NamedChildCount()); i++ {
+	for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 		walkCSharpNodes(n.NamedChild(i), visit)
 	}
 }
@@ -389,7 +389,7 @@ func csharpFunctionBody(methodNode *sitter.Node) *sitter.Node {
 	if b := methodNode.ChildByFieldName("body"); b != nil {
 		return b
 	}
-	for i := 0; i < int(methodNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(methodNode.NamedChildCount()); i < _nc; i++ {
 		c := methodNode.NamedChild(i)
 		if c != nil && c.Type() == "block" {
 			return c

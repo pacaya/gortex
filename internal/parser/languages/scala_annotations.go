@@ -33,7 +33,7 @@ func emitScalaAnnotationEdges(
 	if defNode == nil || fromID == "" {
 		return
 	}
-	for i := 0; i < int(defNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(defNode.NamedChildCount()); i < _nc; i++ {
 		c := defNode.NamedChild(i)
 		if c == nil || c.Type() != "annotation" {
 			continue
@@ -62,7 +62,7 @@ func scalaAnnotationNameAndArgs(annot *sitter.Node, src []byte) (string, string)
 		return "", ""
 	}
 	var name, args string
-	for i := 0; i < int(annot.NamedChildCount()); i++ {
+	for i, _nc := 0, int(annot.NamedChildCount()); i < _nc; i++ {
 		c := annot.NamedChild(i)
 		if c == nil {
 			continue

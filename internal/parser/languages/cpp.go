@@ -254,7 +254,7 @@ func (e *CppExtractor) emitClass(m parser.QueryResult, filePath, fileID string, 
 
 func (e *CppExtractor) walkClassBody(classNode *sitter.Node, src []byte, filePath, fileID, className, classID string, seen map[string]bool, result *parser.ExtractionResult) {
 	var body *sitter.Node
-	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(classNode.NamedChildCount()); i < _nc; i++ {
 		child := classNode.NamedChild(i)
 		if child.Type() == "field_declaration_list" {
 			body = child
@@ -265,7 +265,7 @@ func (e *CppExtractor) walkClassBody(classNode *sitter.Node, src []byte, filePat
 		return
 	}
 	typeSeen := make(map[string]bool)
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		child := body.NamedChild(i)
 		switch child.Type() {
 		case "access_specifier":
@@ -282,7 +282,7 @@ func (e *CppExtractor) walkClassBody(classNode *sitter.Node, src []byte, filePat
 				emitCppTypeUseEdges(classID, tn.Content(src), filePath, line, result, typeSeen)
 			}
 		case "declaration_list":
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				gc := child.NamedChild(j)
 				if gc.Type() == "function_definition" {
 					e.addMethodFromNode(gc, src, filePath, fileID, className, classID, seen, result)
@@ -385,7 +385,7 @@ func (e *CppExtractor) emitCppStructFieldTypeUse(structNode *sitter.Node, ownerI
 		return
 	}
 	var body *sitter.Node
-	for i := 0; i < int(structNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(structNode.NamedChildCount()); i < _nc; i++ {
 		child := structNode.NamedChild(i)
 		if child.Type() == "field_declaration_list" {
 			body = child
@@ -396,7 +396,7 @@ func (e *CppExtractor) emitCppStructFieldTypeUse(structNode *sitter.Node, ownerI
 		return
 	}
 	typeSeen := make(map[string]bool)
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		child := body.NamedChild(i)
 		if child.Type() != "field_declaration" {
 			continue
@@ -490,10 +490,10 @@ func (e *CppExtractor) emitInclude(m parser.QueryResult, filePath, fileID string
 // extractFuncName walks a function_definition node to find the function name.
 // It handles both `identifier` (free functions) and `field_identifier` (methods).
 func extractFuncName(funcNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(funcNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(funcNode.NamedChildCount()); i < _nc; i++ {
 		child := funcNode.NamedChild(i)
 		if child.Type() == "function_declarator" {
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				gc := child.NamedChild(j)
 				switch gc.Type() {
 				case "identifier", "field_identifier", "destructor_name":
@@ -510,7 +510,7 @@ func extractFuncName(funcNode *sitter.Node, src []byte) string {
 // lastIdentifier extracts the last identifier from a qualified_identifier.
 func lastIdentifier(node *sitter.Node, src []byte) string {
 	name := ""
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		switch child.Type() {
 		case "identifier", "field_identifier", "destructor_name":
@@ -563,12 +563,12 @@ func extractCppParentClass(classNode *sitter.Node, src []byte) string {
 	if classNode == nil {
 		return ""
 	}
-	for i := 0; i < int(classNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(classNode.NamedChildCount()); i < _nc; i++ {
 		child := classNode.NamedChild(i)
 		if child.Type() != "base_class_clause" {
 			continue
 		}
-		for j := 0; j < int(child.NamedChildCount()); j++ {
+		for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 			sub := child.NamedChild(j)
 			switch sub.Type() {
 			case "type_identifier", "qualified_identifier":
@@ -601,7 +601,7 @@ func extractCppCallArgTypes(callNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var out []string
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		typeName := cppArgTypeHint(arg, src)
 		if typeName == "" {

@@ -254,7 +254,7 @@ func (e *RubyExtractor) emitRubyMixin(macro, typeID string, call *sitter.Node, s
 		return false
 	}
 	emitted := false
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg.Type() != "constant" && arg.Type() != "scope_resolution" {
 			continue
@@ -287,7 +287,7 @@ func applyRubyVisibility(root *sitter.Node, src []byte, filePath string, result 
 	}
 	var walk func(n *sitter.Node)
 	walk = func(n *sitter.Node) {
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c.Type() == "class" || c.Type() == "module" {
 				nameNode := c.ChildByFieldName("name")
@@ -313,7 +313,7 @@ func applyRubyBodyVisibility(body *sitter.Node, src []byte, filePath, className 
 			n.Meta["visibility"] = vis
 		}
 	}
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		c := body.NamedChild(i)
 		switch c.Type() {
 		case "identifier":
@@ -331,7 +331,7 @@ func applyRubyBodyVisibility(body *sitter.Node, src []byte, filePath, className 
 			}
 			// Targeted form `private :a, :b` — flip only the named methods.
 			if args := c.ChildByFieldName("arguments"); args != nil {
-				for i := 0; i < int(args.NamedChildCount()); i++ {
+				for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 					for _, sym := range collectRubySymbols(args.NamedChild(i), src) {
 						setVis(sym, vis)
 					}
@@ -621,7 +621,7 @@ func emitRailsCallbacks(root *sitter.Node, src []byte, filePath string, result *
 			// this synthetic edge.
 			methodIDs := make(map[string]string)
 			var bodyStatements *sitter.Node
-			for i := 0; i < int(n.NamedChildCount()); i++ {
+			for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 				c := n.NamedChild(i)
 				if c != nil && c.Type() == "body_statement" {
 					bodyStatements = c
@@ -633,7 +633,7 @@ func emitRailsCallbacks(root *sitter.Node, src []byte, filePath string, result *
 			}
 			// Collect methods first so callback macros can resolve
 			// symbol names to concrete IDs.
-			for i := 0; i < int(bodyStatements.NamedChildCount()); i++ {
+			for i, _nc := 0, int(bodyStatements.NamedChildCount()); i < _nc; i++ {
 				c := bodyStatements.NamedChild(i)
 				if c == nil {
 					continue
@@ -653,7 +653,7 @@ func emitRailsCallbacks(root *sitter.Node, src []byte, filePath string, result *
 			// `before_action :a; before_action :b` ends up binding a
 			// to guard b and vice versa.
 			allCallbacks := make(map[string]struct{})
-			for i := 0; i < int(bodyStatements.NamedChildCount()); i++ {
+			for i, _nc := 0, int(bodyStatements.NamedChildCount()); i < _nc; i++ {
 				c := bodyStatements.NamedChild(i)
 				if c == nil || c.Type() != "call" {
 					continue
@@ -669,7 +669,7 @@ func emitRailsCallbacks(root *sitter.Node, src []byte, filePath string, result *
 				if args == nil {
 					continue
 				}
-				for i := 0; i < int(args.NamedChildCount()); i++ {
+				for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 					arg := args.NamedChild(i)
 					if arg != nil && arg.Type() == "simple_symbol" {
 						allCallbacks[strings.TrimPrefix(arg.Content(src), ":")] = struct{}{}
@@ -677,7 +677,7 @@ func emitRailsCallbacks(root *sitter.Node, src []byte, filePath string, result *
 				}
 			}
 			// Second pass: emit edges.
-			for i := 0; i < int(bodyStatements.NamedChildCount()); i++ {
+			for i, _nc := 0, int(bodyStatements.NamedChildCount()); i < _nc; i++ {
 				c := bodyStatements.NamedChild(i)
 				if c == nil || c.Type() != "call" {
 					continue
@@ -698,7 +698,7 @@ func emitRailsCallbacks(root *sitter.Node, src []byte, filePath string, result *
 			}
 			return
 		}
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			walk(n.NamedChild(i))
 		}
 	}
@@ -715,7 +715,7 @@ func emitRailsCallbackEdges(args *sitter.Node, src []byte, filePath string, line
 	exceptFilter := map[string]struct{}{}
 	hasOnly := false
 	hasExcept := false
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg == nil {
 			continue
@@ -821,7 +821,7 @@ func collectRubySymbols(n *sitter.Node, src []byte) []string {
 	case "simple_symbol":
 		out = append(out, strings.TrimPrefix(n.Content(src), ":"))
 	case "array":
-		for i := 0; i < int(n.NamedChildCount()); i++ {
+		for i, _nc := 0, int(n.NamedChildCount()); i < _nc; i++ {
 			c := n.NamedChild(i)
 			if c != nil && c.Type() == "simple_symbol" {
 				out = append(out, strings.TrimPrefix(c.Content(src), ":"))

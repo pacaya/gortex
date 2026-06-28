@@ -509,7 +509,7 @@ func pyWalkRaises(node *sitter.Node, src []byte, fromID, filePath string, fromLi
 		}
 		return
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		// Don't descend into nested function/class bodies — their raises
 		// belong to those functions, not to us.
@@ -528,7 +528,7 @@ func pyWalkRaises(node *sitter.Node, src []byte, fromID, filePath string, fromLi
 // and chained `raise X from Y` (we record X). Returns "" for bare
 // `raise` (re-raise).
 func pyRaiseExceptionName(raise *sitter.Node, src []byte) string {
-	for i := 0; i < int(raise.NamedChildCount()); i++ {
+	for i, _nc := 0, int(raise.NamedChildCount()); i < _nc; i++ {
 		c := raise.NamedChild(i)
 		if c == nil {
 			continue
@@ -603,7 +603,7 @@ func pyDecoratorNodes(defNode *sitter.Node) []*sitter.Node {
 		return nil
 	}
 	var out []*sitter.Node
-	for i := 0; i < int(parent.ChildCount()); i++ {
+	for i, _nc := 0, int(parent.ChildCount()); i < _nc; i++ {
 		c := parent.Child(i)
 		if c != nil && c.Type() == "decorator" {
 			out = append(out, c)
@@ -634,7 +634,7 @@ func pyDecoratorNameAndArgs(dec *sitter.Node, src []byte) (string, string) {
 	if dec == nil {
 		return "", ""
 	}
-	for i := 0; i < int(dec.NamedChildCount()); i++ {
+	for i, _nc := 0, int(dec.NamedChildCount()); i < _nc; i++ {
 		c := dec.NamedChild(i)
 		if c == nil {
 			continue
@@ -673,7 +673,7 @@ func pyDocstringFromDef(defNode *sitter.Node, src []byte) string {
 	if body == nil {
 		return ""
 	}
-	for i := 0; i < int(body.NamedChildCount()); i++ {
+	for i, _nc := 0, int(body.NamedChildCount()); i < _nc; i++ {
 		stmt := body.NamedChild(i)
 		if stmt == nil {
 			continue
@@ -682,7 +682,7 @@ func pyDocstringFromDef(defNode *sitter.Node, src []byte) string {
 			return ""
 		}
 		// Walk into expression_statement to find a string literal.
-		for j := 0; j < int(stmt.NamedChildCount()); j++ {
+		for j, _nc := 0, int(stmt.NamedChildCount()); j < _nc; j++ {
 			c := stmt.NamedChild(j)
 			if c == nil {
 				continue
@@ -711,7 +711,7 @@ func (e *PythonExtractor) emitImport(m parser.QueryResult, filePath, fileID stri
 		return
 	}
 	stmt := def.Node
-	for i := 0; i < int(stmt.NamedChildCount()); i++ {
+	for i, _nc := 0, int(stmt.NamedChildCount()); i < _nc; i++ {
 		child := stmt.NamedChild(i)
 		switch child.Type() {
 		case "dotted_name":
@@ -723,7 +723,7 @@ func (e *PythonExtractor) emitImport(m parser.QueryResult, filePath, fileID stri
 			imports[alias] = dotted
 		case "aliased_import":
 			var modulePath, alias string
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				cc := child.NamedChild(j)
 				switch cc.Type() {
 				case "dotted_name":
@@ -764,7 +764,7 @@ func (e *PythonExtractor) emitImportFrom(m parser.QueryResult, filePath, fileID 
 	// the optional `as <alias>`. `wildcard_import` (`from X import *`)
 	// is intentionally skipped — there's no specific name to bind.
 	moduleSeen := false
-	for i := 0; i < int(stmt.NamedChildCount()); i++ {
+	for i, _nc := 0, int(stmt.NamedChildCount()); i < _nc; i++ {
 		child := stmt.NamedChild(i)
 		switch child.Type() {
 		case "dotted_name":
@@ -779,7 +779,7 @@ func (e *PythonExtractor) emitImportFrom(m parser.QueryResult, filePath, fileID 
 			imports[name] = mod.Text + "." + name
 		case "aliased_import":
 			var importedName, alias string
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				cc := child.NamedChild(j)
 				switch cc.Type() {
 				case "dotted_name":
@@ -816,7 +816,7 @@ func (e *PythonExtractor) emitImportFromRelative(m parser.QueryResult, filePath,
 	relNode := relCap.Node
 	dots := 0
 	modPath := ""
-	for i := 0; i < int(relNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(relNode.NamedChildCount()); i < _nc; i++ {
 		child := relNode.NamedChild(i)
 		switch child.Type() {
 		case "import_prefix":
@@ -829,7 +829,7 @@ func (e *PythonExtractor) emitImportFromRelative(m parser.QueryResult, filePath,
 	// scan all children for `.` tokens when the named-child walk yields
 	// zero dots so we don't silently drop `from . import x`.
 	if dots == 0 {
-		for i := 0; i < int(relNode.ChildCount()); i++ {
+		for i, _nc := 0, int(relNode.ChildCount()); i < _nc; i++ {
 			child := relNode.Child(i)
 			if child.Type() == "." {
 				dots++
@@ -885,7 +885,7 @@ func (e *PythonExtractor) emitImportFromRelative(m parser.QueryResult, filePath,
 			Kind: graph.EdgeImports, FilePath: filePath, Line: importLine,
 		})
 	}
-	for i := 0; i < int(stmt.NamedChildCount()); i++ {
+	for i, _nc := 0, int(stmt.NamedChildCount()); i < _nc; i++ {
 		child := stmt.NamedChild(i)
 		switch child.Type() {
 		case "relative_import":
@@ -900,7 +900,7 @@ func (e *PythonExtractor) emitImportFromRelative(m parser.QueryResult, filePath,
 			emitSubmodule(name, "")
 		case "aliased_import":
 			var importedName, alias string
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				cc := child.NamedChild(j)
 				switch cc.Type() {
 				case "dotted_name":
@@ -1087,7 +1087,7 @@ func firstIdentifierArg(callNode *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		arg := args.NamedChild(i)
 		if arg == nil {
 			continue
@@ -1108,7 +1108,7 @@ func firstIdentifierArg(callNode *sitter.Node, src []byte) string {
 // extractPyReturnType walks a function_definition node for a return_type child
 // (the `-> Type` annotation) and returns the normalized type name.
 func extractPyReturnType(funcNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(funcNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(funcNode.NamedChildCount()); i < _nc; i++ {
 		child := funcNode.NamedChild(i)
 		if child.Type() == "type" {
 			// Check if preceding sibling token is "->".

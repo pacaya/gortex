@@ -88,7 +88,7 @@ func (e *ElixirExtractor) walkNode(node *sitter.Node, src []byte, filePath, file
 	}
 
 	// Recurse into children.
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		e.walkNode(child, src, filePath, fileID, currentModule, result, seen)
 	}
@@ -96,7 +96,7 @@ func (e *ElixirExtractor) walkNode(node *sitter.Node, src []byte, filePath, file
 
 // getCallTarget returns the identifier name of a call's target, or "".
 func (e *ElixirExtractor) getCallTarget(callNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(callNode.ChildCount()); i++ {
+	for i, _nc := 0, int(callNode.ChildCount()); i < _nc; i++ {
 		child := callNode.Child(i)
 		if callNode.FieldNameForChild(i) == "target" && child.Type() == "identifier" {
 			return child.Content(src)
@@ -131,7 +131,7 @@ func (e *ElixirExtractor) handleDefmodule(callNode *sitter.Node, src []byte, fil
 	// Walk children with module context so functions become methods.
 	body := e.findDoBlock(callNode)
 	if body != nil {
-		for i := 0; i < int(body.ChildCount()); i++ {
+		for i, _nc := 0, int(body.ChildCount()); i < _nc; i++ {
 			e.walkNode(body.Child(i), src, filePath, fileID, modName, result, seen)
 		}
 		// Phoenix plug dispatch: `plug :name` (optionally with
@@ -245,7 +245,7 @@ func (e *ElixirExtractor) handleAttribute(node *sitter.Node, src []byte, filePat
 	}
 	// Check if operator is "@".
 	opText := ""
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child.Type() == "@" || (node.FieldNameForChild(i) == "operator" && child.Content(src) == "@") {
 			opText = "@"
@@ -258,7 +258,7 @@ func (e *ElixirExtractor) handleAttribute(node *sitter.Node, src []byte, filePat
 
 	// The operand is typically a call node with the attribute name as target.
 	attrName := ""
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		fieldName := node.FieldNameForChild(i)
 		if fieldName == "operand" {
@@ -306,7 +306,7 @@ func (e *ElixirExtractor) collectCalls(node *sitter.Node, src []byte, filePath, 
 	if node.Type() == "call" {
 		e.emitCallEdge(node, src, filePath, callerID, result)
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		e.collectCalls(node.Child(i), src, filePath, callerID, result)
 	}
 }
@@ -317,7 +317,7 @@ func (e *ElixirExtractor) collectCalls(node *sitter.Node, src []byte, filePath, 
 // (unresolved::name), filtered against elixirKeywords / do / end.
 func (e *ElixirExtractor) emitCallEdge(callNode *sitter.Node, src []byte, filePath, callerID string, result *parser.ExtractionResult) {
 	line := int(callNode.StartPoint().Row) + 1
-	for i := 0; i < int(callNode.ChildCount()); i++ {
+	for i, _nc := 0, int(callNode.ChildCount()); i < _nc; i++ {
 		child := callNode.Child(i)
 		if child == nil || callNode.FieldNameForChild(i) != "target" {
 			continue
@@ -349,7 +349,7 @@ func (e *ElixirExtractor) emitCallEdge(callNode *sitter.Node, src []byte, filePa
 // dotCallMethod returns the right-hand identifier of a `dot` node
 // (the method name in `Module.method`), or "" when absent.
 func (e *ElixirExtractor) dotCallMethod(dotNode *sitter.Node, src []byte) string {
-	for i := 0; i < int(dotNode.ChildCount()); i++ {
+	for i, _nc := 0, int(dotNode.ChildCount()); i < _nc; i++ {
 		child := dotNode.Child(i)
 		if child != nil && dotNode.FieldNameForChild(i) == "right" && child.Type() == "identifier" {
 			return child.Content(src)
@@ -367,7 +367,7 @@ func (e *ElixirExtractor) extractModuleName(callNode *sitter.Node, src []byte) s
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		child := args.NamedChild(i)
 		t := child.Type()
 		if t == "alias" || t == "dot" {
@@ -392,7 +392,7 @@ func (e *ElixirExtractor) extractFuncName(callNode *sitter.Node, src []byte) str
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i, _nc := 0, int(args.NamedChildCount()); i < _nc; i++ {
 		child := args.NamedChild(i)
 		if child.Type() == "call" {
 			// def func_name(args) -> call target is func_name
@@ -405,7 +405,7 @@ func (e *ElixirExtractor) extractFuncName(callNode *sitter.Node, src []byte) str
 		if child.Type() == "binary_operator" {
 			// Pattern: def func_name(args) when guard -> binary_operator with "when"
 			// The left side should be the call with the function name.
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				sub := child.NamedChild(j)
 				if sub.Type() == "call" {
 					name := e.getCallTarget(sub, src)
@@ -438,7 +438,7 @@ func (e *ElixirExtractor) extractFirstArgText(callNode *sitter.Node, src []byte)
 // In Elixir's tree-sitter grammar, the arguments node has no field name,
 // so we find it by its node type.
 func (e *ElixirExtractor) findArguments(callNode *sitter.Node) *sitter.Node {
-	for i := 0; i < int(callNode.ChildCount()); i++ {
+	for i, _nc := 0, int(callNode.ChildCount()); i < _nc; i++ {
 		child := callNode.Child(i)
 		if child.Type() == "arguments" {
 			return child
@@ -449,7 +449,7 @@ func (e *ElixirExtractor) findArguments(callNode *sitter.Node) *sitter.Node {
 
 // findDoBlock locates the do-block body within a call node.
 func (e *ElixirExtractor) findDoBlock(callNode *sitter.Node) *sitter.Node {
-	for i := 0; i < int(callNode.ChildCount()); i++ {
+	for i, _nc := 0, int(callNode.ChildCount()); i < _nc; i++ {
 		child := callNode.Child(i)
 		if child.Type() == "do_block" {
 			return child
@@ -458,7 +458,7 @@ func (e *ElixirExtractor) findDoBlock(callNode *sitter.Node) *sitter.Node {
 	// Also check inside arguments for inline do blocks.
 	args := e.findArguments(callNode)
 	if args != nil {
-		for i := 0; i < int(args.ChildCount()); i++ {
+		for i, _nc := 0, int(args.ChildCount()); i < _nc; i++ {
 			child := args.Child(i)
 			if child.Type() == "do_block" {
 				return child
@@ -484,7 +484,7 @@ func (e *ElixirExtractor) emitPhoenixPlugBindings(body *sitter.Node, src []byte,
 	actions := make(map[string]int) // name → start line
 	allPlugs := make(map[string]struct{})
 
-	for i := 0; i < int(body.ChildCount()); i++ {
+	for i, _nc := 0, int(body.ChildCount()); i < _nc; i++ {
 		c := body.Child(i)
 		if c == nil || c.Type() != "call" {
 			continue
@@ -551,7 +551,7 @@ type phoenixPlugParsed struct {
 func parsePhoenixPlugCall(callNode *sitter.Node, src []byte) phoenixPlugParsed {
 	var out phoenixPlugParsed
 	var args *sitter.Node
-	for i := 0; i < int(callNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(callNode.NamedChildCount()); i < _nc; i++ {
 		c := callNode.NamedChild(i)
 		if c != nil && c.Type() == "arguments" {
 			args = c
@@ -579,7 +579,7 @@ func parsePhoenixPlugCall(callNode *sitter.Node, src []byte) phoenixPlugParsed {
 			list := right.NamedChild(1)
 			if list != nil && list.Type() == "list" {
 				out.filter = make(map[string]struct{})
-				for i := 0; i < int(list.NamedChildCount()); i++ {
+				for i, _nc := 0, int(list.NamedChildCount()); i < _nc; i++ {
 					item := list.NamedChild(i)
 					if item != nil && item.Type() == "atom" {
 						out.filter[strings.TrimPrefix(item.Content(src), ":")] = struct{}{}

@@ -64,7 +64,7 @@ func tsWalkThrows(node *sitter.Node, src []byte, fromID, filePath string, seen m
 		}
 		return
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		c := node.NamedChild(i)
 		if c == nil {
 			continue
@@ -92,7 +92,7 @@ func tsThrowTypeName(throwNode *sitter.Node, src []byte) string {
 	if throwNode == nil {
 		return ""
 	}
-	for i := 0; i < int(throwNode.NamedChildCount()); i++ {
+	for i, _nc := 0, int(throwNode.NamedChildCount()); i < _nc; i++ {
 		c := throwNode.NamedChild(i)
 		if c == nil {
 			continue

@@ -72,7 +72,7 @@ func (e *MarkdownExtractor) Extract(filePath string, src []byte) (*parser.Extrac
 			e.extractWikiLinks(text, filePath, fileNode.ID, seenLinks, result, line)
 		}
 
-		for i := 0; i < int(node.NamedChildCount()); i++ {
+		for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 			walk(node.NamedChild(i))
 		}
 	}
@@ -90,7 +90,7 @@ func (e *MarkdownExtractor) extractHeading(node *sitter.Node, src []byte, filePa
 	// Get heading level from marker type.
 	level := 0
 	var headingText string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		switch child.Type() {
 		case "atx_h1_marker":
@@ -133,10 +133,10 @@ func (e *MarkdownExtractor) extractHeading(node *sitter.Node, src []byte, filePa
 
 func (e *MarkdownExtractor) extractCodeBlock(node *sitter.Node, src []byte, filePath, _ string, seen map[string]bool, result *parser.ExtractionResult) {
 	// Extract language from info_string.
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		child := node.NamedChild(i)
 		if child.Type() == "info_string" {
-			for j := 0; j < int(child.NamedChildCount()); j++ {
+			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
 				langNode := child.NamedChild(j)
 				if langNode.Type() == "language" {
 					lang := strings.TrimSpace(langNode.Content(src))

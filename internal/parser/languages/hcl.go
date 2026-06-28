@@ -82,7 +82,7 @@ func (e *HCLExtractor) walkTopLevel(node *sitter.Node, src []byte, filePath, dir
 	if node == nil {
 		return
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child == nil {
 			continue
@@ -102,7 +102,7 @@ func (e *HCLExtractor) extractBlock(node *sitter.Node, src []byte, filePath, dir
 	var blockType string
 	var labels []string
 	var body *sitter.Node
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i, _nc := 0, int(node.ChildCount()); i < _nc; i++ {
 		child := node.Child(i)
 		if child == nil {
 			continue
@@ -171,14 +171,14 @@ func (e *HCLExtractor) extractBlock(node *sitter.Node, src []byte, filePath, dir
 // block (addressed local.<key>) and links each to the blocks its value
 // expression references.
 func (e *HCLExtractor) extractLocals(body *sitter.Node, src []byte, filePath, dir, fileID string, result *parser.ExtractionResult, refSeen map[string]bool) {
-	for i := 0; i < int(body.ChildCount()); i++ {
+	for i, _nc := 0, int(body.ChildCount()); i < _nc; i++ {
 		attr := body.Child(i)
 		if attr == nil || attr.Type() != "attribute" {
 			continue
 		}
 		var key string
 		var expr *sitter.Node
-		for j := 0; j < int(attr.ChildCount()); j++ {
+		for j, _nc := 0, int(attr.ChildCount()); j < _nc; j++ {
 			c := attr.Child(j)
 			if c == nil {
 				continue
@@ -337,7 +337,7 @@ func hclRefAddress(head string, attrs []string) string {
 
 // hclIdentText returns the identifier text of a variable_expr node.
 func hclIdentText(varExpr *sitter.Node, src []byte) string {
-	for i := 0; i < int(varExpr.ChildCount()); i++ {
+	for i, _nc := 0, int(varExpr.ChildCount()); i < _nc; i++ {
 		c := varExpr.Child(i)
 		if c != nil && c.Type() == "identifier" {
 			return c.Content(src)
@@ -348,7 +348,7 @@ func hclIdentText(varExpr *sitter.Node, src []byte) string {
 
 // hclGetAttrName returns the attribute name of a get_attr node (".id" → "id").
 func hclGetAttrName(getAttr *sitter.Node, src []byte) string {
-	for i := 0; i < int(getAttr.ChildCount()); i++ {
+	for i, _nc := 0, int(getAttr.ChildCount()); i < _nc; i++ {
 		c := getAttr.Child(i)
 		if c != nil && c.Type() == "identifier" {
 			return c.Content(src)

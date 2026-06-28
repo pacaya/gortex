@@ -61,7 +61,7 @@ func goParamNamesFromCapture(paramsCap *parser.CapturedNode, src []byte) map[str
 		return out
 	}
 	list := paramsCap.Node
-	for i := 0; i < int(list.NamedChildCount()); i++ {
+	for i, _nc := 0, int(list.NamedChildCount()); i < _nc; i++ {
 		decl := list.NamedChild(i)
 		if decl == nil {
 			continue
@@ -75,7 +75,7 @@ func goParamNamesFromCapture(paramsCap *parser.CapturedNode, src []byte) map[str
 		if typeNode != nil {
 			typeText = strings.TrimSpace(typeNode.Content(src))
 		}
-		for j := 0; j < int(decl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 			c := decl.NamedChild(j)
 			if c == nil || c == typeNode {
 				continue
@@ -188,7 +188,7 @@ func emitGoParamNodes(ownerID string, paramsCap *parser.CapturedNode, src []byte
 	}
 	list := paramsCap.Node
 	pos := 0
-	for i := 0; i < int(list.NamedChildCount()); i++ {
+	for i, _nc := 0, int(list.NamedChildCount()); i < _nc; i++ {
 		decl := list.NamedChild(i)
 		if decl == nil {
 			continue
@@ -206,7 +206,7 @@ func emitGoParamNodes(ownerID string, paramsCap *parser.CapturedNode, src []byte
 		// One declaration may carry multiple identifier names sharing
 		// a single type. Walk all identifier children, skipping the
 		// type node itself.
-		for j := 0; j < int(decl.NamedChildCount()); j++ {
+		for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 			c := decl.NamedChild(j)
 			if c == nil || c == typeNode {
 				continue
@@ -309,7 +309,7 @@ func splitGoReturnTypes(node *sitter.Node, src []byte) []string {
 		return []string{strings.TrimSpace(node.Content(src))}
 	}
 	var out []string
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		decl := node.NamedChild(i)
 		if decl == nil {
 			continue
@@ -319,7 +319,7 @@ func splitGoReturnTypes(node *sitter.Node, src []byte) []string {
 			if tn := decl.ChildByFieldName("type"); tn != nil {
 				// Multi-name declarations duplicate the type once per name.
 				names := 0
-				for j := 0; j < int(decl.NamedChildCount()); j++ {
+				for j, _nc := 0, int(decl.NamedChildCount()); j < _nc; j++ {
 					c := decl.NamedChild(j)
 					if c == nil || c == tn {
 						continue
@@ -736,7 +736,7 @@ func walkGoNodes(node *sitter.Node, visit func(*sitter.Node) bool) {
 	if !visit(node) {
 		return
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i, _nc := 0, int(node.NamedChildCount()); i < _nc; i++ {
 		walkGoNodes(node.NamedChild(i), visit)
 	}
 }
