@@ -132,6 +132,16 @@ func analyzeFile(spec *LangSpec, ref fileRef) (*fileFacts, error) {
 	return facts, nil
 }
 
+// resolvedAlias is a trait-use alias resolved against the graph: on the
+// using type, `alias` routes to method `method`. When trait is non-nil
+// the method is looked up on that specific trait; otherwise it is looked
+// up on the using type's own inheritance closure.
+type resolvedAlias struct {
+	alias  string
+	trait  *graph.Node
+	method string
+}
+
 // applier owns every graph interaction of an enrichment pass. It runs
 // single-goroutine so in-place edge mutations never race.
 type applier struct {
@@ -139,10 +149,20 @@ type applier struct {
 	spec         *LangSpec
 	provider     string
 	stampedNodes map[string]*graph.Node // collected for one AddBatch round-trip
+	// aliases maps a using type's node ID to its trait-use alias
+	// adaptations, built in the alias phase and consulted when a call's
+	// method name is not a direct or inherited member.
+	aliases map[string][]resolvedAlias
 }
 
 func newApplier(g graph.Store, spec *LangSpec, provider string) *applier {
-	return &applier{g: g, spec: spec, provider: provider, stampedNodes: make(map[string]*graph.Node)}
+	return &applier{
+		g:            g,
+		spec:         spec,
+		provider:     provider,
+		stampedNodes: make(map[string]*graph.Node),
+		aliases:      make(map[string][]resolvedAlias),
+	}
 }
 
 // receiverTypeKinds is the node-kind set a call receiver's type may
@@ -226,6 +246,11 @@ func (a *applier) applyAll(all []*fileFacts, res *semantic.EnrichResult) {
 	for i, facts := range all {
 		for _, mf := range facts.metas {
 			a.applyMeta(idxs[i], mf, res)
+		}
+	}
+	for i, facts := range all {
+		for _, af := range facts.aliases {
+			a.applyAlias(idxs[i], af)
 		}
 	}
 	for i, facts := range all {
@@ -495,22 +520,17 @@ func (idx *fileIndex) enclosingCallable(line int) *graph.Node {
 // --- Call application -------------------------------------------------
 
 func (a *applier) applyCall(idx *fileIndex, cf callFact, res *semantic.EnrichResult) {
-	recvType := cf.recvType
-	if recvType == "" && cf.recvPendingCallee != "" {
-		recvType = a.callableReturnType(idx, cf.recvPendingCallee)
-	}
-	var typeNode *graph.Node
-	if recvType != "" {
-		typeNode = a.resolveTypeNode(idx, recvType)
-	} else if cf.recvIdent != "" {
-		// Static / type-qualified call: only when the identifier is a
-		// real type in scope of this file's imports.
-		typeNode = a.resolveTypeNode(idx, cf.recvIdent)
-	}
+	typeNode, inferred := a.callReceiverType(idx, &cf)
 	if typeNode == nil {
 		return
 	}
 	target := a.methodOn(typeNode, cf.method, 0)
+	if target == nil {
+		// A trait-use alias renames the member onto the using type; the
+		// alias name is not a member of the type or its ancestry, so the
+		// direct climb misses it. The alias map routes it through.
+		target = a.resolveAlias(typeNode, cf.method)
+	}
 	if target == nil {
 		return
 	}
@@ -518,7 +538,135 @@ func (a *applier) applyCall(idx *fileIndex, cf callFact, res *semantic.EnrichRes
 	if caller == nil || caller.ID == target.ID {
 		return
 	}
-	a.upgradeOrCreateCall(caller, target, cf, idx.facts.file, res)
+	strategy, confidence := strategyDirect, astConfidence
+	if inferred {
+		// The receiver type was derived through a chained return-type
+		// rewrite rather than a direct binding — grade the edge honestly.
+		strategy, confidence = strategyInferred, inferredConfidence
+	}
+	a.upgradeOrCreateCall(caller, target, cf, idx.facts.file, res, strategy, confidence)
+}
+
+// callReceiverType resolves a call's receiver to a graph type node. The
+// bool reports whether the type was derived by inference — a chained
+// return-type rewrite — rather than a direct binding; an inferred
+// receiver lands its call edge at the graded confidence band.
+func (a *applier) callReceiverType(idx *fileIndex, cf *callFact) (*graph.Node, bool) {
+	if cf.recvChain != nil {
+		return a.chainReturnType(idx, cf.recvChain), true
+	}
+	recvType := cf.recvType
+	if recvType == "" && cf.recvPendingCallee != "" {
+		recvType = a.callableReturnType(idx, cf.recvPendingCallee)
+	}
+	if recvType != "" {
+		return a.resolveTypeNode(idx, recvType), false
+	}
+	if cf.recvIdent != "" {
+		// Static / type-qualified call: only when the identifier is a
+		// real type in scope of this file's imports.
+		return a.resolveTypeNode(idx, cf.recvIdent), false
+	}
+	return nil, false
+}
+
+// chainReturnType types the result of a method call standing in receiver
+// position (`a.step().done()`): it resolves the inner receiver and method,
+// reads the inner method's declared return type, and applies the fluent
+// self / trait return rewrite so a trait method returning the trait type,
+// called on a using class, types as that class. Returns nil when any link
+// fails to ground — a missing edge beats a wrong one.
+func (a *applier) chainReturnType(idx *fileIndex, inner *callFact) *graph.Node {
+	recv, _ := a.callReceiverType(idx, inner)
+	if recv == nil {
+		return nil
+	}
+	m := a.methodOn(recv, inner.method, 0)
+	if m == nil {
+		m = a.resolveAlias(recv, inner.method)
+	}
+	if m == nil {
+		return nil
+	}
+	return a.effectiveReturnType(idx, m, recv)
+}
+
+// effectiveReturnType resolves a method's declared return type to a graph
+// type node, applying the fluent return rewrite: a method returning
+// `self` / `static` types as the receiver, and a TRAIT method that
+// returns its own trait name, reached through a using class, rebinds to
+// that using class. Any other named return type resolves normally.
+func (a *applier) effectiveReturnType(idx *fileIndex, m, receiver *graph.Node) *graph.Node {
+	rt := a.spec.normalize(methodReturnTypeName(m))
+	if rt == "" {
+		return nil
+	}
+	if isSelfReturn(rt) {
+		return receiver
+	}
+	// A trait method whose return type IS the trait itself, reached
+	// through a class that uses the trait, fluently returns the using
+	// class — rebind. Restricted to trait owners (Meta kind == "trait")
+	// and to the case where the method was inherited (owner != receiver),
+	// so a class method returning its own class is left to resolve
+	// normally (it already lands on the right type).
+	if owner := a.ownerType(m); owner != nil && owner.ID != receiver.ID &&
+		isTraitNode(owner) && rt == owner.Name {
+		return receiver
+	}
+	return a.resolveTypeNode(idx, rt)
+}
+
+// ownerType returns the type a method is a member of, following its
+// EdgeMemberOf link; nil when the method has no resolved owner.
+func (a *applier) ownerType(m *graph.Node) *graph.Node {
+	for _, e := range a.g.GetOutEdges(m.ID) {
+		if e.Kind == graph.EdgeMemberOf {
+			if owner := a.g.GetNode(e.To); owner != nil {
+				return owner
+			}
+		}
+	}
+	return nil
+}
+
+// applyAlias resolves one trait-use alias adaptation against the graph
+// and records it under the using type's node ID for the call phase. A
+// qualified alias whose trait cannot be resolved is dropped rather than
+// guessed.
+func (a *applier) applyAlias(idx *fileIndex, af aliasFact) {
+	typeNode := idx.types[af.typeName]
+	if typeNode == nil {
+		return
+	}
+	var traitNode *graph.Node
+	if af.trait != "" {
+		if traitNode = a.resolveSuperNode(idx, af.trait); traitNode == nil {
+			return
+		}
+	}
+	a.aliases[typeNode.ID] = append(a.aliases[typeNode.ID], resolvedAlias{
+		alias: af.alias, trait: traitNode, method: af.method,
+	})
+}
+
+// resolveAlias routes a method name through a trait-use alias on the
+// type: the aliased name resolves to the original trait member. Returns
+// nil when no alias matches or the original member does not ground.
+func (a *applier) resolveAlias(typeNode *graph.Node, method string) *graph.Node {
+	for _, al := range a.aliases[typeNode.ID] {
+		if al.alias != method {
+			continue
+		}
+		owner := al.trait
+		if owner == nil {
+			owner = typeNode
+		}
+		if m := a.methodOn(owner, al.method, 0); m != nil {
+			return m
+		}
+	}
+	return nil
 }
 
 // upgradeOrCreateCall lands a grounded call resolution on the graph:
@@ -526,11 +674,11 @@ func (a *applier) applyCall(idx *fileIndex, cf callFact, res *semantic.EnrichRes
 // weaker-tier or still-unresolved edge at the same line, otherwise add
 // a fresh edge. Edges that already carry compiler/AST-grade provenance
 // pointing elsewhere are never overridden.
-func (a *applier) upgradeOrCreateCall(caller, target *graph.Node, cf callFact, file string, res *semantic.EnrichResult) {
+func (a *applier) upgradeOrCreateCall(caller, target *graph.Node, cf callFact, file string, res *semantic.EnrichResult, strategy resolutionStrategy, confidence float64) {
 	outs := a.g.GetOutEdges(caller.ID)
 	for _, e := range outs {
 		if e.Kind == graph.EdgeCalls && e.To == target.ID {
-			if a.confirmAST(e) {
+			if a.confirmCall(e, strategy, confidence) {
 				res.EdgesConfirmed++
 			}
 			return
@@ -552,12 +700,89 @@ func (a *applier) upgradeOrCreateCall(caller, target *graph.Node, cf callFact, f
 		oldTo := e.To
 		e.To = target.ID
 		a.g.ReindexEdge(e, oldTo)
-		a.confirmAST(e)
+		a.confirmCall(e, strategy, confidence)
 		res.EdgesConfirmed++
 		return
 	}
-	a.addASTEdge(caller.ID, target.ID, graph.EdgeCalls, file, cf.line, strategyDirect, astConfidence)
+	a.addASTEdge(caller.ID, target.ID, graph.EdgeCalls, file, cf.line, strategy, confidence)
 	res.EdgesAdded++
+}
+
+// confirmCall lands the provenance of a resolved call edge at the band
+// the resolution earned: the direct path raises it to the AST ceiling
+// (confirmAST), the inferred path stamps the graded band and the
+// resolution_strategy label without ever downgrading a stronger edge.
+func (a *applier) confirmCall(e *graph.Edge, strategy resolutionStrategy, confidence float64) bool {
+	if strategy == strategyDirect {
+		return a.confirmAST(e)
+	}
+	return a.confirmInferred(e, confidence)
+}
+
+// confirmInferred stamps the graded inferred band on an edge the engine
+// resolved by a return-type rewrite: OriginASTResolved provenance at the
+// honest inferred confidence, the inferred resolution_strategy label,
+// and the provider — never downgrading an edge that already carries
+// stronger provenance or a higher confidence.
+func (a *applier) confirmInferred(e *graph.Edge, confidence float64) bool {
+	if graph.OriginRank(effectiveOrigin(e)) > graph.OriginRank(graph.OriginASTResolved) {
+		return false
+	}
+	changed := false
+	if effectiveOrigin(e) != graph.OriginASTResolved {
+		a.g.SetEdgeProvenance(e, graph.OriginASTResolved)
+		changed = true
+	}
+	if e.Meta == nil {
+		e.Meta = make(map[string]any)
+	}
+	if s, _ := e.Meta["semantic_source"].(string); s == "" {
+		e.Meta["semantic_source"] = a.provider
+		changed = true
+	}
+	if rs, _ := e.Meta["resolution_strategy"].(string); rs == "" {
+		e.Meta["resolution_strategy"] = string(strategyInferred)
+		changed = true
+	}
+	if e.Confidence < confidence {
+		e.Confidence = confidence
+		e.ConfidenceLabel = graph.ConfidenceLabelFor(e.Kind, confidence)
+		changed = true
+	}
+	if changed {
+		a.persistEdgeRow(e)
+	}
+	return changed
+}
+
+// methodReturnTypeName returns a method node's declared return type as
+// recorded in Meta["return_type"], "" when absent.
+func methodReturnTypeName(m *graph.Node) string {
+	if m == nil || m.Meta == nil {
+		return ""
+	}
+	rt, _ := m.Meta["return_type"].(string)
+	return rt
+}
+
+// isTraitNode reports whether a type node was extracted as a trait
+// (Meta kind == "trait"), the marker the PHP extractor stamps.
+func isTraitNode(n *graph.Node) bool {
+	if n == nil || n.Meta == nil {
+		return false
+	}
+	k, _ := n.Meta["kind"].(string)
+	return k == "trait"
+}
+
+// isSelfReturn reports whether a normalized return type names the
+// receiver's own type — the fluent self / late-static-binding forms.
+func isSelfReturn(t string) bool {
+	switch t {
+	case "self", "static", "$this", "this":
+		return true
+	}
+	return false
 }
 
 // --- Supertype application --------------------------------------------

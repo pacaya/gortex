@@ -15,6 +15,7 @@ type fileFacts struct {
 	calls      []callFact
 	supers     []superFact
 	metas      []metaFact
+	aliases    []aliasFact
 }
 
 // callFact is one receiver-qualified call site with whatever receiver
@@ -36,6 +37,13 @@ type callFact struct {
 	// binding in scope — a type-qualified (static) call candidate. Only
 	// used when it resolves to a real graph type node.
 	recvIdent string
+	// recvChain is set when the receiver is itself a method call
+	// (`a.step().done()`): it carries the inner call's receiver evidence
+	// (recvType / recvPendingCallee / recvIdent / recvChain) plus the
+	// inner method name. The apply phase resolves the inner method's
+	// return type — applying the fluent self / trait rewrite — to type
+	// the outer call's receiver, and grades the outer edge as inferred.
+	recvChain *callFact
 }
 
 // superFact is one declared supertype relation, pending graph
@@ -55,6 +63,17 @@ type metaFact struct {
 	owner string // receiver type for field stamps; "" for line-matched
 	name  string // field name; "" for line-matched
 	line  int    // declaration line for line-matched stamps
+}
+
+// aliasFact is one trait-use alias adaptation pending graph resolution:
+// on type typeName, the name `alias` resolves to method `method` of
+// trait `trait` (trait "" when the adaptation is unqualified).
+type aliasFact struct {
+	typeName string
+	alias    string
+	trait    string
+	method   string
+	line     int
 }
 
 // bindingState tracks one name's type through the
@@ -221,6 +240,17 @@ func (b *binder) walk(n *sitter.Node, env *scopeEnv) {
 					})
 				}
 			}
+			if b.spec.TraitAliases != nil {
+				for _, al := range b.spec.TraitAliases(n, b.src) {
+					if al.Alias == "" || al.Method == "" {
+						continue
+					}
+					b.facts.aliases = append(b.facts.aliases, aliasFact{
+						typeName: name, alias: al.Alias,
+						trait: b.spec.normalize(al.Trait), method: al.Method, line: al.Line,
+					})
+				}
+			}
 			tEnv := newScope(env, scopeType)
 			tEnv.typeName = name
 			for fname, ftyp := range b.fieldsByType[name] {
@@ -364,6 +394,18 @@ func (b *binder) receiverFact(recv *sitter.Node, env *scopeEnv) (callFact, bool)
 	if b.spec.NewExprType != nil {
 		if t := b.spec.normalize(b.spec.NewExprType(recv, b.src)); t != "" {
 			return callFact{recvType: t}, true
+		}
+	}
+	// Chained receiver: the receiver is itself a method call
+	// (`a.step().done()`). Ground the inner call's receiver and carry its
+	// method name so the apply phase can type the outer receiver from the
+	// inner method's (rewritten) return type.
+	if b.spec.ChainedReceivers && b.spec.Call != nil {
+		if innerRecv, innerMethod, ok := b.spec.Call(recv, b.src); ok && innerMethod != "" {
+			if inner, grounded := b.receiverFact(innerRecv, env); grounded {
+				inner.method = innerMethod
+				return callFact{recvChain: &inner}, true
+			}
 		}
 	}
 	return callFact{}, false

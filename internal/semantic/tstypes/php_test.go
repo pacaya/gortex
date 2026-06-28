@@ -337,6 +337,212 @@ class Handler {
 	}
 }
 
+// A trait method called on a using-class receiver resolves through the
+// trait-composition (`use T;`) edge: `$c->fn()` lands on T::fn.
+func TestPHP_TraitMethodResolvesCall(t *testing.T) {
+	g, dir := buildFixture(t, map[string]string{
+		"app.php": `<?php
+trait T {
+    public function fn(): void {}
+}
+
+class C {
+    use T;
+}
+
+class App {
+    public function run(C $c): void {
+        $c->fn();
+    }
+}
+`,
+	})
+	p := NewProvider(PHPSpec(), zap.NewNop())
+	if _, err := p.Enrich(g, dir); err != nil {
+		t.Fatal(err)
+	}
+	c := nodeByNameKind(t, g, "C", graph.KindType)
+	traitT := nodeByNameKind(t, g, "T", graph.KindType)
+	// The unresolved `use T;` extends edge is resolved onto the trait node.
+	if edgeBetween(g, c.ID, graph.EdgeExtends, traitT.ID) == nil {
+		t.Fatalf("trait-use extends edge C -> T not resolved; edges: %v", g.GetOutEdges(c.ID))
+	}
+	run := nodeByNameKind(t, g, "run", graph.KindMethod)
+	fn := nodeByNameKind(t, g, "fn", graph.KindMethod)
+	e := callEdgeTo(g, run.ID, fn.ID)
+	if e == nil {
+		t.Fatalf("trait-method call $c->fn() not resolved to T::fn; edges: %v", g.GetOutEdges(run.ID))
+	}
+	assertASTProvenance(t, e, "php-types")
+}
+
+// A fluent trait method returning the trait type (`: self`) rebinds to
+// the using class when chained: `$c->step()->done()` types step()'s
+// result as C, so done() resolves on C. The inner trait call is direct;
+// the outer chained edge is graded inferred.
+func TestPHP_TraitSelfReturnChainRebindsToUsingClass(t *testing.T) {
+	g, dir := buildFixture(t, map[string]string{
+		"app.php": `<?php
+trait T {
+    public function step(): self { return $this; }
+}
+
+class C {
+    use T;
+
+    public function done(): void {}
+}
+
+class App {
+    public function run(C $c): void {
+        $c->step()->done();
+    }
+}
+`,
+	})
+	p := NewProvider(PHPSpec(), zap.NewNop())
+	if _, err := p.Enrich(g, dir); err != nil {
+		t.Fatal(err)
+	}
+	run := nodeByNameKind(t, g, "run", graph.KindMethod)
+	step := nodeByNameKind(t, g, "step", graph.KindMethod)
+	done := nodeByNameKind(t, g, "done", graph.KindMethod)
+
+	inner := callEdgeTo(g, run.ID, step.ID)
+	if inner == nil {
+		t.Fatalf("inner trait call $c->step() not resolved to T::step; edges: %v", g.GetOutEdges(run.ID))
+	}
+	assertASTProvenance(t, inner, "php-types")
+	if inner.Meta["resolution_strategy"] == string(strategyInferred) {
+		t.Errorf("inner direct trait call should not be graded inferred")
+	}
+
+	outer := callEdgeTo(g, run.ID, done.ID)
+	if outer == nil {
+		t.Fatalf("chained $c->step()->done() not rebound to C::done; edges: %v", g.GetOutEdges(run.ID))
+	}
+	if outer.Origin != graph.OriginASTResolved {
+		t.Errorf("chained edge origin = %q, want %q", outer.Origin, graph.OriginASTResolved)
+	}
+	if outer.Meta["semantic_source"] != "php-types" {
+		t.Errorf("chained edge semantic_source = %v, want php-types", outer.Meta["semantic_source"])
+	}
+	if outer.Meta["resolution_strategy"] != string(strategyInferred) {
+		t.Errorf("chained edge resolution_strategy = %v, want %q", outer.Meta["resolution_strategy"], strategyInferred)
+	}
+	if outer.Confidence != inferredConfidence {
+		t.Errorf("chained edge confidence = %v, want %v", outer.Confidence, inferredConfidence)
+	}
+}
+
+// A fluent trait method declaring its own trait name as the return type
+// (`: T`) also rebinds to the using class when chained.
+func TestPHP_TraitNamedReturnChainRebindsToUsingClass(t *testing.T) {
+	g, dir := buildFixture(t, map[string]string{
+		"app.php": `<?php
+trait T {
+    public function step(): T { return $this; }
+}
+
+class C {
+    use T;
+
+    public function done(): void {}
+}
+
+class App {
+    public function run(C $c): void {
+        $c->step()->done();
+    }
+}
+`,
+	})
+	p := NewProvider(PHPSpec(), zap.NewNop())
+	if _, err := p.Enrich(g, dir); err != nil {
+		t.Fatal(err)
+	}
+	run := nodeByNameKind(t, g, "run", graph.KindMethod)
+	done := nodeByNameKind(t, g, "done", graph.KindMethod)
+	outer := callEdgeTo(g, run.ID, done.ID)
+	if outer == nil {
+		t.Fatalf("chained $c->step()->done() (`: T` return) not rebound to C::done; edges: %v", g.GetOutEdges(run.ID))
+	}
+	if outer.Meta["resolution_strategy"] != string(strategyInferred) {
+		t.Errorf("chained edge resolution_strategy = %v, want %q", outer.Meta["resolution_strategy"], strategyInferred)
+	}
+}
+
+// A trait-use alias (`use T { T::fn as renamed; }`) exposes the renamed
+// member on the using class: `$c->renamed()` resolves to T::fn.
+func TestPHP_TraitAliasResolvesToOriginalMethod(t *testing.T) {
+	g, dir := buildFixture(t, map[string]string{
+		"app.php": `<?php
+trait T {
+    public function fn(): void {}
+}
+
+class C {
+    use T {
+        T::fn as renamed;
+    }
+}
+
+class App {
+    public function run(C $c): void {
+        $c->renamed();
+    }
+}
+`,
+	})
+	p := NewProvider(PHPSpec(), zap.NewNop())
+	if _, err := p.Enrich(g, dir); err != nil {
+		t.Fatal(err)
+	}
+	run := nodeByNameKind(t, g, "run", graph.KindMethod)
+	fn := nodeByNameKind(t, g, "fn", graph.KindMethod)
+	e := callEdgeTo(g, run.ID, fn.ID)
+	if e == nil {
+		t.Fatalf("aliased call $c->renamed() not resolved to T::fn; edges: %v", g.GetOutEdges(run.ID))
+	}
+	assertASTProvenance(t, e, "php-types")
+}
+
+// A trait conflict resolved with `insteadof` is NOT precedence-resolved:
+// the member stays ambiguous across the two traits, so the call is
+// skipped rather than bound to one arbitrary side, and nothing crashes.
+func TestPHP_TraitInsteadofIsSkippedNotMisresolved(t *testing.T) {
+	g, dir := buildFixture(t, map[string]string{
+		"app.php": `<?php
+trait A {
+    public function fn(): void {}
+}
+
+trait B {
+    public function fn(): void {}
+}
+
+class C {
+    use A, B {
+        A::fn insteadof B;
+    }
+}
+
+class App {
+    public function run(C $c): void {
+        $c->fn();
+    }
+}
+`,
+	})
+	p := NewProvider(PHPSpec(), zap.NewNop())
+	if _, err := p.Enrich(g, dir); err != nil {
+		t.Fatal(err)
+	}
+	run := nodeByNameKind(t, g, "run", graph.KindMethod)
+	// Ambiguous across A::fn and B::fn → no engine-resolved edge for fn.
+	assertUntouched(t, g, run.ID, "fn", "php-types")
+}
+
 // EnrichFile resolves only the named file's calls, leaving others alone.
 func TestPHP_EnrichFileScopesToOneFile(t *testing.T) {
 	g, dir := buildFixture(t, map[string]string{

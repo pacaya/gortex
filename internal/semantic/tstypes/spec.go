@@ -59,6 +59,21 @@ type Import struct {
 	Path  string
 }
 
+// AliasRef is one trait-use adaptation that renames an aliased member
+// onto the using type (PHP `use T { T::fn as renamed; }`): Alias is the
+// new name the using type exposes, Method is the original member name,
+// and Trait names the trait the member comes from ("" when the
+// adaptation is unqualified, e.g. `use T { fn as renamed; }`).
+// Conflict-resolution adaptations (`insteadof`) are deliberately NOT
+// represented here — an ambiguous member stays unresolved rather than
+// being bound to one arbitrary side.
+type AliasRef struct {
+	Alias  string
+	Trait  string
+	Method string
+	Line   int
+}
+
 // LangSpec adapts the shared engine to one language's tree-sitter
 // grammar. The node-type sets drive the generic walk; the hooks decode
 // the handful of shapes that differ per grammar. Hooks may be nil when
@@ -134,8 +149,26 @@ type LangSpec struct {
 	// {EdgeExtends} — only the superclass / supertype chain. Languages
 	// whose inheritance spans more than subclassing widen it: Ruby adds
 	// EdgeImplements so the modules pulled in by `include` / `prepend`
-	// / `extend` contribute their methods.
+	// / `extend` contribute their methods. PHP keeps the {EdgeExtends}
+	// default: trait composition (`use T;`) is itself modeled as an
+	// extends edge, so the default walk already climbs into used traits
+	// once they resolve.
 	InheritEdgeKinds []graph.EdgeKind
+
+	// ChainedReceivers enables typing a call whose receiver is itself a
+	// method call (`a.step().done()`). When set, the binder grounds the
+	// inner call's receiver and method, and the apply phase resolves the
+	// inner method's declared return type — applying the fluent self /
+	// trait return rewrite — to type the outer call's receiver. Off by
+	// default; languages with reliable return-type fidelity and fluent
+	// chains opt in. The resulting outer edge is graded as inferred.
+	ChainedReceivers bool
+
+	// TraitAliases lists the trait-use adaptations that rename an aliased
+	// member onto a using type (PHP `use T { T::fn as renamed; }`). nil
+	// for languages without the construct. The apply phase routes a call
+	// to the alias name through to the original trait member.
+	TraitAliases func(n *sitter.Node, src []byte) []AliasRef
 
 	// NormalizeType reduces a written type to the bare name the graph
 	// indexes (strip generics / pointers / qualifiers). nil uses the

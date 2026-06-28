@@ -32,26 +32,102 @@ func PHPSpec() *LangSpec {
 			"method_declaration":  true,
 			"function_definition": true,
 		},
-		SelfName:      "$this",
-		TypeDeclName:  nameField,
-		Supertypes:    phpSupertypes,
-		Fields:        phpFields,
-		Params:        phpParams,
-		ReturnType:    phpReturnTypeSpec,
-		LocalBinding:  phpLocalBinding,
-		Call:          phpCall,
-		NewExprType:   phpNewExprType,
-		FieldRef:      phpFieldRef,
-		Imports:       phpImports,
-		NormalizeType: normalizePHPType,
+		SelfName:         "$this",
+		TypeDeclName:     nameField,
+		Supertypes:       phpSupertypes,
+		Fields:           phpFields,
+		Params:           phpParams,
+		ReturnType:       phpReturnTypeSpec,
+		LocalBinding:     phpLocalBinding,
+		Call:             phpCall,
+		NewExprType:      phpNewExprType,
+		FieldRef:         phpFieldRef,
+		Imports:          phpImports,
+		NormalizeType:    normalizePHPType,
+		ChainedReceivers: true,
+		TraitAliases:     phpTraitAliases,
 	}
+}
+
+// phpTraitAliases lists the trait-use alias adaptations of a PHP type:
+// `use T { T::fn as renamed; }` maps the alias `renamed` on the using
+// class to trait T's method `fn`. Conflict-resolution adaptations
+// (`use A, B { A::fn insteadof B; }`) are intentionally skipped — the
+// member they govern stays ambiguous and unresolved rather than being
+// bound to one arbitrary side.
+func phpTraitAliases(n *sitter.Node, src []byte) []AliasRef {
+	body := phpTypeBody(n)
+	if body == nil {
+		return nil
+	}
+	var out []AliasRef
+	for c := range body.NamedChildren() {
+		if c.Type() != "use_declaration" {
+			continue
+		}
+		for d := range c.NamedChildren() {
+			if d.Type() != "use_list" {
+				continue
+			}
+			for clause := range d.NamedChildren() {
+				if clause.Type() != "use_as_clause" {
+					continue
+				}
+				if ref, ok := phpUseAsClause(clause, src); ok {
+					out = append(out, ref)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// phpUseAsClause decodes one `T::fn as renamed` / `fn as renamed`
+// adaptation into an AliasRef. The source member is a
+// class_constant_access_expression (`T::fn`, trait-qualified) or a bare
+// leading name (`fn`, unqualified); the alias is the trailing name.
+// Visibility-only adaptations (`T::fn as protected`) carry no alias name
+// and yield ok=false.
+func phpUseAsClause(clause *sitter.Node, src []byte) (AliasRef, bool) {
+	var trait, method, alias string
+	for c := range clause.NamedChildren() {
+		switch c.Type() {
+		case "class_constant_access_expression":
+			var names []string
+			for nm := range c.NamedChildren() {
+				switch nm.Type() {
+				case "name", "qualified_name":
+					names = append(names, strings.TrimSpace(nm.Content(src)))
+				}
+			}
+			if len(names) >= 2 {
+				trait, method = names[0], names[len(names)-1]
+			} else if len(names) == 1 {
+				method = names[0]
+			}
+		case "name", "qualified_name":
+			if method == "" {
+				method = strings.TrimSpace(c.Content(src))
+			} else {
+				alias = strings.TrimSpace(c.Content(src))
+			}
+		}
+	}
+	if alias == "" || method == "" {
+		return AliasRef{}, false
+	}
+	return AliasRef{Alias: alias, Trait: trait, Method: method, Line: nodeLine(clause)}, true
 }
 
 // phpSupertypes lists the declared supertype relations of a PHP type
 // declaration: `extends` (base_clause) becomes extends, `implements`
 // (class_interface_clause) becomes implements. On an interface
 // declaration the same class_interface_clause node spells
-// `interface X extends A, B`, so its members are extends there.
+// `interface X extends A, B`, so its members are extends there. Trait
+// composition (`use T;` in the body) is also reported as an extends
+// relation — matching the edge kind the PHP extractor emits for trait
+// use — so the inherited-member climb reaches a used trait's methods
+// once the edge resolves.
 func phpSupertypes(n *sitter.Node, src []byte) []SuperRef {
 	isInterface := n.Type() == "interface_declaration"
 	var out []SuperRef
@@ -68,6 +144,36 @@ func phpSupertypes(n *sitter.Node, src []byte) []SuperRef {
 			}
 			for _, name := range phpClauseNames(c, src) {
 				out = append(out, SuperRef{Name: name, Kind: kind, Line: nodeLine(c)})
+			}
+		}
+	}
+	out = append(out, phpTraitUses(n, src)...)
+	return out
+}
+
+// phpTraitUses lists the traits composed into a type via `use T;` /
+// `use A, B { ... }` statements in its body. Each names a trait the
+// extractor already linked with an (unresolved) extends edge; reporting
+// it here lets the apply phase resolve that edge to the trait node so
+// the trait's methods climb. The adaptation block (`{ ... }`) is not a
+// trait name, so only the leading name / qualified_name children are
+// collected.
+func phpTraitUses(n *sitter.Node, src []byte) []SuperRef {
+	body := phpTypeBody(n)
+	if body == nil {
+		return nil
+	}
+	var out []SuperRef
+	for c := range body.NamedChildren() {
+		if c.Type() != "use_declaration" {
+			continue
+		}
+		for nm := range c.NamedChildren() {
+			switch nm.Type() {
+			case "name", "qualified_name":
+				if t := strings.TrimSpace(nm.Content(src)); t != "" {
+					out = append(out, SuperRef{Name: t, Kind: graph.EdgeExtends, Line: nodeLine(nm)})
+				}
 			}
 		}
 	}
