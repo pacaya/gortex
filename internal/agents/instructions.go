@@ -175,6 +175,14 @@ The flag replaces every function/method body in the returned source with a ` + "
 
 When the language has no grammar binding or tree-sitter can't parse the input, the flag is a no-op — raw source comes back and the response's ` + "`bodies_elided`" + ` flag stays absent. Safe to set unconditionally.
 
+### Reuse and freshness (don't re-fetch)
+
+Gortex exists to *save* tokens — treat what you fetch as cached for the task.
+
+- **Don't re-fetch what you already have.** Re-reading the same file or re-running the same query within a task is the most common avoidable cost — keep the earlier result and consult it again instead of re-calling.
+- **Re-validate cheaply with etags.** ` + "`read_file`" + ` / ` + "`get_symbol_source`" + ` / ` + "`get_file_summary`" + ` / ` + "`get_editing_context`" + ` / ` + "`smart_context`" + ` return an ` + "`etag`" + ` and accept ` + "`if_none_match`" + ` — an unchanged target comes back as ` + "`not_modified`" + ` at ~0 tokens. Use it to confirm freshness after an edit instead of re-reading the whole thing.
+- **A warming index is not an empty repo.** A ` + "`count: 0`" + ` / empty result while the daemon is still warming up (a ` + "`warming`" + ` block on the response, or ` + "`index_health`" + ` not yet ready) means *not indexed yet*, not *absent* — re-run shortly or check ` + "`index_health`" + `; don't conclude the symbol is missing and fall back to grep.
+
 ### Pagination, sparse fieldsets, and graceful degradation
 
 Every list-shaped tool runs through a per-response budget by default — the agent harness's spill-to-disk fallback is a true edge case, not the routine outcome on real-world payloads. When a response would exceed the budget, the server runs a priority-aware cascade:
@@ -293,6 +301,14 @@ When set on ` + "`get_symbol_source`" + ` / ` + "`get_editing_context`" + ` / ` 
 | Calling ` + "`get_editing_context`" + ` then fetching every neighbour's source for signatures | ` + "`get_editing_context`" + ` with ` + "`compress_bodies: true`" + ` — emits ` + "`source_compressed`" + ` alongside the structural sections |
 
 When the language has no grammar binding or tree-sitter can't parse the input, the flag is a no-op — raw source comes back and the response's ` + "`bodies_elided`" + ` flag stays absent. Safe to set unconditionally.
+
+### Reuse and freshness (don't re-fetch)
+
+Gortex exists to *save* tokens — treat what you fetch as cached for the task.
+
+- **Don't re-fetch what you already have.** Re-reading the same file or re-running the same query within a task is the most common avoidable cost — keep the earlier result and consult it again instead of re-calling.
+- **Re-validate cheaply with etags.** ` + "`read_file`" + ` / ` + "`get_symbol_source`" + ` / ` + "`get_file_summary`" + ` / ` + "`get_editing_context`" + ` / ` + "`smart_context`" + ` return an ` + "`etag`" + ` and accept ` + "`if_none_match`" + ` — an unchanged target comes back as ` + "`not_modified`" + ` at ~0 tokens. Use it to confirm freshness after an edit instead of re-reading the whole thing.
+- **A warming index is not an empty repo.** A ` + "`count: 0`" + ` / empty result while the daemon is still warming up (a ` + "`warming`" + ` block on the response, or ` + "`index_health`" + ` not yet ready) means *not indexed yet*, not *absent* — re-run shortly or check ` + "`index_health`" + `; don't conclude the symbol is missing and fall back to grep.
 
 ### Pagination, sparse fieldsets, and opt-in budget
 
@@ -545,15 +561,15 @@ Analyzer-backed rollups (read-only summaries; the only "argument" is the current
 
 ## Session start (Gortex)
 
-1. Call ` + "`graph_stats`" + ` to confirm Gortex is running and get repo orientation.
+1. Confirm Gortex is up with ` + "`index_health`" + ` (cheap liveness + scope). Call ` + "`graph_stats`" + ` only when you need node/edge counts or ` + "`per_repo`" + ` orientation — it's a heavy payload that can block during warmup.
 2. If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with path ` + "`\".\"`" + `.
 3. Call ` + "`distill_session`" + ` to recover prior session memory for this workspace — decisions, pinned notes, recent excerpts. Use the digest to seed your mental model before reading any file.
 4. In multi-repo mode, call ` + "`get_active_project`" + ` to check scope. Use ` + "`set_active_project`" + ` to switch if needed.
-5. For a new task, call ` + "`smart_context`" + ` with the task description. Immediately after, call ` + "`surface_memories task:\"<task>\" symbol_ids:\"<top hits>\"`" + ` to pick up any cross-session invariants / gotchas / decisions anchored to your working set.
+5. Open a non-trivial task with ` + "`smart_context`" + ` for orientation — for a single known symbol or file, go straight to ` + "`search_symbols`" + ` / ` + "`get_symbol_source`" + ` instead. After a smart_context call, call ` + "`surface_memories task:\"<task>\" symbol_ids:\"<top hits>\"`" + ` to pick up any cross-session invariants / gotchas / decisions anchored to your working set.
 6. For every file you are about to edit, call ` + "`get_editing_context`" + ` first. If you've touched the symbol before, also call ` + "`query_notes symbol_id:\"<id>\"`" + ` and ` + "`query_memories symbol_id:\"<id>\"`" + ` to surface prior notes and durable memories.
 7. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations — checks callers across all repos.
 8. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
-9. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run (includes cross-repo test files).
+9. Verify with the project's real build/test. Reserve ` + "`check_guards`" + ` for guard-relevant changes and ` + "`get_test_targets`" + ` to find the tests covering a substantive change (includes cross-repo test files) — not mechanically after every edit.
 10. After making a meaningful decision or hitting a non-obvious constraint, call ` + "`save_note tags:\"decision\" body:\"<what+why>\"`" + ` so the next session can recover it.
 11. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
 

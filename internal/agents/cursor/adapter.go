@@ -124,7 +124,7 @@ This repository wires the **gortex** MCP server via .cursor/mcp.json (merge-mana
 
 You **MUST** prefer Gortex graph queries over text search and whole-file opens on every task. These are not suggestions.
 
-- **Always** start a new chat with **graph_stats** (or **index_health**) to confirm the daemon/index and orient in multi-repo workspaces.
+- **Start** a new chat with **index_health** to confirm the daemon/index (cheap); use **graph_stats** only when you need node/edge counts or multi-repo orientation.
 - **Use** **search_symbols**, **get_symbol_source**, **get_file_summary**, **get_call_chain**, **find_usages**, and **smart_context** instead of opening whole files or guessing with text search.
 - Before any signature or API change, **run** **verify_change**; for test selection **run** **get_test_targets**.
 

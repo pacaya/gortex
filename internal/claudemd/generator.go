@@ -76,14 +76,14 @@ func Generate(engine *query.Engine, _ int) string {
 	b.WriteString("Be especially deliberate with **behavior-critical code** — database migrations, retry / fallback / error-recovery paths, compatibility shims, concurrency-sensitive sections, and the tests that pin them. For these, call `get_symbol_source` and read the real implementation; never pass `compress_bodies:true`, which elides exactly the branches that carry the risk. Reserve compressed bodies and graph summaries for breadth (surveying many symbols); use full source for the few you are about to commit to.\n\n")
 	b.WriteString("## Required workflow (every task on this repo)\n\n")
 	b.WriteString("These are not suggestions — run each step at the trigger.\n\n")
-	b.WriteString("1. **Always call** `graph_stats` first to confirm the daemon is up and orient (check `per_repo` in multi-repo mode).\n")
+	b.WriteString("1. Confirm the daemon is up with `index_health` (cheap liveness + scope). Call `graph_stats` only when you actually need node/edge counts or `per_repo` orientation — it returns a large payload and can block during warmup.\n")
 	b.WriteString("2. If `total_nodes` is 0, **call** `index_repository` with `\".\"` before anything else.\n")
 	b.WriteString("3. In multi-repo mode, **call** `get_active_project` to check scope; use `set_active_project` to switch.\n")
-	b.WriteString("4. For every new task, **call** `smart_context` with the task description before reading any file.\n")
+	b.WriteString("4. Open a non-trivial task with `smart_context` for orientation. For a single known symbol or file, go straight to `search_symbols` / `get_symbol_source` — don't front-load `smart_context` before every read.\n")
 	b.WriteString("5. Before editing a file, **call** `get_editing_context` on it first.\n")
 	b.WriteString("6. Before changing any function signature, **call** `verify_change` to catch broken callers and interface implementors (cross-repo).\n")
 	b.WriteString("7. For any refactor, **call** `get_edit_plan` then `batch_edit` to apply atomically.\n")
-	b.WriteString("8. After every edit, **call** `check_guards` then `get_test_targets`.\n")
+	b.WriteString("8. Verify with the project's real build/test. Reserve `check_guards` for guard-relevant changes and `get_test_targets` to find the tests covering a substantive change — not mechanically after every edit.\n")
 
 	return b.String()
 }

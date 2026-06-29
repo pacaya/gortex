@@ -160,14 +160,14 @@ Store: invariants, conventions, incident learnings, API contracts not enforced b
 
 ## Session workflow
 
-1. Call ` + "`graph_stats`" + ` to confirm Gortex is running. If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with path ` + "`\".\"`" + `.
+1. Call ` + "`index_health`" + ` to confirm Gortex is running and indexed (` + "`graph_stats`" + ` for counts). If ` + "`total_nodes`" + ` is 0, call ` + "`index_repository`" + ` with path ` + "`\".\"`" + `.
 2. Call ` + "`distill_session`" + ` to recover prior session memory for this workspace.
 3. In multi-repo mode, call ` + "`get_active_project`" + ` to check scope. Use ` + "`set_active_project`" + ` to switch if needed.
 4. For a new task, call ` + "`smart_context`" + ` with the task description. Immediately after, call ` + "`surface_memories`" + ` with the same task description and the top symbol hits.
 5. Before editing any file, call ` + "`get_editing_context`" + ` first. If you've touched the symbol before, also call ` + "`query_notes symbol_id:\"<id>\"`" + ` and ` + "`query_memories symbol_id:\"<id>\"`" + `.
 6. Before changing a function signature, call ` + "`verify_change`" + ` to catch contract violations — checks callers across all repos.
 7. Before any refactor, call ` + "`get_edit_plan`" + ` for dependency-ordered file list. Use ` + "`batch_edit`" + ` to apply atomically.
-8. After editing, call ` + "`check_guards`" + ` to verify team conventions, then ` + "`get_test_targets`" + ` for tests to run (includes cross-repo test files).
+8. Verify with the project's real build/test. Reserve ` + "`check_guards`" + ` for guard-relevant changes and ` + "`get_test_targets`" + ` to find the tests covering a substantive change (includes cross-repo test files).
 9. After making a meaningful decision or hitting a non-obvious constraint, call ` + "`save_note`" + ` so the next session can recover it. If the discovery is workspace-wide and worth teaching the team, call ` + "`store_memory`" + ` instead — that compounds across sessions.
 10. Before committing, call ` + "`detect_changes`" + ` to verify scope. Use ` + "`diff_context`" + ` for graph-enriched review.
 `
@@ -180,7 +180,7 @@ inclusion: manual
 
 ## Workflow
 
-1. ` + "`graph_stats`" + ` — confirm index, get node/edge counts
+1. ` + "`index_health`" + ` — confirm the index is ready (` + "`graph_stats`" + ` for node/edge counts)
 2. ` + "`get_communities`" + ` — see functional clusters (architecture overview)
 3. ` + "`search_symbols({query: \"<concept>\"})`" + ` — find symbols related to a concept
 4. ` + "`get_processes`" + ` — discover execution flows

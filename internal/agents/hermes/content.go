@@ -162,7 +162,7 @@ The daemon can track several repositories at once. Scope your queries so results
 
 ## Quick Reference
 
-1. ` + "`graph_stats`" + ` — confirm the daemon is up and oriented.
+1. ` + "`index_health`" + ` — confirm the daemon is up and oriented (` + "`graph_stats`" + ` for node/edge counts).
 2. ` + "`smart_context`" + ` with the task description — assemble the minimal working set.
 3. ` + "`search_symbols`" + ` / ` + "`find_usages`" + ` / ` + "`get_symbol_source`" + ` — navigate and read.
 4. ` + "`get_editing_context`" + ` then ` + "`edit_symbol`" + ` / ` + "`edit_file`" + ` / ` + "`rename_symbol`" + ` / ` + "`batch_edit`" + ` — edit safely.

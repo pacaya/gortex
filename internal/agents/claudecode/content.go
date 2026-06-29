@@ -230,7 +230,7 @@ Quick reference for all Gortex MCP tools and the knowledge graph schema.
 
 ## Always Start Here
 
-1. **Call ` + "`graph_stats`" + `** — confirm Gortex is running, get node/edge counts
+1. **Call ` + "`index_health`" + `** — confirm Gortex is running (cheap); use ` + "`graph_stats`" + ` when you actually need node/edge counts
 2. **Match your task to a command below**
 3. **Follow the command's workflow**
 
@@ -528,7 +528,7 @@ const commandExplore = `# Exploring Codebases with Gortex
 
 ## Checklist
 
-- Call graph_stats to confirm Gortex is running
+- Call index_health to confirm Gortex is running (graph_stats only when you need node/edge counts)
 - Call smart_context first — one call replaces 5-10 exploration calls
 - Call get_communities for architecture overview when smart_context is not enough
 - Call search_symbols for the concept you want to understand
@@ -724,7 +724,7 @@ Use this **before** you touch ` + "`edit_file`" + ` / ` + "`edit_symbol`" + ` / 
 
 ## Checklist
 
-- ` + "`smart_context`" + ` before reading any file
+- ` + "`smart_context`" + ` to orient a non-trivial task (skip for a single known symbol — use ` + "`search_symbols`" + ` / ` + "`get_symbol_source`" + `)
 - ` + "`surface_memories`" + ` on the same working set — pick up cross-session decisions / gotchas
 - ` + "`preview_edit`" + ` (single edit) or ` + "`simulate_chain`" + ` (ordered chain) **before** any on-disk write
 - Treat ` + "`broken_callers`" + ` / ` + "`broken_implementors`" + ` as blockers, not warnings
@@ -1686,7 +1686,7 @@ If the diff is in the working tree (or a feature branch checked out), ` + "`dete
 
 ## Checklist
 
-- ` + "`graph_stats`" + ` first — confirm Gortex sees the working tree
+- ` + "`index_health`" + ` — confirm Gortex sees the working tree (` + "`graph_stats`" + ` for counts)
 - ` + "`detect_changes`" + ` + ` + "`diff_context`" + ` produce the graph-grounded scope + per-file risk
 - Walk the **10 gates** above in order; do not skip ahead on a blocker
 - ` + "`contracts({action: check})`" + ` is **mandatory** for any PR that touches a provider symbol — the orphan check catches wire drift the diff doesn't
