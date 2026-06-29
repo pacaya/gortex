@@ -118,3 +118,25 @@ func TestFindUsages_FlavorNilSafety(t *testing.T) {
 	})
 	require.Equal(t, 1, len(sg.Edges), "struct-owned call survives even with no node set")
 }
+
+// TestFindUsages_FromFlavorJSON proves the curated find_usages JSON
+// promotes from_type_flavor to a top-level field on the caller node.
+func TestFindUsages_FromFlavorJSON(t *testing.T) {
+	srv := setupFlavorUsageServer(t)
+	helperID := flavorUsageNodeID(srv, "helper", graph.KindFunction)
+	require.NotEmpty(t, helperID)
+
+	resp := findUsagesResp(t, srv, helperID, "")
+	nodes, _ := resp["nodes"].([]any)
+	require.NotEmpty(t, nodes)
+	foundRun := false
+	for _, raw := range nodes {
+		n, _ := raw.(map[string]any)
+		if name, _ := n["name"].(string); name == "Run" {
+			foundRun = true
+			require.Equal(t, "struct", n["from_type_flavor"],
+				"Run's enclosing owner Service is a struct, surfaced top-level")
+		}
+	}
+	require.True(t, foundRun, "the Service.Run caller node should be present")
+}
