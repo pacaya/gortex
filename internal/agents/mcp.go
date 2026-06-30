@@ -2,7 +2,11 @@ package agents
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 // UpsertMCPServer merges a gortex-flavored MCP server stanza into a
@@ -79,17 +83,18 @@ func UpsertMCPServerWithMigration(root map[string]any, serverName string, entry 
 }
 
 // IsGortexAuthoredMCPEntry returns true for MCP server stanzas that
-// look like Gortex wrote them — `command == "gortex"` and the args
-// list starts with the `mcp` subcommand. Used by global-mode
-// installers to migrate their own legacy stanzas without clobbering
-// user-customized servers.
+// look like Gortex wrote them — a command naming the gortex binary
+// (bare "gortex" or an absolute path whose basename is gortex) and an
+// args list starting with the `mcp` subcommand. Used by global-mode
+// installers to migrate their own legacy stanzas — including the older
+// absolute-path form — without clobbering user-customized servers.
 func IsGortexAuthoredMCPEntry(entry any) bool {
 	m, ok := entry.(map[string]any)
 	if !ok {
 		return false
 	}
 	cmd, _ := m["command"].(string)
-	if cmd != "gortex" {
+	if !commandIsGortex(cmd) {
 		return false
 	}
 	args, ok := m["args"].([]any)
@@ -98,6 +103,98 @@ func IsGortexAuthoredMCPEntry(entry any) bool {
 	}
 	first, _ := args[0].(string)
 	return first == "mcp"
+}
+
+// commandIsGortex reports whether an MCP stanza's command string names
+// the gortex binary — either the bare "gortex"/"gortex.exe" name or an
+// absolute path whose basename is gortex (the legacy os.Executable()
+// form a pre-fix `gortex install` baked into ~/.claude.json). Lets the
+// global installer recognize and migrate its own older stanza in place
+// instead of leaving a stale absolute path that disagrees with the
+// bare-`gortex` project .mcp.json template.
+func commandIsGortex(cmd string) bool {
+	return gortexCommandBase(cmd) == "gortex"
+}
+
+// gortexCommandBase extracts the binary base name from a command
+// string, tolerating both / and \ separators so a path written on one
+// OS is still recognized when parsed on another (matters for
+// cross-platform tests; in production the path is always native). The
+// trailing extension (.exe on Windows) is stripped.
+func gortexCommandBase(cmd string) string {
+	if cmd == "" {
+		return ""
+	}
+	base := cmd
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// ResolveGortexCommand returns the command string an installer should
+// bake into a gortex MCP server stanza. It prefers the bare "gortex"
+// name — portable across machines and byte-identical to the project
+// .mcp.json template — but only when "gortex" on PATH resolves to the
+// same binary that is currently running. Matching the project template
+// matters for Claude Code specifically: it stores OAuth tokens per
+// endpoint (command + args), so a user-scope entry that disagrees with
+// a project-scope entry trips its "conflicting scopes" diagnostic.
+//
+// When the running binary is not reachable on PATH (e.g. a Windows
+// install whose program directory is not on PATH) it falls back to the
+// absolute os.Executable() path so the entry still launches. Under
+// `go run` (a transient temp build) or any other ambiguity it falls
+// back to the bare name rather than bake a path that won't exist later.
+func ResolveGortexCommand() string {
+	exe, exeErr := os.Executable()
+	lp, lpErr := exec.LookPath("gortex")
+	return resolveGortexCommandFrom(exe, exeErr, lp, lpErr, sameFile)
+}
+
+// resolveGortexCommandFrom is the pure decision core of
+// ResolveGortexCommand, split out so the PATH/executable inputs can be
+// injected in tests.
+func resolveGortexCommandFrom(exe string, exeErr error, lookPath string, lookErr error, same func(a, b string) bool) string {
+	exeUsable := exeErr == nil && exe != "" && gortexCommandBase(exe) == "gortex" && !isUnderTempDir(exe)
+	if lookErr == nil && lookPath != "" {
+		// On PATH: collapse to the bare name when it points at the
+		// binary we are running (or we cannot trust os.Executable),
+		// so the entry matches the portable project template.
+		if !exeUsable || same(lookPath, exe) {
+			return "gortex"
+		}
+	}
+	if exeUsable {
+		// Not on PATH, but we know exactly where we live: pin the
+		// absolute path so the entry launches.
+		return exe
+	}
+	return "gortex"
+}
+
+// isUnderTempDir reports whether p lives under the OS temp directory —
+// the tell-tale of a `go run` / `go test` transient build that must not
+// be baked into a long-lived config.
+func isUnderTempDir(p string) bool {
+	return strings.HasPrefix(p, filepath.Clean(os.TempDir())+string(os.PathSeparator))
+}
+
+// sameFile reports whether two paths reference the same on-disk binary,
+// resolving symlinks and falling back to os.SameFile. A pure string
+// match short-circuits the stat calls.
+func sameFile(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		if rb, err := filepath.EvalSymlinks(b); err == nil && ra == rb {
+			return true
+		}
+	}
+	fa, e1 := os.Stat(a)
+	fb, e2 := os.Stat(b)
+	return e1 == nil && e2 == nil && os.SameFile(fa, fb)
 }
 
 // MCPEntriesEqual compares two MCP stanzas by their JSON-marshaled

@@ -440,3 +440,65 @@ func TestClaudeCodeDryRunWritesNothing(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectModeSkipsMCPWhenUserScopeRegistered is the regression
+// guard for issue #201: a project `gortex init` must NOT create a
+// project .mcp.json when gortex is already registered at user scope —
+// that double-registration is what trips Claude Code's "conflicting
+// scopes" diagnostic. --force overrides the skip (so a maintainer can
+// still commit a .mcp.json for teammates without a global install).
+func TestProjectModeSkipsMCPWhenUserScopeRegistered(t *testing.T) {
+	SetConfigDirOverride("")
+
+	env, buf := agentstest.NewEnv(t)
+	a := New()
+
+	// Seed a user-scope gortex registration in ~/.claude.json.
+	claudeJSON := userClaudeJSONPath(env.Home)
+	if err := os.MkdirAll(filepath.Dir(claudeJSON), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `{"mcpServers":{"gortex":{"command":"gortex","args":["mcp"],"env":{}}}}`
+	if err := os.WriteFile(claudeJSON, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed user config: %v", err)
+	}
+
+	mcpPath := filepath.Join(env.Root, ".mcp.json")
+
+	// Without --force: the project .mcp.json must be skipped and the
+	// user warned.
+	if _, err := a.Apply(env, agents.ApplyOpts{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := os.Stat(mcpPath); err == nil {
+		t.Errorf("project .mcp.json was written despite a user-scope gortex registration")
+	}
+	if !strings.Contains(buf.String(), "already registered at user scope") {
+		t.Errorf("expected a conflicting-scopes warning, got: %q", buf.String())
+	}
+
+	// With --force: the project .mcp.json is written anyway.
+	if _, err := a.Apply(env, agents.ApplyOpts{Force: true}); err != nil {
+		t.Fatalf("apply --force: %v", err)
+	}
+	if _, err := os.Stat(mcpPath); err != nil {
+		t.Errorf("--force should still write project .mcp.json: %v", err)
+	}
+}
+
+// TestProjectModeWritesMCPWhenNoUserScope confirms the common path is
+// unchanged: with no user-scope gortex registration, the project
+// .mcp.json is created as before.
+func TestProjectModeWritesMCPWhenNoUserScope(t *testing.T) {
+	SetConfigDirOverride("")
+
+	env, _ := agentstest.NewEnv(t)
+	a := New()
+
+	if _, err := a.Apply(env, agents.ApplyOpts{}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.Root, ".mcp.json")); err != nil {
+		t.Errorf("project .mcp.json should be written when no user-scope entry exists: %v", err)
+	}
+}

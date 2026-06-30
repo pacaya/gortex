@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -111,11 +112,28 @@ func (a *Adapter) Apply(env agents.Env, opts agents.ApplyOpts) (*agents.Result, 
 	}
 
 	// 1. Project .mcp.json — create if absent, skip otherwise.
-	mcpAction, err := agents.WriteIfNotExists(w, filepath.Join(env.Root, ".mcp.json"), ProjectMCPJSON, opts)
-	if err != nil {
-		return res, fmt.Errorf(".mcp.json: %w", err)
+	//
+	// If gortex is already registered at user scope (~/.claude.json), a
+	// project .mcp.json adds a second registration under the same name.
+	// Claude Code keys OAuth tokens per endpoint and flags this as a
+	// "conflicting scopes" diagnostic. The user-scope entry already
+	// serves this repo machine-wide, so skip the project file unless
+	// --force. (A pre-existing .mcp.json is left in place — we never
+	// delete it — but we warn so the user can resolve the duplication.)
+	mcpPath := filepath.Join(env.Root, ".mcp.json")
+	if !opts.Force && env.Home != "" && userScopeGortexRegistered(env.Home) && !pathExists(mcpPath) {
+		logWarn(w, "gortex is already registered at user scope (%s); skipping project .mcp.json to avoid a Claude Code \"conflicting scopes\" warning. Re-run with --force to write it anyway (e.g. for teammates without a global install).", userClaudeJSONPath(env.Home))
+		res.Files = append(res.Files, agents.FileAction{Path: mcpPath, Action: agents.ActionSkip, Reason: "gortex already registered at user scope"})
+	} else {
+		if !opts.Force && env.Home != "" && userScopeGortexRegistered(env.Home) && pathExists(mcpPath) {
+			logWarn(w, "gortex is registered at both user scope (%s) and project scope (%s); Claude Code may warn about conflicting scopes — keep one with `claude mcp remove gortex -s user` or `-s project`.", userClaudeJSONPath(env.Home), mcpPath)
+		}
+		mcpAction, err := agents.WriteIfNotExists(w, mcpPath, ProjectMCPJSON, opts)
+		if err != nil {
+			return res, fmt.Errorf(".mcp.json: %w", err)
+		}
+		res.Files = append(res.Files, mcpAction)
 	}
-	res.Files = append(res.Files, mcpAction)
 
 	// 2. MCP permissions in .claude/settings.json — merge, not create.
 	permAction, err := installPermissions(w, filepath.Join(env.Root, ".claude", "settings.json"), opts)
@@ -602,23 +620,26 @@ func installGlobalSubAgents(w io.Writer, home string, opts agents.ApplyOpts) ([]
 // existing file is malformed JSON, it's backed up before we
 // overwrite.
 func upsertGlobalMCPConfig(w io.Writer, path string, opts agents.ApplyOpts) (agents.FileAction, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		// Fall back to bare "gortex" on PATH. Reasonable for
-		// homebrew / go install deployments.
-		exe = "gortex"
-	}
+	// Prefer the bare "gortex" command when it resolves on PATH to the
+	// binary we're running, so this user-scope entry matches the
+	// portable project .mcp.json template byte-for-byte. Claude Code
+	// keys OAuth tokens per endpoint, so a user-scope stanza that
+	// disagrees with a project-scope one trips its "conflicting scopes"
+	// diagnostic. Falls back to the absolute path only when gortex is
+	// not on PATH (e.g. a Windows install whose dir isn't on PATH).
 	entry := map[string]any{
-		"command": exe,
+		"command": agents.ResolveGortexCommand(),
 		"args":    []string{"mcp"},
 		"env":     map[string]any{},
 	}
 
-	// Try a direct merge first. MergeJSON handles malformed JSON
-	// with a timestamped backup already.
+	// Try a direct merge first. MergeJSON handles malformed JSON with a
+	// timestamped backup already. UpsertMCPServerWithMigration rewrites
+	// a stale Gortex-authored stanza (including the older absolute-path
+	// form) in place without clobbering a user's hand-rolled wrapper.
 	action, err := agents.MergeJSON(w, path, func(root map[string]any, existed bool) (bool, error) {
 		_ = existed
-		return agents.UpsertMCPServer(root, "gortex", entry, agents.ApplyOpts{Force: opts.Force}), nil
+		return agents.UpsertMCPServerWithMigration(root, "gortex", entry, agents.ApplyOpts{Force: opts.Force}), nil
 	}, opts)
 	if err != nil {
 		return agents.FileAction{}, err
@@ -635,6 +656,30 @@ func upsertGlobalMCPConfig(w io.Writer, path string, opts agents.ApplyOpts) (age
 		}
 	}
 	return action, nil
+}
+
+// userScopeGortexRegistered reports whether ~/.claude.json already
+// registers a "gortex" MCP server at user scope. A project .mcp.json
+// written on top of that produces a second registration under the same
+// name, which Claude Code flags as a "conflicting scopes" warning
+// because it stores OAuth tokens per endpoint. A missing or malformed
+// file is treated as "not registered" — we only suppress the project
+// write on positive evidence of a user-scope entry.
+func userScopeGortexRegistered(home string) bool {
+	data, err := os.ReadFile(userClaudeJSONPath(home))
+	if err != nil {
+		return false
+	}
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	servers, ok := root["mcpServers"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = servers["gortex"]
+	return ok
 }
 
 // Paths — user-level files.

@@ -2,6 +2,9 @@ package agents
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -157,5 +160,118 @@ func TestUpsertMCPServerWithMigrationPreservesUserCustomization(t *testing.T) {
 	// escape hatch users have when they want Gortex to take over.
 	if changed := UpsertMCPServerWithMigration(root, "gortex", GlobalGortexMCPEntry(), ApplyOpts{Force: true}); !changed {
 		t.Errorf("opts.Force must overwrite user-customized entry")
+	}
+}
+
+// TestIsGortexAuthoredMCPEntryAbsolutePath verifies the broadened
+// detection: the legacy absolute-path command form a pre-fix `gortex
+// install` baked into ~/.claude.json (via os.Executable()) is now
+// recognized as Gortex-authored, so the next install can migrate it to
+// the canonical bare-`gortex` shape. A user's own wrapper script is
+// still left alone. Both / and \ separators are handled regardless of
+// the host OS.
+func TestIsGortexAuthoredMCPEntryAbsolutePath(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{
+			name: "unix absolute path to gortex (legacy os.Executable form)",
+			raw:  `{"command":"/usr/local/bin/gortex","args":["mcp"]}`,
+			want: true,
+		},
+		{
+			name: "windows absolute path to gortex.exe (the issue #201 form)",
+			raw:  `{"command":"C:\\Users\\daoti\\AppData\\Local\\Programs\\gortex\\gortex.exe","args":["mcp"]}`,
+			want: true,
+		},
+		{
+			name: "absolute path to a non-gortex binary",
+			raw:  `{"command":"/usr/local/bin/something-else","args":["mcp"]}`,
+			want: false,
+		},
+		{
+			name: "user wrapper whose basename merely contains gortex",
+			raw:  `{"command":"/opt/scripts/my-gortex.sh","args":["mcp"]}`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var v any
+			if err := json.Unmarshal([]byte(tc.raw), &v); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := IsGortexAuthoredMCPEntry(v); got != tc.want {
+				t.Errorf("IsGortexAuthoredMCPEntry(%s) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveGortexCommandFrom pins the command-resolution policy that
+// keeps the user-scope ~/.claude.json entry in agreement with the
+// project .mcp.json template (and so avoids Claude Code's "conflicting
+// scopes" diagnostic) while staying robust when gortex isn't on PATH.
+func TestResolveGortexCommandFrom(t *testing.T) {
+	sameTrue := func(a, b string) bool { return true }
+	sameFalse := func(a, b string) bool { return false }
+	notFound := errors.New("executable file not found in $PATH")
+
+	cases := []struct {
+		name     string
+		exe      string
+		exeErr   error
+		lookPath string
+		lookErr  error
+		same     func(a, b string) bool
+		want     string
+	}{
+		{
+			name:     "on PATH and same binary -> bare gortex (matches project template)",
+			exe:      "/usr/local/bin/gortex",
+			lookPath: "/usr/local/bin/gortex",
+			same:     sameTrue,
+			want:     "gortex",
+		},
+		{
+			name:     "installed but not on PATH -> pin absolute path",
+			exe:      `C:\Users\daoti\AppData\Local\Programs\gortex\gortex.exe`,
+			lookPath: "",
+			lookErr:  notFound,
+			same:     sameFalse,
+			want:     `C:\Users\daoti\AppData\Local\Programs\gortex\gortex.exe`,
+		},
+		{
+			name:     "on PATH but a different gortex -> pin the running binary, not the PATH one",
+			exe:      "/opt/build/gortex",
+			lookPath: "/usr/local/bin/gortex",
+			same:     sameFalse,
+			want:     "/opt/build/gortex",
+		},
+		{
+			name:     "go run transient temp build + gortex on PATH -> bare gortex",
+			exe:      filepath.Join(os.TempDir(), "go-build1234", "agents.test"),
+			lookPath: "/usr/local/bin/gortex",
+			same:     sameFalse,
+			want:     "gortex",
+		},
+		{
+			name:    "nothing resolvable -> bare gortex last resort",
+			exe:     "",
+			exeErr:  errors.New("os.Executable failed"),
+			lookErr: notFound,
+			same:    sameFalse,
+			want:    "gortex",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveGortexCommandFrom(tc.exe, tc.exeErr, tc.lookPath, tc.lookErr, tc.same)
+			if got != tc.want {
+				t.Errorf("resolveGortexCommandFrom() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
