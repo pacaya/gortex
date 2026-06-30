@@ -151,11 +151,7 @@ func runHermesPreToolCall(data []byte, port int, mode Mode) {
 	// session flips the marker that downgrades subsequent denies. The
 	// call itself is a pass-through.
 	if mode == ModeConsultUnlock && isGortexTool {
-		st := loadSessionState(input.SessionID)
-		if !st.GraphConsulted {
-			st.GraphConsulted = true
-			saveSessionState(input.SessionID, st)
-		}
+		markGraphConsulted(input.SessionID)
 		return
 	}
 

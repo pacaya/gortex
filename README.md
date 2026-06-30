@@ -26,10 +26,10 @@
   <a href="https://trendshift.io/repositories/36832" target="_blank"><img src="https://trendshift.io/api/badge/repositories/36832" alt="zzet%2Fgortex | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-High-quality parsing 257 languages/grammars through tree-sitter AST analysis, in-process resolvers, enhanced with [compiler-grade resolution](https://github.com/zzet/gortex/blob/main/docs/lsp.md) for Python, TypeScript / JavaScript, PHP, C#, Go, C, C++, Java, Kotlin, Swift, Zig, Rust, Ruby, Elixir, Ocaml, Haskell, and [others](https://github.com/zzet/gortex/blob/main/docs/languages.md#at-a-glance) - producing a persistent provenance-tiered knowledge graph of functions, classes, call chains, HTTP routes, and cross-service contracts and calls with a strong confidence model. 175 (configurable) MCP tools - use only what you need. Zero dependencies. Plug and play across 17 coding agents. **Up to 50× fewer tokens per response**. Reproducible [benchmarks](BENCHMARK.md).
+High-quality parsing 257 languages/grammars through tree-sitter AST analysis, in-process resolvers, enhanced with [compiler-grade resolution](https://github.com/zzet/gortex/blob/main/docs/lsp.md) for Python, TypeScript / JavaScript, PHP, C#, Go, C, C++, Java, Kotlin, Swift, Zig, Rust, Ruby, Elixir, Ocaml, Haskell, and [others](https://github.com/zzet/gortex/blob/main/docs/languages.md#at-a-glance) - producing a persistent provenance-tiered knowledge graph of functions, classes, call chains, HTTP routes, and cross-service contracts and calls with a strong confidence model. 175 (configurable) MCP tools - use only what you need. Zero dependencies. Plug and play across 18 coding agents. **Up to 50× fewer tokens per response**. Reproducible [benchmarks](BENCHMARK.md).
 
 
-> 17 AI coding agents (Claude Code, Kiro, Cursor, Windsurf, VS Code / Copilot, Continue.dev, Cline, OpenCode, Antigravity, Codex CLI, Gemini CLI, Zed, Aider, Kilo Code, OpenClaw, Hermes, Oh My Pi) supported out of the box.
+> 18 AI coding agents (Claude Code, Kiro, Cursor, Windsurf, VS Code / Copilot, Continue.dev, Cline, OpenCode, Antigravity, Codex CLI, Gemini CLI, Zed, Aider, Kilo Code, OpenClaw, Hermes, Oh My Pi, Pi) supported out of the box.
 >
 > One install configures every one detected on your machine — see [docs/agents.md](docs/agents.md).
 

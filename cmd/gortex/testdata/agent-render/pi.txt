@@ -1,0 +1,482 @@
+=== root/.pi/extensions/gortex/index.ts ===
+// Gortex extension for the Pi coding agent (earendil-works/pi).
+//
+// Pi has no MCP support by design — the extension API's registerTool
+// covers it. This extension does two things:
+//
+//   1. Exposes Gortex's graph tools as native Pi tools. On every
+//      session_start the daemon is brought up (ensureDaemon) and the tools
+//      are (re)registered — Pi has no MCP, so the extension does what an MCP
+//      client's `gortex mcp` proxy does for it, and Pi resets the session's
+//      tool registry on each /new, so registration must happen per session.
+//      Each registered tool then shells `gortex call <name>`, which
+//      relays to the daemon. This mirrors the daemon's own core/defer tool
+//      surface: the configured eager preset (GORTEX_TOOLS, default `core`)
+//      is discovered from `gortex tools list` and registered up front, and
+//      the deferred remainder of the full (~175-tool) catalogue is reached
+//      on demand via the `gortex_tools_search` meta-tool, which runs the
+//      BM25 catalogue search and dynamically registers the matches — the
+//      analogue of MCP's tools_search + server-side promotion. If the
+//      daemon is unreachable at session_start no graph tools are
+//      registered; discovery re-runs on the next session.
+//
+//   2. Re-creates the Claude-Code "prefer graph tools over raw file
+//      reads" enforcement. Rather than re-implementing the deny logic in
+//      TypeScript, every relevant lifecycle event is marshalled into a
+//      normalized envelope and handed to `gortex hook --agent=pi`, whose
+//      decision is applied here. The Go side owns the deny / enrich /
+//      consult-unlock / nudge postures, identical to every other agent.
+//
+// This file is written verbatim by the `pi` agent adapter, except for four
+// templated sentinels the adapter replaces at install time:
+//
+//   "gortex"        -> a JSON string: the resolved `gortex` binary path
+//   ["gortex","hook","--agent=pi"]  -> a JSON array: the full hook argv, e.g.
+//                            ["/usr/local/bin/gortex","hook","--agent=pi"]
+//                            (with a trailing "--mode=<mode>" when non-deny)
+//   false    -> a JSON boolean: whether to wire the read-discipline
+//                            enforcement (false when installed with --no-hooks;
+//                            the graph tools + orientation are still wired)
+//   "core" -> a JSON string: the default eager tool preset
+//                            (core|edit|nav|readonly|full); GORTEX_TOOLS in the
+//                            environment overrides it at runtime.
+//
+// Each is emitted as a JSON literal so values containing spaces survive.
+//
+// NOTE: Pi is pre-1.0. The ExtensionAPI surface, event names, and the Pi
+// built-in tool names mapped in normalizeToolCall() below are pinned to
+// Pi's documented API (packages/coding-agent/docs/extensions.md). If a Pi
+// upgrade renames an event or a built-in tool, adjust the small maps here
+// — the Go side (the wire contract) stays unchanged.
+
+// Zero runtime dependencies: only Node built-ins. The tool `parameters`
+// below are plain JSON Schema objects rather than TypeBox schemas — Pi's
+// tool layer accepts a plain JSON-schema object. This is deliberate: 
+// a single-file auto-discovered extension has no package.json / node_modules, 
+// so importing `typebox` would throw at load and take the whole extension
+// (tools AND enforcement) down with it.
+import { execFileSync, spawn } from "node:child_process";
+
+const GORTEX_BIN: string = "gortex";
+const HOOK_ARGV: string[] = ["gortex","hook","--agent=pi"];
+const ENFORCE: boolean = false;
+
+// Which eager preset to expose as native Pi tools, mirroring the Gortex
+// daemon's own tool surface. The daemon defaults to the `core` preset in
+// `defer` mode and lets GORTEX_TOOLS override it — so we honour the same
+// env at runtime, falling back to the value baked at install time.
+// Recognised: core | edit | nav | readonly | full (full = the whole
+// catalogue eagerly). The deferred remainder is reachable via
+// `gortex_tools_search` below.
+const TOOLS_PRESET: string = ((process.env && process.env.GORTEX_TOOLS) || "core").trim();
+
+// Names (all gortex_-prefixed) of the Gortex tools registered into Pi.
+const gortexToolNames = new Set<string>();
+
+// Every Gortex tool is registered under a `gortex_` prefix so it can never
+// silently clobber a Pi built-in or another extension's tool of the same
+// name.
+// The execute() closure still calls the daemon with the bare name.
+const TOOL_PREFIX = "gortex_";
+function piToolName(bare: string): string {
+  return bare.startsWith(TOOL_PREFIX) ? bare : TOOL_PREFIX + bare;
+}
+
+// ---------------------------------------------------------------------------
+// Subprocess helpers
+// ---------------------------------------------------------------------------
+
+function runGortex(args: string[], input?: string): string {
+  return execFileSync(GORTEX_BIN, args, {
+    input,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: 30_000,
+  }).trim();
+}
+
+// ensureDaemon brings the shared Gortex daemon up, the way an MCP host's
+// `gortex mcp` does for other agents.
+// Idempotent, fire-and-forget (we don't block on the launcher's ≤60s 
+// readiness poll), and never throws — a missing binary or spawn failure
+// must not take the extension down. The first tool calls either find it
+// ready or degrade gracefully.
+function ensureDaemon(): void {
+  try {
+    const child = spawn(GORTEX_BIN, ["daemon", "start", "--detach"], {
+      stdio: "ignore",
+      detached: true,
+    });
+    child.on("error", () => { }); // binary missing / spawn failure — swallow
+    // No teardown counterpart, by design: the daemon is shared, long-lived
+    // infrastructure that outlives the session — like `gortex mcp`.
+    child.unref();
+  } catch {
+  }
+}
+
+interface PiDecision {
+  block?: boolean;
+  reason?: string;
+  additional_context?: string;
+  orientation?: string;
+}
+
+// callHook sends a normalized event envelope to `gortex hook --agent=pi`
+// and parses the PiDecision it writes back. Fail-open: any error returns
+// an empty decision so the extension never blocks Pi's flow on a hook
+// hiccup (daemon down, parse error, timeout).
+function callHook(envelope: Record<string, unknown>): PiDecision {
+  try {
+    const out = execFileSync(HOOK_ARGV[0], HOOK_ARGV.slice(1), {
+      input: JSON.stringify(envelope),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 5_000,
+    }).trim();
+    if (!out) return {};
+    return JSON.parse(out) as PiDecision;
+  } catch {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-call normalization (Pi vocabulary -> canonical Claude-Code vocabulary)
+// ---------------------------------------------------------------------------
+//
+// The Go enrich() classifier switches on Claude-Code tool names
+// ("Read"/"Grep"/"Glob"/"Bash"/"Edit"/"Write") and reads canonical input
+// keys ("file_path"/"pattern"/"command"). Pi uses its own lowercase names
+// and input shapes, so we translate here — keeping all Pi-specific
+// knowledge in this Pi-specific file.
+const toolNameMap: Record<string, string> = {
+  read: "Read",
+  grep: "Grep",
+  find: "Glob",
+  ls: "Glob",
+  bash: "Bash",
+  edit: "Edit",
+  write: "Write",
+};
+
+function firstString(obj: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v !== "") return v;
+  }
+  return undefined;
+}
+
+function normalizeToolCall(
+  piName: string,
+  piInput: Record<string, unknown>,
+): { tool_name: string; tool_input: Record<string, unknown> } {
+  const canonical = toolNameMap[piName.toLowerCase()] ?? piName;
+  const out: Record<string, unknown> = { ...piInput };
+
+  const path = firstString(piInput, ["file_path", "path", "file", "filepath", "absolute_path"]);
+  if (path !== undefined) out.file_path = path;
+
+  let pattern = firstString(piInput, ["pattern", "glob", "query", "regex", "name"]);
+  if (pattern === undefined && canonical === "Glob") pattern = path;
+  if (pattern !== undefined) out.pattern = pattern;
+
+  const command = firstString(piInput, ["command", "cmd", "script"]);
+  if (command !== undefined) out.command = command;
+
+  return { tool_name: canonical, tool_input: out };
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic tool registration
+// ---------------------------------------------------------------------------
+
+interface ToolDescriptor {
+  name: string;
+  summary?: string;
+}
+
+// presetListArgs maps the configured preset to `gortex tools list` flags.
+// `full`/`all`/empty list the whole catalogue (no --preset filter); any
+// other value is passed straight through so a preset added upstream works
+// with no change here — the CLI is the source of truth for valid names. An
+// unrecognised name simply matches nothing, and discoverTools falls back to
+// the static set; the full catalogue stays reachable via search regardless.
+function presetListArgs(): string[] {
+  const base = ["tools", "list", "--format", "json"];
+  const p = TOOLS_PRESET.toLowerCase();
+  if (p === "" || p === "full" || p === "all") return base;
+  return [...base, "--preset", p];
+}
+
+// discoverTools asks the daemon for the eager tool roster. Returns [] when
+// the daemon is unreachable.
+// TODO: poll for the daemon coming online mid-session and register then.
+function discoverTools(): ToolDescriptor[] {
+  try {
+    const raw = runGortex(presetListArgs());
+    const parsed = JSON.parse(raw) as ToolDescriptor[];
+    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+  } catch {
+    // daemon down / not tracking — no tools registered this session.
+  }
+  return [];
+}
+
+// safeRegister registers a Pi tool, tolerating a redundant registration —
+// a config reload can re-fire session_start without resetting the session's
+// tool registry, in which case the name is already live and Pi may throw.
+function safeRegister(pi: any, def: any): void {
+  try {
+    pi.registerTool(def);
+  } catch {
+    // already live this session — the existing registration stands.
+  }
+}
+
+// registerOneTool registers a single Gortex tool as a native Pi tool named
+// `gortex_<bare>`, whose execute() shells `gortex call <bare>`. Idempotent —
+// a name already registered is skipped. Adds the prefixed name to
+// gortexToolNames so the read-discipline postures treat a call to it as a
+// graph query, not a raw file read. Used both for the eager preset and for
+// tools promoted later by gortex_tools_search.
+function registerOneTool(pi: any, desc: ToolDescriptor): void {
+  const bare = desc.name;
+  if (!bare) return;
+  const name = piToolName(bare);
+  if (gortexToolNames.has(name)) return;
+  gortexToolNames.add(name);
+  safeRegister(pi, {
+    name,
+    label: name,
+    description:
+      (desc.summary ? desc.summary + " " : "") +
+      "(Gortex graph tool — prefer over raw file reads.)",
+    // Pass-through arguments: the model supplies whatever the underlying
+    // Gortex tool accepts; `gortex call` validates names + args server
+    // side and suggests near-matches on a typo.
+    parameters: { type: "object", additionalProperties: true, properties: {} },
+    async execute(_id: string, params: Record<string, unknown>) {
+      try {
+        const out = runGortex([
+          "call",
+          bare,
+          "--json",
+          JSON.stringify(params ?? {}),
+          "--format",
+          "gcx",
+        ]);
+        return { content: [{ type: "text", text: out }], details: {} };
+      } catch (err: any) {
+        const msg = err?.stderr?.toString?.() || err?.message || String(err);
+        throw new Error(`gortex call ${bare} failed: ${msg}`);
+      }
+    },
+  });
+}
+
+function registerGortexTools(pi: any): void {
+  for (const desc of discoverTools()) registerOneTool(pi, desc);
+}
+
+// ---------------------------------------------------------------------------
+// On-demand tool discovery (mirrors MCP tools_search + promotion)
+// ---------------------------------------------------------------------------
+//
+// MCP clients on the default core/defer surface see only the eager preset;
+// the rest of the catalogue is deferred behind the tools_search meta-tool,
+// which returns a match's schema and PROMOTES it into the live server
+// (firing notifications/tools/list_changed) so it becomes callable. Pi has
+// no server-side promotion, so we replicate it: a single
+// `gortex_tools_search` meta-tool runs the BM25 catalogue search and
+// dynamically registers each match as a native Pi tool — Pi supports
+// registering tools after session init.
+
+const SEARCH_TOOL_NAME = piToolName("tools_search");
+
+// parseToolSearchText parses `gortex tools search` output — one
+// "<name>  <summary>" line per match (tool names never contain whitespace),
+// skipping the "no tools match ..." line emitted when nothing matches.
+function parseToolSearchText(raw: string): ToolDescriptor[] {
+  const out: ToolDescriptor[] = [];
+  for (const line of raw.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("no tools match")) continue;
+    const sp = t.search(/\s/);
+    if (sp < 0) {
+      out.push({ name: t });
+    } else {
+      out.push({ name: t.slice(0, sp), summary: t.slice(sp).trim() });
+    }
+  }
+  return out;
+}
+
+function searchTools(query: string, limit: number): ToolDescriptor[] {
+  return parseToolSearchText(
+    runGortex(["tools", "search", query, "--limit", String(limit)]),
+  );
+}
+
+function registerSearchTool(pi: any): void {
+  if (gortexToolNames.has(SEARCH_TOOL_NAME)) return;
+  gortexToolNames.add(SEARCH_TOOL_NAME);
+  safeRegister(pi, {
+    name: SEARCH_TOOL_NAME,
+    label: SEARCH_TOOL_NAME,
+    description:
+      "Search the full Gortex tool catalogue and register the matches as callable tools. " +
+      "Use this when the eagerly-loaded set doesn't cover what you need — e.g. taint_paths, " +
+      "flow_between, contracts, find_clones, pr_risk, overlay/simulation tools. Returns the " +
+      "names + summaries now available; call them directly on the next turn. (Gortex graph tool.)",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: {
+          type: "string",
+          description: "What you want to do, e.g. 'trace taint to a sink' or 'detect duplicate code'.",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of tools to register (default 5).",
+        },
+      },
+      required: ["query"],
+    },
+    async execute(_id: string, params: Record<string, unknown>) {
+      const query = typeof params?.query === "string" ? params.query.trim() : "";
+      if (!query) {
+        return {
+          content: [{ type: "text", text: "Provide a 'query' describing the tool you need." }],
+          details: {},
+        };
+      }
+      const rawLimit = typeof params?.limit === "number" ? Math.floor(params.limit) : 5;
+      const limit = rawLimit > 0 ? rawLimit : 5;
+
+      let matches: ToolDescriptor[];
+      try {
+        matches = searchTools(query, limit);
+      } catch (err: any) {
+        const msg = err?.stderr?.toString?.() || err?.message || String(err);
+        throw new Error(`gortex tools search failed: ${msg}`);
+      }
+
+      const newlyAvailable: string[] = [];
+      for (const desc of matches) {
+        const name = desc.name ? piToolName(desc.name) : "";
+        if (!name || name === SEARCH_TOOL_NAME) continue;
+        if (!gortexToolNames.has(name)) newlyAvailable.push(name);
+        registerOneTool(pi, desc); // idempotent
+      }
+
+      // Report the prefixed names — that's what the model calls them by.
+      const lines = matches
+        .filter((d) => d.name && piToolName(d.name) !== SEARCH_TOOL_NAME)
+        .map((d) => `- ${piToolName(d.name)}${d.summary ? ` — ${d.summary}` : ""}`);
+      const header =
+        matches.length === 0
+          ? `No tools matched "${query}".`
+          : newlyAvailable.length > 0
+            ? `Registered ${newlyAvailable.length} tool(s) — now callable: ${newlyAvailable.join(", ")}.`
+            : "Matching tools are already registered and callable.";
+      return { content: [{ type: "text", text: [header, ...lines].join("\n") }], details: {} };
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
+export default function (pi: any) {
+  let orientationInjected = false;
+  // Orientation awaiting injection into the next LLM call. The `context`
+  // hook appends it as a tail user message rather than mutating
+  // systemPrompt: a systemPrompt change sits at messages[0] and invalidates
+  // prefix prompt caching. Computed once per session.
+  let pendingOrientation = "";
+
+  // Pi resets the session's tool registry on every session_start, so
+  // (re)register here. Clear the name guard first — it persists across
+  // sessions and would otherwise suppress re-registration.
+  pi.on("session_start", () => {
+    orientationInjected = false;
+    pendingOrientation = "";
+    ensureDaemon();
+    gortexToolNames.clear();
+    registerGortexTools(pi);
+    registerSearchTool(pi);
+  });
+
+  // Fires before the agent loop's first LLM call. It can't mutate messages
+  // itself, so it just parks the orientation for the `context` hook.
+  pi.on("before_agent_start", () => {
+    if (orientationInjected) return;
+    const decision = callHook({ event: "session_start", cwd: pi?.cwd ?? process.cwd() });
+    if (decision.orientation) {
+      pendingOrientation = decision.orientation;
+      orientationInjected = true;
+    }
+    return;
+  });
+
+  // Fires before each LLM call with a mutable message array. Append the
+  // parked orientation once, then clear it so it isn't repeated each call.
+  pi.on("context", (event: any) => {
+    if (!pendingOrientation) return;
+    const text = pendingOrientation;
+    pendingOrientation = "";
+    try {
+      if (event && Array.isArray(event.messages)) {
+        event.messages.push({ role: "user", content: text });
+        return { messages: event.messages };
+      }
+    } catch {
+      // best effort — never break context assembly.
+    }
+    return;
+  });
+
+  if (!ENFORCE) return;
+
+  // Enforcement: every non-Gortex tool call is checked against the Go hook.
+  pi.on("tool_call", async (event: any, ctx: any) => {
+    const piName: string = event?.toolName ?? "";
+    const piInput: Record<string, unknown> = event?.input ?? {};
+    const isGortexTool = gortexToolNames.has(piName);
+
+    const norm = normalizeToolCall(piName, piInput);
+    const decision = callHook({
+      event: "tool_call",
+      tool_name: norm.tool_name,
+      tool_input: norm.tool_input,
+      cwd: ctx?.cwd ?? pi?.cwd ?? process.cwd(),
+      session_id: ctx?.sessionManager?.sessionId ?? "",
+      is_gortex_tool: isGortexTool,
+    });
+
+    if (decision.block) {
+      return { block: true, reason: decision.reason ?? "[Gortex] blocked — prefer graph tools." };
+    }
+    if (decision.additional_context) {
+      // Soft guidance: surface it without blocking the call.
+      try {
+        pi.sendMessage(
+          { customType: "gortex", content: decision.additional_context, display: true },
+          { deliverAs: "steer" },
+        );
+      } catch {
+        // sendMessage shape can vary across Pi versions; never fatal.
+      }
+    }
+    return;
+  });
+}
+=== root/AGENTS.md ===
+<!-- gortex:communities:start -->
+- [example-community](.claude/skills/example/SKILL.md) — example routing block
+
+<!-- gortex:communities:end -->

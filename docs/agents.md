@@ -2,7 +2,7 @@
 
 `gortex install` (once per machine) and `gortex init` (once per repo)
 auto-configure Gortex for every AI coding assistant detected on your
-machine. Seventeen adapters ship today.
+machine. Eighteen adapters ship today.
 
 - `gortex install` writes user-level machinery: `~/.claude.json` MCP,
   `~/.claude/skills/gortex-*`, `~/.claude/commands/gortex-*.md`,
@@ -34,6 +34,7 @@ commands accept `--agents=<csv>` to constrain setup and
 | `oh-my-pi`      | `.omp/mcp.json`                                                                                 | project    | https://github.com/can1357/oh-my-pi/blob/main/docs/mcp-config.md   |
 | `opencode`      | `opencode.json` (or existing `opencode.jsonc`), `AGENTS.md` communities block                   | project    | https://opencode.ai/docs/mcp                                        |
 | `openclaw`      | `~/.openclaw/openclaw.json` (`mcp.servers.gortex`)                                              | user       | https://docs.openclaw.ai/cli/mcp                                    |
+| `pi`            | `.pi/extensions/gortex/index.ts` (project) or `~/.pi/agent/extensions/gortex/index.ts`; `AGENTS.md` communities block only when `--skills` | both | https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md |
 | `vscode`        | `.vscode/mcp.json` (`servers` key, 1.102+), `.github/copilot-instructions.md` communities block | project    | https://code.visualstudio.com/docs/copilot/chat/mcp-servers         |
 | `windsurf`      | `~/.codeium/mcp_config.json`, `.windsurfrules` communities block                                | both       | https://docs.windsurf.com/plugins/cascade/mcp                       |
 | `zed`           | OS-specific `settings.json` (`context_servers`), `.rules` communities block                     | both       | https://zed.dev/docs/ai/mcp                                         |
@@ -252,6 +253,22 @@ an array, env key is `environment`, plus a `$schema` pointer at
 Config lives at `~/.openclaw/openclaw.json`. OpenClaw advertises
 JSON5 but accepts strict JSON, which is what we emit. Servers go
 under `mcp.servers.<name>`.
+
+### pi
+
+**Pi has no MCP support — by design**, so instead of an `mcpServers`
+stanza this adapter ships a self-contained TypeScript extension at
+`.pi/extensions/gortex/index.ts` (project) or
+`~/.pi/agent/extensions/gortex/index.ts` (global). It registers Gortex's
+graph tools natively and re-creates the same read-discipline enforcement
+the other agents get (skip it with `--no-hooks`). `GORTEX_TOOLS` selects
+the eagerly-registered preset (default `core`), matching the daemon.
+
+The read-discipline rules are injected by the extension at runtime.
+
+**Project-local extensions require a one-time trust confirmation** the
+first time Pi opens the repo — nothing the installer can do beyond writing
+the file.
 
 ### vscode
 

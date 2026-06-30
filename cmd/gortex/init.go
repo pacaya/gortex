@@ -27,6 +27,7 @@ import (
 	"github.com/zzet/gortex/internal/agents/ohmypi"
 	"github.com/zzet/gortex/internal/agents/openclaw"
 	"github.com/zzet/gortex/internal/agents/opencode"
+	"github.com/zzet/gortex/internal/agents/pi"
 	"github.com/zzet/gortex/internal/agents/vscode"
 	"github.com/zzet/gortex/internal/agents/windsurf"
 	"github.com/zzet/gortex/internal/agents/zed"
@@ -131,6 +132,7 @@ func buildRegistry() *agents.Registry {
 	r.Register(ohmypi.New())
 	r.Register(opencode.New())
 	r.Register(openclaw.New())
+	r.Register(pi.New())
 	r.Register(vscode.New())
 	r.Register(windsurf.New())
 	r.Register(zed.New())

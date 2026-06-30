@@ -115,43 +115,11 @@ func runPreToolUse(data []byte, gortexPort int, mode Mode) {
 	// MCP call in-process, so the marker is fully self-contained. The
 	// call itself is a no-op pass-through — nothing to enrich.
 	if mode == ModeConsultUnlock && isGortexMCP {
-		st := loadSessionState(input.SessionID)
-		if !st.GraphConsulted {
-			st.GraphConsulted = true
-			saveSessionState(input.SessionID, st)
-		}
+		markGraphConsulted(input.SessionID)
 		return
 	}
 
-	result := enrich(input, gortexPort)
-
-	// In enrich mode no PreToolUse call is ever denied. The agent
-	// keeps making whatever tool call it intended; the deny rationale
-	// becomes a soft tip surfaced via additionalContext, and the
-	// actual graph value lands in the PostToolUse handler that sees
-	// the tool's response.
-	if mode == ModeEnrich && result.deny {
-		result = enrichResult{context: downgradeReason(result)}
-	}
-
-	// Consult-unlock mode: a deny stays hard until the agent has
-	// queried the graph at least once this session. After the first
-	// mcp__gortex__* call the marker is set and the deny is downgraded
-	// to soft context (same shape as ModeEnrich). Before that the deny
-	// holds, but its reason explains exactly how to unlock fallback.
-	if mode == ModeConsultUnlock && result.deny {
-		if loadSessionState(input.SessionID).GraphConsulted {
-			result = enrichResult{context: downgradeReason(result)}
-		} else {
-			result.reason = consultUnlockReason(result.reason)
-		}
-	}
-
-	// Adaptive-nudge mode replaces every-call denial with a single
-	// soft-deny per burst of non-symbolic fallback calls.
-	if mode == ModeAdaptiveNudge {
-		result = adaptiveNudge(input, isGortexMCP, result)
-	}
+	result := applyMode(input, isGortexMCP, mode, enrich(input, gortexPort))
 
 	if result.context == "" && !result.deny {
 		return
@@ -171,6 +139,51 @@ func runPreToolUse(data []byte, gortexPort int, mode Mode) {
 	}
 
 	emitPreToolUse(output)
+}
+
+// applyMode adjusts a raw enrich result according to the active posture.
+// Shared by the Claude Code PreToolUse handler (runPreToolUse) and the Pi
+// bridge (RunPi) so the deny / enrich / consult-unlock / nudge semantics
+// stay identical across agents. Modes are mutually exclusive — only one
+// branch ever fires for a given mode.
+//
+//   - ModeDeny (default): result passes through unchanged — a deny stays a
+//     hard deny.
+//   - ModeEnrich: a deny is downgraded to soft additionalContext so the
+//     original call still runs.
+//   - ModeConsultUnlock: a deny stays hard until the agent has queried the
+//     graph once this session, then downgrades to soft context.
+//   - ModeAdaptiveNudge: per-call denial is replaced with a single
+//     soft-deny per burst of non-symbolic fallback calls.
+func applyMode(input HookInput, isGortexMCP bool, mode Mode, result enrichResult) enrichResult {
+	switch mode {
+	case ModeEnrich:
+		if result.deny {
+			return enrichResult{context: downgradeReason(result)}
+		}
+	case ModeConsultUnlock:
+		if result.deny {
+			if loadSessionState(input.SessionID).GraphConsulted {
+				return enrichResult{context: downgradeReason(result)}
+			}
+			result.reason = consultUnlockReason(result.reason)
+		}
+	case ModeAdaptiveNudge:
+		return adaptiveNudge(input, isGortexMCP, result)
+	}
+	return result
+}
+
+// markGraphConsulted flips the per-session consult-unlock marker idempotently; a blank session id is a no-op.
+func markGraphConsulted(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	st := loadSessionState(sessionID)
+	if !st.GraphConsulted {
+		st.GraphConsulted = true
+		saveSessionState(sessionID, st)
+	}
 }
 
 // emitPreToolUse marshals a PreToolUse HookOutput to stdout. A marshal
