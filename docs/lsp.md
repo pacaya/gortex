@@ -208,6 +208,49 @@ Call `unsubscribe_diagnostics` to opt back out (idempotent).
 Pair with `get_code_actions` + `apply_code_action` + `fix_all_in_file`
 for the full edit-time diagnostic loop without polling.
 
+## Language-specific behaviour
+
+A few servers need per-language handling beyond the generic router. These
+knobs are **environment variables** read by the daemon process — set them
+where you launch `gortex daemon` / `gortex server`. There is no `.gortex.yaml`
+key for them today.
+
+### C# — NuGet audit advisories (`omnisharp` / `csharp-ls`)
+
+The Roslyn `MSBuildWorkspace` these servers build escalates a NuGet audit
+*warning* (the `NU19xx` family — e.g. a transitively vulnerable package) to a
+**fatal** project-load failure and drops every project that references the
+flagged package. Those projects then have no compilation, so the server emits
+false `CS####` "unresolved type / namespace" diagnostics — even though
+`dotnet build` / `dotnet test` keep `NU19xx` a non-fatal warning and succeed.
+
+Gortex applies two complementary, C#-scoped fixes, **both on by default**:
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `GORTEX_LSP_CSHARP_RESTORE` | on | Before spawning the C# server, run `dotnet restore -p:NuGetAudit=false` in the workspace so the MSBuild workspace loads every project (root-cause fix). Best-effort: a failure logs and falls through to a normal spawn; skipped on passive IDE attach and when `dotnet` is not on `PATH`. |
+| `GORTEX_LSP_CSHARP_DIAG_FILTER` | on | Strip diagnostics whose code is the `NU####` NuGet family from `publishDiagnostics` before storing / fanning out (symptom fix). Deliberately narrow — real `CS####` compiler diagnostics always pass through. |
+
+Set either to a falsey value (`0` / `off` / `false` / `none`) to disable it —
+e.g. `GORTEX_LSP_CSHARP_RESTORE=0` for offline / air-gapped indexing or to
+keep indexing off the network. Restore is on by default because gortex only
+indexes repositories you explicitly add (it never auto-discovers), and
+spawning the C# server already evaluates the project's MSBuild graph — so the
+restore adds no execution surface beyond the workspace load it precedes. A
+successful restore logs `lsp: csharp pre-restore complete (NuGetAudit
+suppressed)`; a failure logs `lsp: csharp pre-restore failed; spawning server
+anyway` with the restore output tail.
+
+### Java — build-backed resolution (`jdtls`)
+
+By default `jdtls` runs in a **no-build** mode (JRE-only classpath, Maven /
+Gradle import and autobuild disabled) so indexing an untrusted Java repo never
+runs its build. Resolution is more limited in this mode (jdtls falls back to
+an "invisible project"). Set `GORTEX_LSP_JDTLS_TRUST_BUILD=1` (or `true`) to
+allow full Maven / Gradle import + autobuild for higher-fidelity resolution —
+**opt-in**, because it executes the repository's build tooling. Enable it only
+for repositories you trust.
+
 ## Troubleshooting
 
 - **`no_lsp_for` error:** the file extension didn't match any

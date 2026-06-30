@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -946,6 +947,191 @@ func lspCallTimeout() time.Duration {
 	}
 }
 
+// servesCSharp reports whether this provider routes C# (.cs) files. Used to
+// scope the C#-specific pre-restore and diagnostic-filter behaviour so it can
+// never touch another language's provider.
+func (p *Provider) servesCSharp() bool {
+	for _, l := range p.languages {
+		if l == "csharp" {
+			return true
+		}
+	}
+	return false
+}
+
+// CSharpDiagFilterEnv toggles the C# advisory-diagnostic filter (see
+// filterCSharpAdvisoryDiags). ON by default; set to a falsey value
+// ("0" / "off" / "false" / "none") to pass every diagnostic through unchanged.
+const CSharpDiagFilterEnv = "GORTEX_LSP_CSHARP_DIAG_FILTER"
+
+// csharpDiagFilterEnabled reports whether the C# advisory-diagnostic filter is
+// active. Default ON — the filter only drops NuGet advisory codes, which are
+// never code-level problems an indexer acts on.
+func csharpDiagFilterEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(CSharpDiagFilterEnv))) {
+	case "0", "off", "false", "none":
+		return false
+	default:
+		return true
+	}
+}
+
+// CSharpRestoreEnv toggles the C# pre-spawn `dotnet restore` (see
+// Provider.maybeCSharpPreRestore). ON by default; set to a falsey value
+// ("0" / "off" / "false" / "none") to skip it — e.g. offline / air-gapped
+// indexing, or to keep indexing off the network.
+const CSharpRestoreEnv = "GORTEX_LSP_CSHARP_RESTORE"
+
+// csharpRestoreEnabled reports whether the C# pre-spawn restore is active.
+// Default ON: gortex only restores repositories the user has explicitly added
+// (it never auto-discovers), and spawning the C# server already evaluates the
+// project's MSBuild graph — so restore adds no execution surface beyond the
+// workspace load it precedes, while letting the Roslyn workspace load every
+// project instead of dropping audit-flagged ones and reporting false errors.
+func csharpRestoreEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(CSharpRestoreEnv))) {
+	case "0", "off", "false", "none":
+		return false
+	default:
+		return true
+	}
+}
+
+// diagCodeString renders a Diagnostic.Code as a string when it is a string
+// code (NuGet / Roslyn codes such as "NU1902" / "CS0246"); numeric codes
+// return "". Sufficient for the NuGet-advisory check, which only matches NU####.
+func diagCodeString(code any) string {
+	switch c := code.(type) {
+	case string:
+		return c
+	case json.Number:
+		return c.String()
+	default:
+		return ""
+	}
+}
+
+// isNuGetAdvisoryCode reports whether code is a NuGet code — "NU" (any case)
+// followed by one or more digits — the audit / restore advisory family.
+func isNuGetAdvisoryCode(code string) bool {
+	if len(code) < 3 {
+		return false
+	}
+	if (code[0] != 'N' && code[0] != 'n') || (code[1] != 'U' && code[1] != 'u') {
+		return false
+	}
+	for _, r := range code[2:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// filterCSharpAdvisoryDiags drops NuGet *advisory* diagnostics (code NU####)
+// from a C# publishDiagnostics batch and returns the survivors.
+//
+// Why: csharp-ls / OmniSharp build a Roslyn MSBuildWorkspace that escalates a
+// NuGet audit *warning* — e.g. NU1902 "package has a known vulnerability" — to
+// a fatal project-load failure and then surfaces it as a diagnostic. The
+// `dotnet build` / `dotnet test` CLIs keep the same NU19xx a non-fatal warning
+// and succeed, so the diagnostic is noise from the indexer's point of view
+// (gortex does not act on dependency-vulnerability advisories).
+//
+// The filter is deliberately narrow: it matches ONLY the NU#### NuGet code
+// family. Real compiler diagnostics (CS####) and analyzer warnings always pass
+// through — a dropped project's genuine "unresolved type" errors are fixed by
+// loading the project (the pre-restore guard), never by hiding CS codes
+// here. Returns the input slice unchanged (no allocation) when nothing matches.
+func filterCSharpAdvisoryDiags(diags []Diagnostic) []Diagnostic {
+	drop := false
+	for _, d := range diags {
+		if isNuGetAdvisoryCode(diagCodeString(d.Code)) {
+			drop = true
+			break
+		}
+	}
+	if !drop {
+		return diags
+	}
+	out := make([]Diagnostic, 0, len(diags))
+	for _, d := range diags {
+		if isNuGetAdvisoryCode(diagCodeString(d.Code)) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// csharpRestoreTimeout bounds the pre-spawn `dotnet restore`.
+const csharpRestoreTimeout = 5 * time.Minute
+
+// csharpPreRestoreEligible reports whether the C# pre-restore should run for
+// this provider: it serves C#, restore is enabled (csharpRestoreEnabled, ON by
+// default), and we are spawning the server (not passively attached to an
+// IDE-owned LSP, which manages its own restore).
+func (p *Provider) csharpPreRestoreEligible() bool {
+	return p.connect == nil && p.servesCSharp() && csharpRestoreEnabled()
+}
+
+// maybeCSharpPreRestore runs `dotnet restore` with NuGet audit suppressed in
+// workspaceRoot before the C# LSP starts, when csharpPreRestoreEligible.
+//
+// Why: csharp-ls / OmniSharp treat a NuGet audit warning (NU19xx) as a fatal
+// project-load failure and drop the project; its files then have no compilation
+// and the server reports false "unresolved type" errors, while `dotnet build`
+// keeps NU19xx a non-fatal warning. Restoring with `-p:NuGetAudit=false` writes
+// a clean project.assets.json so the workspace loads every project.
+//
+// On by default (CSharpRestoreEnv): gortex only indexes repositories the user
+// explicitly added (never auto-discovered), and the C# server spawn already
+// evaluates the project's MSBuild graph — so restore adds no execution surface
+// beyond the workspace load it precedes. Best-effort: a restore failure logs
+// and falls through to the normal spawn (status quo), never aborting
+// enrichment; skipped on passive attach (the IDE owns restore) and when dotnet
+// is not on PATH.
+func (p *Provider) maybeCSharpPreRestore(workspaceRoot string) {
+	if !p.csharpPreRestoreEligible() {
+		return
+	}
+	if _, err := exec.LookPath("dotnet"); err != nil {
+		if p.logger != nil {
+			p.logger.Debug("lsp: csharp pre-restore skipped — dotnet not on PATH",
+				zap.Error(err))
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), csharpRestoreTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "dotnet", "restore", "-p:NuGetAudit=false")
+	cmd.Dir = workspaceRoot
+	cmd.Env = append(os.Environ(), p.env...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if p.logger != nil {
+			p.logger.Warn("lsp: csharp pre-restore failed; spawning server anyway",
+				zap.String("workspace", workspaceRoot),
+				zap.Error(err),
+				zap.ByteString("output", lastBytes(out, 600)),
+			)
+		}
+		return
+	}
+	if p.logger != nil {
+		p.logger.Info("lsp: csharp pre-restore complete (NuGetAudit suppressed)",
+			zap.String("workspace", workspaceRoot))
+	}
+}
+
+// lastBytes returns up to the last n bytes of b — keeps a failed restore's
+// tail (where the error sits) out of an unbounded log line.
+func lastBytes(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+	return b[len(b)-n:]
+}
+
 // ensureClient starts the LSP server if not already running, OR
 // reconnects if the previous client's transport went away (e.g. the
 // IDE that owned a passive-attach LSP restarted, closing the socket).
@@ -978,6 +1164,12 @@ func (p *Provider) ensureClient(workspaceRoot string) error {
 	p.dynamicCaps = map[string]Registration{}
 	p.capsMu.Unlock()
 
+	// C#: optionally `dotnet restore` (NuGet audit suppressed) before the
+	// server starts so its MSBuild workspace loads every project instead of
+	// dropping audit-warning projects and reporting false errors. On by
+	// default and best-effort — see maybeCSharpPreRestore / CSharpRestoreEnv.
+	p.maybeCSharpPreRestore(workspaceRoot)
+
 	client, err := p.dialOrSpawn(workspaceRoot)
 	if err != nil {
 		return err
@@ -996,10 +1188,18 @@ func (p *Provider) ensureClient(workspaceRoot string) error {
 			if abs == "" {
 				return
 			}
+			diags := pd.Diagnostics
+			// C#: strip NuGet audit advisories (NU19xx) that csharp-ls /
+			// OmniSharp surface as diagnostics (and escalate to fatal
+			// project drops) — they are not code errors an indexer acts
+			// on. Real CS#### compiler diagnostics pass through untouched.
+			if p.servesCSharp() && csharpDiagFilterEnabled() {
+				diags = filterCSharpAdvisoryDiags(diags)
+			}
 			p.docMu.Lock()
-			p.lastDiag[abs] = pd.Diagnostics
+			p.lastDiag[abs] = diags
 			p.docMu.Unlock()
-			p.fanoutDiagnostics(abs, pd.Diagnostics)
+			p.fanoutDiagnostics(abs, diags)
 		})
 	// Some servers (rust-analyzer, jdtls) emit progress / log messages
 	// — silently swallow them; they're not actionable for the indexer.
