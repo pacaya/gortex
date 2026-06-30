@@ -215,7 +215,7 @@ func (e *Engine) classHierarchyPushdown(
 		if n == nil {
 			continue
 		}
-		if opts.WorkspaceID != "" && id != seed.ID && !opts.ScopeAllows(n) {
+		if opts.hasScopeFilter() && id != seed.ID && !opts.ScopeAllows(n) {
 			continue
 		}
 		resultNodes = append(resultNodes, n)
@@ -279,7 +279,7 @@ func (e *Engine) classHierarchyPushdown(
 
 	// Workspace-scope post-filter for edges (any edge whose endpoints
 	// were dropped from resultNodes is also dropped).
-	if opts.WorkspaceID != "" {
+	if opts.hasScopeFilter() {
 		nodeSet := make(map[string]bool, len(resultNodes))
 		for _, n := range resultNodes {
 			nodeSet[n.ID] = true
@@ -400,7 +400,7 @@ func (e *Engine) classHierarchyWalk(
 				if member.Kind != graph.KindMethod && member.Kind != graph.KindFunction {
 					continue
 				}
-				if opts.WorkspaceID != "" && !opts.ScopeAllows(member) {
+				if opts.hasScopeFilter() && !opts.ScopeAllows(member) {
 					continue
 				}
 				addNode(member)
@@ -428,7 +428,7 @@ func (e *Engine) classHierarchyWalk(
 				if neighbor == nil {
 					continue
 				}
-				if opts.WorkspaceID != "" && !opts.ScopeAllows(neighbor) {
+				if opts.hasScopeFilter() && !opts.ScopeAllows(neighbor) {
 					continue
 				}
 				addEdge(ed)
@@ -447,7 +447,7 @@ func (e *Engine) classHierarchyWalk(
 				if neighbor == nil {
 					continue
 				}
-				if opts.WorkspaceID != "" && !opts.ScopeAllows(neighbor) {
+				if opts.hasScopeFilter() && !opts.ScopeAllows(neighbor) {
 					continue
 				}
 				addEdge(ed)

@@ -115,7 +115,51 @@ Agents can manage repos at runtime without CLI access:
 | `set_active_project` | Switch project scope for all subsequent queries |
 | `get_active_project` | Return current project name and repo list |
 
-All query tools (`search_symbols`, `get_symbol`, `find_usages`, `get_file_summary`, `get_call_chain`, `smart_context`) accept optional `repo`, `project`, and `ref` parameters for scoping. When an active project is set, it applies as the default scope.
+Locate, reach, and analyze query tools uniformly accept `repo`, `project`, `workspace`, and `scope` parameters for scoping (plus `ref` where reference tags apply). All are clamped to the session workspace — the hard isolation boundary. Default breadth now follows **tool intent** when `scope.intent_defaults` is enabled (the default); see [Tool scoping by intent](#tool-scoping-by-intent) below.
+
+For `analyze`, the overrides genuinely narrow its **graph-node** kinds — `dead_code`, `hotspots`, `cycles`, `health_score`, `todos`, `stale_code`, `ownership`, `coverage_gaps`, `coverage_summary`, `impact`, `bottlenecks`, `role`, `k8s_resources`, `images`, `kustomize`, `dbt_models`, `external_calls`, and the like — and, since v1, its **edge-walk / graph-algorithm / framework / file-AST-scan** kinds too (`channel_ops`, `pubsub`, `routes`, `models`, `pagerank`, `kcore`, `edge_audit`, `tests_as_edges`, `sast`, `review`, …), which prune their rows / re-tally their counts against the same workspace + repo allow-set. The narrowing also resolves the two kind-specific collisions: `kind=cross_repo` keeps `repo` as its boundary filter and `kind=cycles` keeps `scope` as a file-path / package prefix (both are stripped from the uniform scope-resolution view). **v1 caveat:** the remaining long-tail kinds — community detection (`clusters`, `concepts`, `suggest_boundaries`), git/disk-mining (`blame`, `coverage`, `fixes_history`, `retrieval_log`, `temporal_verify`), per-id (`would_create_cycle`, `def_use`), `synthesizers` / `resolution_outcomes`, and `sql_rebuild` — remain workspace-bound but are **not** repo-narrowed — passing a narrowing arg on such a kind stamps a `scope_note` on the response disclosing the no-op.
+
+## Tool scoping by intent
+
+Tools are split by intent — each group has a different default scope:
+
+| Intent | Tools | Default scope |
+|--------|-------|---------------|
+| **Locate** ("where is X defined") | `search_symbols`, `search_text`, `find_files` | current repo |
+| **Reach** ("who consumes X") | `find_usages`, `get_callers`, `get_call_chain`, `contracts` | workspace |
+| **Analyze** | `analyze`, `review`, sast | workspace (graph-node + edge-walk / algorithm / framework / scan kinds narrow to `repo`/`project`/`scope`; community / git-mining / per-id kinds stay workspace-bound — see the caveat above) |
+
+Other query tools (`get_symbol`, `get_file_summary`, `smart_context`, etc.) keep their existing per-tool scope classification; the intent defaults above apply to the locate/reach/analyze groups listed in the table.
+
+### `scope.intent_defaults` config flag
+
+- Controls the intent-based default scoping described above
+- **Defaults ON** (enabled out of the box — this is the new behavior after upgrade)
+- **Narrow-only invariant:** the intent defaults only ever *narrow* within the session workspace (the hard isolation boundary); they never widen past it, and an explicit `repo` / `project` / `workspace` / `scope` arg always overrides the default
+- Opt out: set `scope.intent_defaults: false` in `.gortex.yaml`, or set env var `GORTEX_SCOPE_INTENT_DEFAULTS=0`
+- Design rationale: see [the intent-based scoping proposal](proposals/scope-intent-defaults.md)
+
+**⚠ Upgrade note (behavior change):** When upgrading to this version:
+
+- Locate tools narrow their default: project → repo (you now need `repo:"*"` to search the whole workspace)
+- Reach tools widen their default: project → workspace (cross-repo callers surface automatically)
+- Restore the old behavior with `scope.intent_defaults: false` or `GORTEX_SCOPE_INTENT_DEFAULTS=0`
+
+### Widen sentinels
+
+When intent defaults are on, you can still widen or narrow explicitly:
+
+- `repo:"*"` — widen a locate tool back to the whole workspace
+- `project:<name>` — select the middle rung (explicit project scope)
+- `scope:<name>` — select a named saved scope
+
+### Uniform parameter set
+
+Every locate/reach/analyze tool now uniformly accepts `repo`, `project`, `workspace`, and `scope` parameters. All are clamped to the session workspace (the hard isolation boundary). For `analyze` this narrows the graph-node, edge-walk, graph-algorithm, framework, and file/AST-scan kinds; the remaining community / git-mining / per-id / synthesizer kinds are workspace-bound but not repo-narrowed in v1 (see the [MCP tools](#mcp-tools) caveat above).
+
+### Response metadata
+
+Scoped tool responses carry a `scope_applied` meta field plus a one-line widen hint naming an explicit override that re-broadens the result (e.g. `repo:"*"` for the whole workspace, or `project:<name>` / `scope:<name>` to re-scope to a deliberate rung). `analyze` additionally stamps a `scope_note` when a narrowing arg is passed to a kind that does not repo-narrow its rows in v1, so the no-op is self-documenting rather than silent.
 
 ## How it works
 

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -149,6 +150,64 @@ func TestWorkspaceIsolation_ScopedNodes(t *testing.T) {
 	assert.True(t, hasSymbol(all, "AlphaThing") && hasSymbol(all, "BetaThing"))
 }
 
+func TestWorkspaceIsolation_GetSymbolRejectsCrossWorkspaceID(t *testing.T) {
+	srv, repoA, _ := newIsolationServer(t)
+	ctxA := sessionCtx("s-alpha", repoA)
+	betaID := symbolIDByName(t, srv, "BetaThing")
+
+	res, err := srv.handleGetSymbol(ctxA, makeReq("get_symbol", map[string]any{"id": betaID}))
+	require.NoError(t, err)
+	assertRecoverableCondition(t, res, ErrCodeSymbolNotFound)
+}
+
+func TestWorkspaceIsolation_GetSymbolFiltersCrossWorkspaceEdges(t *testing.T) {
+	srv, repoA, _ := newIsolationServer(t)
+	ctxA := sessionCtx("s-alpha", repoA)
+	alphaID := symbolIDByName(t, srv, "AlphaThing")
+	betaID := symbolIDByName(t, srv, "BetaThing")
+	srv.graph.AddEdge(&graph.Edge{From: alphaID, To: betaID, Kind: graph.EdgeCalls})
+
+	res, err := srv.handleGetSymbol(ctxA, makeReq("get_symbol", map[string]any{
+		"id":     alphaID,
+		"detail": "full",
+	}))
+	require.NoError(t, err)
+	require.False(t, res.IsError, "get_symbol errored: %s", toolResultText(res))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(toolResultText(res)), &payload))
+	assert.Contains(t, payload, "node")
+	outEdges, err := json.Marshal(payload["out_edges"])
+	require.NoError(t, err)
+	inEdges, err := json.Marshal(payload["in_edges"])
+	require.NoError(t, err)
+	assert.NotContains(t, string(outEdges), betaID, "cross-workspace out_edges must not be disclosed")
+	assert.NotContains(t, string(inEdges), betaID, "cross-workspace in_edges must not be disclosed")
+}
+
+func TestWorkspaceIsolation_ReachToolsRejectCrossWorkspaceSeedIDs(t *testing.T) {
+	srv, repoA, _ := newIsolationServer(t)
+	ctxA := sessionCtx("s-alpha", repoA)
+	betaID := symbolIDByName(t, srv, "BetaThing")
+
+	tests := []struct {
+		name    string
+		handler func(context.Context, mcplib.CallToolRequest) (*mcplib.CallToolResult, error)
+	}{
+		{name: "get_dependencies", handler: srv.handleGetDependencies},
+		{name: "get_call_chain", handler: srv.handleGetCallChain},
+		{name: "find_usages", handler: srv.handleFindUsages},
+		{name: "walk_graph", handler: srv.handleWalkGraph},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := tt.handler(ctxA, makeReq(tt.name, map[string]any{"id": betaID}))
+			require.NoError(t, err)
+			assertRecoverableCondition(t, res, ErrCodeSymbolNotFound)
+		})
+	}
+}
+
 // TestWorkspaceIsolation_ResolveRepoFilter verifies the repo-prefix
 // allow-set is bounded to the session's workspace and that args cannot
 // escape it.
@@ -242,4 +301,24 @@ func hasSymbol(nodes []*graph.Node, name string) bool {
 		}
 	}
 	return false
+}
+
+func symbolIDByName(t *testing.T, srv *Server, name string) string {
+	t.Helper()
+	for _, n := range srv.graph.AllNodes() {
+		if n.Name == name {
+			return n.ID
+		}
+	}
+	t.Fatalf("symbol %q not found", name)
+	return ""
+}
+
+func assertRecoverableCondition(t *testing.T, res *mcplib.CallToolResult, condition ErrorCode) {
+	t.Helper()
+	require.NotNil(t, res)
+	require.False(t, res.IsError, "recoverable guidance should not be an MCP error: %s", toolResultText(res))
+	var guidance RecoverableGuidance
+	require.NoError(t, json.Unmarshal([]byte(toolResultText(res)), &guidance))
+	assert.Equal(t, condition, guidance.Condition)
 }

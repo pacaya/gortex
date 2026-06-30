@@ -362,23 +362,17 @@ var gitDiffScopes = map[string]bool{"unstaged": true, "staged": true, "all": tru
 // the active-project default applied. A nil result there still means
 // "no filter — all repos".
 func (s *Server) resolveRepoFilter(ctx context.Context, req mcp.CallToolRequest) (map[string]bool, error) {
-	repo := req.GetString("repo", "")
-	// The selector may be a filesystem path (the CLI defaults to the
-	// caller's working directory) — normalize to the tracked prefix so the
-	// filter matches what the workspace knows the repo as.
-	if p := s.resolveRepoPrefix(repo); p != "" {
-		repo = p
+	repo := strings.TrimSpace(req.GetString("repo", ""))
+	if repo != "*" {
+		if p := s.resolveRepoPrefix(repo); p != "" {
+			repo = p
+		}
 	}
-	project := req.GetString("project", "")
-	ref := req.GetString("ref", "")
-	workspaceArg := req.GetString("workspace", "")
+	project := strings.TrimSpace(req.GetString("project", ""))
+	ref := strings.TrimSpace(req.GetString("ref", ""))
+	workspaceArg := strings.TrimSpace(req.GetString("workspace", ""))
 
-	// A named saved-scope supplies the repo allow-set when no explicit
-	// repo/project/ref narrows the call (see scopes.go). The review-family
-	// tools overload `scope` for git diff selection — those reserved values
-	// are never saved-scope names, otherwise every repo-less review call
-	// would fail with "unknown scope".
-	scopeArg := req.GetString("scope", "")
+	scopeArg := strings.TrimSpace(req.GetString("scope", ""))
 	if gitDiffScopes[scopeArg] {
 		scopeArg = ""
 	}
@@ -394,74 +388,54 @@ func (s *Server) resolveRepoFilter(ctx context.Context, req mcp.CallToolRequest)
 		}
 	}
 
-	sessWS, _, bound := s.sessionScope(ctx)
-	if !bound {
-		// Unbound — legacy behaviour, incl. the active-project default.
+	if sessWS, _, bound := s.sessionScope(ctx); bound {
+		if workspaceArg != "" && workspaceArg != sessWS {
+			return nil, fmt.Errorf(
+				"workspace %q is outside the active workspace %q; cross-workspace queries are not permitted",
+				workspaceArg, sessWS)
+		}
+		wsRepos := map[string]bool{}
+		if s.multiIndexer != nil {
+			wsRepos = s.multiIndexer.ReposInWorkspace(sessWS)
+		}
 		if scopeRepos != nil {
-			return scopeRepos, nil
-		}
-		return s.resolveRepoFilterArgs(repo, project, ref, true)
-	}
-
-	// A `workspace` arg may only name the session's own workspace. Any
-	// other value is a cross-workspace escape attempt — reject it
-	// outright rather than silently honouring the boundary and
-	// returning a confusing empty result.
-	if workspaceArg != "" && workspaceArg != sessWS {
-		return nil, fmt.Errorf(
-			"workspace %q is outside the active workspace %q; cross-workspace queries are not permitted",
-			workspaceArg, sessWS)
-	}
-
-	wsRepos := map[string]bool{}
-	if s.multiIndexer != nil {
-		wsRepos = s.multiIndexer.ReposInWorkspace(sessWS)
-	}
-
-	// A named scope, intersected with the workspace so it can only ever
-	// narrow — a scope is a convenience, never a clamp escape.
-	if scopeRepos != nil {
-		intersected := make(map[string]bool)
-		for p := range scopeRepos {
-			if wsRepos[p] {
-				intersected[p] = true
+			intersected := intersectRepoSets(scopeRepos, wsRepos)
+			if len(intersected) == 0 {
+				return nil, fmt.Errorf(
+					"saved scope %q resolves to nothing inside the active workspace %q",
+					scopeArg, sessWS)
 			}
+			return intersected, nil
 		}
+		if repo == "*" {
+			repo = ""
+		}
+		if repo == "" && project == "" && ref == "" {
+			return wsRepos, nil
+		}
+		narrowed, err := s.resolveRepoFilterArgs(repo, project, ref, false)
+		if err != nil {
+			return nil, err
+		}
+		if narrowed == nil {
+			return wsRepos, nil
+		}
+		intersected := intersectRepoSets(narrowed, wsRepos)
 		if len(intersected) == 0 {
 			return nil, fmt.Errorf(
-				"saved scope %q resolves to nothing inside the active workspace %q",
-				scopeArg, sessWS)
+				"repo/project/ref filter resolves to nothing inside the active workspace %q; cross-workspace queries are not permitted",
+				sessWS)
 		}
 		return intersected, nil
 	}
 
-	// No explicit narrowing — the allow-set is the whole workspace.
-	if repo == "" && project == "" && ref == "" {
-		return wsRepos, nil
+	if scopeRepos != nil {
+		return scopeRepos, nil
 	}
-
-	// Explicit narrowing: resolve the args, then intersect with the
-	// workspace so a repo/project/ref arg can never escape it.
-	narrowed, err := s.resolveRepoFilterArgs(repo, project, ref, false)
-	if err != nil {
-		return nil, err
+	if repo == "*" {
+		repo = ""
 	}
-	if narrowed == nil {
-		// Args resolved to "all" — clamp to the workspace.
-		return wsRepos, nil
-	}
-	intersected := make(map[string]bool)
-	for p := range narrowed {
-		if wsRepos[p] {
-			intersected[p] = true
-		}
-	}
-	if len(intersected) == 0 {
-		return nil, fmt.Errorf(
-			"repo/project/ref filter resolves to nothing inside the active workspace %q; cross-workspace queries are not permitted",
-			sessWS)
-	}
-	return intersected, nil
+	return s.resolveRepoFilterArgs(repo, project, ref, true)
 }
 
 // resolveRepoFilterArgs folds explicit repo/project/ref args into a
@@ -548,6 +522,94 @@ func filterNodes(nodes []*graph.Node, allowed map[string]bool) []*graph.Node {
 		// In single-repo mode, nodes have empty RepoPrefix — always include them.
 		if n.RepoPrefix == "" || allowed[n.RepoPrefix] {
 			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func filterNodesByResolvedScope(nodes []*graph.Node, resolved ResolvedScope) []*graph.Node {
+	if !resolvedScopeHasFilter(resolved) {
+		return nodes
+	}
+	opts := queryOptionsForResolvedScope(resolved)
+	out := make([]*graph.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n != nil && opts.ScopeAllows(n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func queryOptionsForResolvedScope(resolved ResolvedScope) query.QueryOptions {
+	return query.QueryOptions{
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
+	}
+}
+
+func resolvedScopeHasFilter(resolved ResolvedScope) bool {
+	return resolved.WorkspaceID != "" || resolved.ProjectID != "" || len(resolved.RepoAllow) > 0
+}
+
+func resolvedScopeAllowsNode(resolved ResolvedScope, n *graph.Node) bool {
+	if n == nil {
+		return false
+	}
+	return queryOptionsForResolvedScope(resolved).ScopeAllows(n)
+}
+
+func filterSubGraphByResolvedScope(sg *query.SubGraph, resolved ResolvedScope) *query.SubGraph {
+	if sg == nil || !resolvedScopeHasFilter(resolved) {
+		return sg
+	}
+	opts := queryOptionsForResolvedScope(resolved)
+	nodeIDs := make(map[string]bool, len(sg.Nodes))
+	nodes := make([]*graph.Node, 0, len(sg.Nodes))
+	for _, n := range sg.Nodes {
+		if n != nil && opts.ScopeAllows(n) {
+			nodes = append(nodes, n)
+			nodeIDs[n.ID] = true
+		}
+	}
+	edges := make([]*graph.Edge, 0, len(sg.Edges))
+	for _, e := range sg.Edges {
+		if e != nil && nodeIDs[e.From] && nodeIDs[e.To] {
+			edges = append(edges, e)
+		}
+	}
+	out := *sg
+	out.Nodes = nodes
+	out.Edges = edges
+	out.TotalNodes = len(nodes)
+	out.TotalEdges = len(edges)
+	if sg.CallerNotes != nil {
+		out.CallerNotes = make(map[string]*graph.ConcurrencyAnnotation, len(sg.CallerNotes))
+		for id, ann := range sg.CallerNotes {
+			if nodeIDs[id] {
+				out.CallerNotes[id] = ann
+			}
+		}
+		if len(out.CallerNotes) == 0 {
+			out.CallerNotes = nil
+		}
+	}
+	return &out
+}
+
+func filterEdgesByResolvedScope(eng *query.Engine, edges []*graph.Edge, resolved ResolvedScope) []*graph.Edge {
+	if eng == nil || !resolvedScopeHasFilter(resolved) {
+		return edges
+	}
+	out := make([]*graph.Edge, 0, len(edges))
+	for _, e := range edges {
+		if e == nil {
+			continue
+		}
+		if resolvedScopeAllowsNode(resolved, eng.GetSymbol(e.From)) &&
+			resolvedScopeAllowsNode(resolved, eng.GetSymbol(e.To)) {
+			out = append(out, e)
 		}
 	}
 	return out
@@ -821,6 +883,8 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 		),
 		s.handleGetSymbol,
 	)
@@ -839,6 +903,7 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
 			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("path", mcp.Description("Restrict results to one or more sub-paths (comma-separated) -- the monorepo-service slice (e.g. \"services/billing,libs/auth\"). Anchored, slash-segment-boundary prefixes relative to the repo root: \"services/billing\" matches services/billing/x.go, not other/services/billingX. Unions with any inline path: clause and a scope's saved paths.")),
 			mcp.WithString("kind", mcp.Description("Filter to one or more node kinds (comma-separated). Standard kinds: function, method, type, interface, variable, constant, field, file, package, import, contract. Coverage kinds: param, closure, enum_member, generic_param, module, table, column, config_key, flag, event, migration, fixture, todo, team, license, release, doc (Markdown prose section).")),
@@ -865,6 +930,8 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("if_none_match", mcp.Description("ETag from a previous response — returns not_modified if content unchanged")),
 		),
 		s.handleGetFileSummary,
@@ -879,6 +946,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 		),
@@ -894,6 +966,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 		),
@@ -913,6 +990,8 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 		),
@@ -928,6 +1007,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 			mcp.WithBoolean("exclude_tests", mcp.Description("Drop callers originating in test functions (set true when you want production callers only)")),
@@ -941,6 +1025,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("id", mcp.Required(), mcp.Description("Interface node ID")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 		),
@@ -954,6 +1043,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("direction", mcp.Description("'children' (default — overriders) or 'parents' (overridden methods)")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 		),
@@ -969,6 +1063,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithBoolean("include_methods", mcp.Description("When true and the seed/visited node is a type or interface, also include its methods (via EdgeMemberOf) and walk the EdgeOverrides chain rooted at each method.")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 		),
@@ -987,6 +1086,8 @@ func (s *Server) registerCoreTools() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 			mcp.WithString("min_tier", mcp.Description(minTierParamDescription)),
 			mcp.WithBoolean("include_speculative", mcp.Description(includeSpeculativeParamDescription)),
 			mcp.WithBoolean("exclude_tests", mcp.Description("Drop references originating in test functions (set true to see only production usages)")),
@@ -1007,6 +1108,11 @@ func (s *Server) registerCoreTools() {
 			mcp.WithBoolean("compact", mcp.Description("One-line-per-symbol text output (saves 50-70% tokens)")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (GCX1 compact wire format), or toon")),
 			mcp.WithNumber("max_bytes", mcp.Description("Cap the marshaled response at this many bytes. The longest list is trimmed; truncation metadata rides on the response. Omit for no cap.")),
+			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
+			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
+			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Restrict results to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — restricts results to that scope's repositories. Ignored when an explicit repo / project / ref is also given.")),
 		),
 		s.handleGetCluster,
 	)
@@ -1199,12 +1305,11 @@ func (s *Server) handleGetSymbol(ctx context.Context, req mcp.CallToolRequest) (
 		return symbolNotFoundGuidance(id), nil
 	}
 
-	// Apply repo/project/ref filter.
-	allowed, filterErr := s.resolveRepoFilter(ctx, req)
-	if filterErr != nil {
-		return mcp.NewToolResultError(filterErr.Error()), nil
+	resolved, errResult := s.resolveScope(ctx, req, toolIntentForName(req.Params.Name))
+	if errResult != nil {
+		return errResult, nil
 	}
-	if allowed != nil && node.RepoPrefix != "" && !allowed[node.RepoPrefix] {
+	if !resolvedScopeAllowsNode(resolved, node) {
 		return symbolNotFoundGuidance(id), nil
 	}
 
@@ -1212,17 +1317,18 @@ func (s *Server) handleGetSymbol(ctx context.Context, req mcp.CallToolRequest) (
 
 	detail := req.GetString("detail", "brief")
 	if detail == "brief" {
-		return s.respondJSONOrTOON(ctx, req, s.withAbsPath(node).Brief())
+		return s.respondScopedJSONOrTOON(ctx, req, s.withAbsPath(node).Brief(), resolved)
 	}
 
 	// Full: include node + direct edges.
-	out := s.engineFor(ctx).GetOutEdges(node.ID)
-	in := s.engineFor(ctx).GetInEdges(node.ID)
-	return s.respondJSONOrTOON(ctx, req, map[string]any{
+	eng := s.engineFor(ctx)
+	out := filterEdgesByResolvedScope(eng, eng.GetOutEdges(node.ID), resolved)
+	in := filterEdgesByResolvedScope(eng, eng.GetInEdges(node.ID), resolved)
+	return s.respondScopedJSONOrTOON(ctx, req, map[string]any{
 		"node":      s.withAbsPath(node),
 		"out_edges": out,
 		"in_edges":  in,
-	})
+	}, resolved)
 }
 
 func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1243,6 +1349,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	// explicit kind / repo / project arguments.
 	fq := parseFieldQuery(q)
 	q = fq.Text
+	scopeReq := requestWithInlineScopeClauses(req, fq)
 
 	// Apply server-default scope merged with caller args. `workspace`
 	// / `project` args win per-field; empty falls through to the
@@ -1250,12 +1357,11 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	// post-filters, so ranking is preserved while results stay inside
 	// the boundary. With pagination we over-fetch to (offset + limit
 	// + 10) so the post-filter slack still leaves a full page.
-	workspaceArg := req.GetString("workspace", "")
-	projectArg := req.GetString("project", "")
-	if projectArg == "" {
-		projectArg = fq.Project
+	resolved, errResult := s.resolveScope(ctx, scopeReq, IntentLocate)
+	if errResult != nil {
+		return errResult, nil
 	}
-	scopeWS, scopeProj := s.resolveQueryScope(ctx, workspaceArg, projectArg)
+	scopeWS, scopeProj := resolved.WorkspaceID, resolved.ProjectID
 	// Per-phase timing for the search hot path. The struct is populated
 	// across the engine boundary (BM25 backend call wall-clock attributes
 	// to BM25*MS in fetchAndMergeBM25Timed; GetNodes / FindName / Fallback
@@ -1264,7 +1370,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	// debug logging pay zero overhead.
 	timings := &query.SearchTimings{}
 	phaseStart := time.Now()
-	scope := query.QueryOptions{WorkspaceID: scopeWS, ProjectID: scopeProj, SearchTimings: timings}
+	scope := query.QueryOptions{WorkspaceID: scopeWS, ProjectID: scopeProj, RepoAllow: resolved.RepoAllow, SearchTimings: timings}
 
 	// Keyword-soup defense: a degenerate boolean / OR-list query
 	// ("A OR B OR 'no access'") defeats ordinary retrieval. Detect it
@@ -1438,11 +1544,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	candsAfterGather := len(nodes)
 	mergedCount := len(nodes) // pre-filter; comparable to primaryCount
 
-	// Apply repo/project/ref filter.
-	allowed, filterErr := s.resolveRepoFilter(ctx, req)
-	if filterErr != nil {
-		return mcp.NewToolResultError(filterErr.Error()), nil
-	}
+	allowed := resolved.RepoAllow
 	// kind filter so callers can scope to a single new node kind
 	// (todo, license, team, module, …). Comma-separated list —
 	// case-insensitive — applied post-search so BM25 ranking is
@@ -1684,11 +1786,12 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	}
 
 	if isCompact(req) {
-		return mcp.NewToolResultText(compactNodes(page)), nil
+		return decorateResultWithScope(mcp.NewToolResultText(compactNodes(page)), resolved), nil
 	}
 
 	if s.isGCX(ctx, req) {
-		return s.gcxResponseWithBudget(req)(encodeSearchSymbols(page, total, len(page)))
+		res, err := s.gcxResponseWithBudget(req)(encodeSearchSymbols(page, total, len(page)))
+		return withScopeResult(res, err, resolved)
 	}
 
 	if s.isTOON(ctx, req) {
@@ -1699,7 +1802,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 		}
 		data, err := toon.Marshal(result)
 		if err == nil {
-			return mcp.NewToolResultText(string(data)), nil
+			return decorateResultWithScope(mcp.NewToolResultText(string(data)), resolved), nil
 		}
 	}
 
@@ -1820,7 +1923,7 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 		)
 	}
 
-	return s.respondJSONOrTOON(ctx, req, resp)
+	return s.respondScopedJSONOrTOON(ctx, req, resp, resolved)
 }
 
 // encodeRerankBreakdown converts a candidate slice into a JSON-ready
@@ -2001,20 +2104,29 @@ func (s *Server) handleGetDependencies(ctx context.Context, req mcp.CallToolRequ
 		return mcp.NewToolResultError("id is required"), nil
 	}
 	minTier := req.GetString("min_tier", "")
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	eng := s.engineFor(ctx)
+	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+		return symbolNotFoundGuidance(id), nil
+	}
 	opts := query.QueryOptions{
 		Depth:       req.GetInt("depth", 2),
 		Limit:       req.GetInt("limit", 50),
 		Detail:      "brief",
 		MinTier:     minTier,
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
 	}
-	sg := s.engineFor(ctx).GetDependencies(id, opts)
+	sg := eng.GetDependencies(id, opts)
+	sg = filterSubGraphByResolvedScope(sg, resolved)
 	sg.FilterByMinTier(minTier)
 	sg.FilterSpeculative(req.GetBool("include_speculative", false))
 	enrichSubGraphEdges(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 func (s *Server) handleGetDependents(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2023,20 +2135,29 @@ func (s *Server) handleGetDependents(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("id is required"), nil
 	}
 	minTier := req.GetString("min_tier", "")
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	eng := s.engineFor(ctx)
+	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+		return symbolNotFoundGuidance(id), nil
+	}
 	opts := query.QueryOptions{
 		Depth:       req.GetInt("depth", 3),
 		Limit:       req.GetInt("limit", 50),
 		Detail:      "brief",
 		MinTier:     minTier,
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
 	}
-	sg := s.engineFor(ctx).GetDependents(id, opts)
+	sg := eng.GetDependents(id, opts)
+	sg = filterSubGraphByResolvedScope(sg, resolved)
 	sg.FilterByMinTier(minTier)
 	sg.FilterSpeculative(req.GetBool("include_speculative", false))
 	enrichSubGraphEdges(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 func (s *Server) handleGetCallChain(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2045,29 +2166,32 @@ func (s *Server) handleGetCallChain(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultError("id is required"), nil
 	}
 	minTier := req.GetString("min_tier", "")
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	eng := s.engineFor(ctx)
+	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+		return symbolNotFoundGuidance(id), nil
+	}
 	opts := query.QueryOptions{
 		Depth:       req.GetInt("depth", 4),
 		Limit:       req.GetInt("limit", 50),
 		Detail:      "brief",
 		MinTier:     minTier,
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
 	}
 	s.hydrateProxyTargets(ctx, id)
-	sg := s.engineFor(ctx).GetCallChain(id, opts)
+	sg := eng.GetCallChain(id, opts)
 
-	// Apply repo/project/ref filter.
-	allowed, filterErr := s.resolveRepoFilter(ctx, req)
-	if filterErr != nil {
-		return mcp.NewToolResultError(filterErr.Error()), nil
-	}
-	sg = filterSubGraph(sg, allowed)
+	sg = filterSubGraphByResolvedScope(sg, resolved)
 	sg.FilterByMinTier(minTier)
 	sg.FilterSpeculative(req.GetBool("include_speculative", false))
 	enrichSubGraphEdges(sg)
 	annotateProxyFreshness(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 func (s *Server) handleGetCallers(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2080,22 +2204,31 @@ func (s *Server) handleGetCallers(ctx context.Context, req mcp.CallToolRequest) 
 		return s.symbolDisambiguationResult(ctx, req, "get_callers", target, candidates)
 	}
 	minTier := req.GetString("min_tier", "")
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	eng := s.engineFor(ctx)
+	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+		return symbolNotFoundGuidance(id), nil
+	}
 	opts := query.QueryOptions{
 		Depth:        req.GetInt("depth", 2),
 		Limit:        req.GetInt("limit", 50),
 		Detail:       "brief",
 		MinTier:      minTier,
-		WorkspaceID:  scopeWS,
-		ProjectID:    scopeProj,
+		WorkspaceID:  resolved.WorkspaceID,
+		ProjectID:    resolved.ProjectID,
+		RepoAllow:    resolved.RepoAllow,
 		ExcludeTests: req.GetBool("exclude_tests", false),
 	}
 	s.hydrateProxyTargets(ctx, id)
-	sg := s.engineFor(ctx).GetCallers(id, opts)
+	sg := eng.GetCallers(id, opts)
+	sg = filterSubGraphByResolvedScope(sg, resolved)
 	sg.FilterByMinTier(minTier)
 	sg.FilterSpeculative(req.GetBool("include_speculative", false))
 	enrichSubGraphEdges(sg)
-	annotateCallerConcurrency(s.engineFor(ctx).Reader(), sg, id)
+	annotateCallerConcurrency(eng.Reader(), sg, id)
 	if len(sg.Edges) == 0 {
 		sg.Caveat = graph.CaveatForZeroEdge(s.graph, id)
 	}
@@ -2113,7 +2246,7 @@ func (s *Server) handleGetCallers(ctx context.Context, req mcp.CallToolRequest) 
 		}
 	}
 	annotateProxyFreshness(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 // annotateCallerConcurrency attaches a ConcurrencyAnnotation to every
@@ -2153,6 +2286,10 @@ func (s *Server) handleFindOverrides(ctx context.Context, req mcp.CallToolReques
 	}
 	direction := req.GetString("direction", "children")
 	minTier := req.GetString("min_tier", "")
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
 	var nodes []*graph.Node
 	switch direction {
 	case "parents", "overridden":
@@ -2164,11 +2301,12 @@ func (s *Server) handleFindOverrides(ctx context.Context, req mcp.CallToolReques
 	// methods don't take QueryOptions, so the boundary is enforced
 	// here.
 	nodes = s.scopedNodeSlice(ctx, nodes)
+	nodes = filterNodesByResolvedScope(nodes, resolved)
 	nodes = s.withAbsPaths(nodes)
 
 	if s.isGCX(ctx, req) {
 		sg := &query.SubGraph{Nodes: nodes, TotalNodes: len(nodes)}
-		return s.returnSubGraph(ctx, req, sg)
+		return s.returnScopedSubGraph(ctx, req, sg, resolved)
 	}
 	if s.isTOON(ctx, req) {
 		result := struct {
@@ -2179,18 +2317,18 @@ func (s *Server) handleFindOverrides(ctx context.Context, req mcp.CallToolReques
 			Total:     len(nodes),
 		}
 		if data, err := toon.Marshal(result); err == nil {
-			return mcp.NewToolResultText(string(data)), nil
+			return decorateResultWithScope(mcp.NewToolResultText(string(data)), resolved), nil
 		}
 	}
 	results := make([]map[string]any, 0, len(nodes))
 	for _, n := range nodes {
 		results = append(results, n.Brief())
 	}
-	return s.respondJSONOrTOON(ctx, req, map[string]any{
+	return s.respondScopedJSONOrTOON(ctx, req, map[string]any{
 		"overrides": results,
 		"total":     len(results),
 		"direction": direction,
-	})
+	}, resolved)
 }
 
 func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2199,15 +2337,20 @@ func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallTool
 		return mcp.NewToolResultError("id is required"), nil
 	}
 	minTier := req.GetString("min_tier", "")
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
 	impls := s.engineFor(ctx).FindImplementationsMinTier(id, minTier)
 	// Confine results to the session's workspace — FindImplementations
 	// doesn't take QueryOptions, so the boundary is enforced here.
 	impls = s.scopedNodeSlice(ctx, impls)
+	impls = filterNodesByResolvedScope(impls, resolved)
 	impls = s.withAbsPaths(impls)
 
 	if s.isGCX(ctx, req) {
 		sg := &query.SubGraph{Nodes: impls, TotalNodes: len(impls)}
-		return s.returnSubGraph(ctx, req, sg)
+		return s.returnScopedSubGraph(ctx, req, sg, resolved)
 	}
 
 	if s.isTOON(ctx, req) {
@@ -2219,7 +2362,7 @@ func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallTool
 			Total:           len(impls),
 		}
 		if data, err := toon.Marshal(result); err == nil {
-			return mcp.NewToolResultText(string(data)), nil
+			return decorateResultWithScope(mcp.NewToolResultText(string(data)), resolved), nil
 		}
 	}
 
@@ -2227,10 +2370,10 @@ func (s *Server) handleFindImplementations(ctx context.Context, req mcp.CallTool
 	for _, n := range impls {
 		results = append(results, n.Brief())
 	}
-	return s.respondJSONOrTOON(ctx, req, map[string]any{
+	return s.respondScopedJSONOrTOON(ctx, req, map[string]any{
 		"implementations": results,
 		"total":           len(results),
-	})
+	}, resolved)
 }
 
 func (s *Server) handleGetClassHierarchy(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2249,15 +2392,24 @@ func (s *Server) handleGetClassHierarchy(ctx context.Context, req mcp.CallToolRe
 	includeMethods := req.GetBool("include_methods", false)
 	minTier := req.GetString("min_tier", "")
 
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	eng := s.engineFor(ctx)
+	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+		return symbolNotFoundGuidance(id), nil
+	}
 	opts := query.QueryOptions{
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
 		MinTier:     minTier,
 	}
-	sg := s.engineFor(ctx).ClassHierarchy(id, direction, depth, includeMethods, opts)
+	sg := eng.ClassHierarchy(id, direction, depth, includeMethods, opts)
+	sg = filterSubGraphByResolvedScope(sg, resolved)
 	enrichSubGraphEdges(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -2270,21 +2422,22 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	// find_usages on a tuck symbol returns hits only from tuck.
 	// Server-level --workspace + caller `workspace` arg compose the
 	// same way as on search_symbols.
-	workspaceArg := req.GetString("workspace", "")
-	projectArg := req.GetString("project", "")
-	scopeWS, scopeProj := s.resolveQueryScope(ctx, workspaceArg, projectArg)
-	sg := s.engineFor(ctx).FindUsagesScoped(id, query.QueryOptions{
-		WorkspaceID:  scopeWS,
-		ProjectID:    scopeProj,
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	eng := s.engineFor(ctx)
+	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+		return symbolNotFoundGuidance(id), nil
+	}
+	sg := eng.FindUsagesScoped(id, query.QueryOptions{
+		WorkspaceID:  resolved.WorkspaceID,
+		ProjectID:    resolved.ProjectID,
+		RepoAllow:    resolved.RepoAllow,
 		ExcludeTests: req.GetBool("exclude_tests", false),
 	})
 
-	// Apply repo/project/ref filter.
-	allowed, filterErr := s.resolveRepoFilter(ctx, req)
-	if filterErr != nil {
-		return mcp.NewToolResultError(filterErr.Error()), nil
-	}
-	sg = filterSubGraph(sg, allowed)
+	sg = filterSubGraphByResolvedScope(sg, resolved)
 	sg.FilterByMinTier(minTier)
 	sg.FilterSpeculative(req.GetBool("include_speculative", false))
 	enrichSubGraphEdges(sg)
@@ -2309,10 +2462,11 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	// per-file rollup. The flat SubGraph stays the default so
 	// existing consumers are unaffected.
 	if gb := strings.ToLower(strings.TrimSpace(req.GetString("group_by", ""))); gb == "file" {
-		return s.respondJSONOrTOON(ctx, req, groupUsagesByFile(sg))
+		return s.respondScopedJSONOrTOON(ctx, req, groupUsagesByFile(sg), resolved)
 	}
 	if s.isGCX(ctx, req) {
-		return s.gcxResponseWithBudget(req)(encodeFindUsages(sg, s.graph))
+		res, err := s.gcxResponseWithBudget(req)(encodeFindUsages(sg, s.graph))
+		return withScopeResult(res, err, resolved)
 	}
 	// Plain JSON gets curated usage rows that promote the resolved
 	// from_type_flavor / from_ui_component to top-level node fields, so
@@ -2321,9 +2475,9 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	format := req.GetString("format", "")
 	if !s.isTOON(ctx, req) && !isCompact(req) && format != "mermaid" && format != "dot" {
 		sg.Nodes = s.withAbsPaths(sg.Nodes)
-		return s.respondJSONOrTOON(ctx, req, newUsageResponse(sg, s.graph))
+		return s.respondScopedJSONOrTOON(ctx, req, newUsageResponse(sg, s.graph), resolved)
 	}
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 // usageNode wraps a find_usages node with the resolved from_* fields
@@ -2554,17 +2708,21 @@ func (s *Server) handleGetCluster(ctx context.Context, req mcp.CallToolRequest) 
 	if err != nil {
 		return mcp.NewToolResultError("id is required"), nil
 	}
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
 	opts := query.QueryOptions{
 		Depth:       req.GetInt("radius", 2),
 		Limit:       req.GetInt("limit", 50),
 		Detail:      "brief",
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
 	}
 	sg := s.engineFor(ctx).GetCluster(id, opts)
 	enrichSubGraphEdges(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 func (s *Server) handleGraphStats(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1896,6 +1897,68 @@ func (mi *MultiIndexer) GetIndexer(repoPrefix string) *Indexer {
 	return mi.indexers[repoPrefix]
 }
 
+type grepRepoJob struct {
+	prefix string
+	idx    *Indexer
+}
+
+func (mi *MultiIndexer) grepRepoJobs(repoAllow map[string]bool) []grepRepoJob {
+	if mi == nil {
+		return nil
+	}
+	mi.mu.RLock()
+	defer mi.mu.RUnlock()
+	capHint := len(mi.indexers)
+	if repoAllow != nil {
+		capHint = len(repoAllow)
+	}
+	jobs := make([]grepRepoJob, 0, capHint)
+	for prefix, idx := range mi.indexers {
+		if idx == nil {
+			continue
+		}
+		if repoAllow != nil && !repoAllow[prefix] {
+			continue
+		}
+		jobs = append(jobs, grepRepoJob{prefix: prefix, idx: idx})
+	}
+	sort.Slice(jobs, func(i, j int) bool { return jobs[i].prefix < jobs[j].prefix })
+	return jobs
+}
+
+func singleAllowedRepo(repoAllow map[string]bool) (string, bool) {
+	if repoAllow == nil {
+		return "", false
+	}
+	var only string
+	count := 0
+	for prefix, allowed := range repoAllow {
+		if !allowed {
+			continue
+		}
+		only = prefix
+		count++
+	}
+	return only, count == 1
+}
+
+func stampGrepMatchPaths(prefix string, hits []trigram.Match) []trigram.Match {
+	if prefix == "" {
+		return hits
+	}
+	for i := range hits {
+		hits[i].Path = prefix + "/" + hits[i].Path
+	}
+	return hits
+}
+
+func capGrepMatches(matches []trigram.Match, limit int) []trigram.Match {
+	if limit > 0 && len(matches) > limit {
+		return matches[:limit]
+	}
+	return matches
+}
+
 // GrepText fans out a trigram-accelerated literal search across every
 // tracked per-repo Indexer and returns the union, capped at limit.
 // Match paths are re-stamped from repo-root-relative to repo-prefixed
@@ -1906,45 +1969,40 @@ func (mi *MultiIndexer) GetIndexer(repoPrefix string) *Indexer {
 // single-Indexer path (Indexer.GrepText) is used by callers without a
 // MultiIndexer.
 func (mi *MultiIndexer) GrepText(query string, limit int) []trigram.Match {
+	return capGrepMatches(mi.GrepTextForRepos(query, nil, limit), limit)
+}
+
+// GrepTextForRepos is the scoped variant of GrepText. When repoAllow is
+// non-nil, only those repo prefixes are searched. perRepoLimit caps each
+// searched repo independently; the returned union is intentionally not
+// globally capped so callers can apply path / graph-scope filters first.
+func (mi *MultiIndexer) GrepTextForRepos(query string, repoAllow map[string]bool, perRepoLimit int) []trigram.Match {
 	if mi == nil || query == "" {
 		return nil
 	}
-	mi.mu.RLock()
-	type job struct {
-		prefix string
-		idx    *Indexer
-	}
-	jobs := make([]job, 0, len(mi.indexers))
-	for prefix, idx := range mi.indexers {
+	if prefix, ok := singleAllowedRepo(repoAllow); ok {
+		idx := mi.GetIndexer(prefix)
 		if idx == nil {
-			continue
+			return nil
 		}
-		jobs = append(jobs, job{prefix: prefix, idx: idx})
+		return stampGrepMatchPaths(prefix, idx.GrepText(query, perRepoLimit))
 	}
-	mi.mu.RUnlock()
 
-	// Per-repo cap mirrors the overall limit when set; the merge below
-	// applies the final cap so a small repo contributing 100 matches
-	// doesn't starve a larger one. Zero / negative means no per-repo
-	// cap (let each searcher return everything).
-	perCap := limit
+	// Per-repo cap mirrors the caller's page size when set. The caller
+	// applies the final cap after any path / graph-scope filters, so a
+	// repo outside those filters cannot consume the page first. Zero /
+	// negative means no per-repo cap (let each searcher return everything).
+	jobs := mi.grepRepoJobs(repoAllow)
 	out := make([]trigram.Match, 0, len(jobs)*8)
 	for _, j := range jobs {
-		hits := j.idx.GrepText(query, perCap)
+		hits := j.idx.GrepText(query, perRepoLimit)
 		if len(hits) == 0 {
 			continue
 		}
-		for i := range hits {
-			// Trigram emits forward-slash repo-relative paths. Stamp
-			// the repo prefix so downstream tools (resolveGraphPath,
-			// path-prefix filters) see the same shape they get from
-			// the graph nodes.
-			hits[i].Path = j.prefix + "/" + hits[i].Path
-		}
-		out = append(out, hits...)
-	}
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+		// Trigram emits forward-slash repo-relative paths. Stamp the repo
+		// prefix so downstream tools (resolveGraphPath, path-prefix filters)
+		// see the same shape they get from the graph nodes.
+		out = append(out, stampGrepMatchPaths(j.prefix, hits)...)
 	}
 	return out
 }
@@ -1958,27 +2016,35 @@ func (mi *MultiIndexer) GrepText(query string, limit int) []trigram.Match {
 // compile in any indexer is reported once; per-indexer errors after
 // the first compile are otherwise treated as no-match.
 func (mi *MultiIndexer) GrepRegexp(pattern, pathPrefix string, limit int) ([]trigram.Match, error) {
+	hits, err := mi.GrepRegexpForRepos(pattern, pathPrefix, nil, limit)
+	if err != nil {
+		return nil, err
+	}
+	return capGrepMatches(hits, limit), nil
+}
+
+// GrepRegexpForRepos is the scoped variant of GrepRegexp. repoAllow and
+// perRepoLimit have the same semantics as GrepTextForRepos.
+func (mi *MultiIndexer) GrepRegexpForRepos(pattern, pathPrefix string, repoAllow map[string]bool, perRepoLimit int) ([]trigram.Match, error) {
 	if mi == nil || pattern == "" {
 		return nil, nil
 	}
-	mi.mu.RLock()
-	type job struct {
-		prefix string
-		idx    *Indexer
-	}
-	jobs := make([]job, 0, len(mi.indexers))
-	for prefix, idx := range mi.indexers {
+	if prefix, ok := singleAllowedRepo(repoAllow); ok {
+		idx := mi.GetIndexer(prefix)
 		if idx == nil {
-			continue
+			return nil, nil
 		}
-		jobs = append(jobs, job{prefix: prefix, idx: idx})
+		hits, err := idx.GrepRegexp(pattern, pathPrefix, perRepoLimit)
+		if err != nil {
+			return nil, err
+		}
+		return stampGrepMatchPaths(prefix, hits), nil
 	}
-	mi.mu.RUnlock()
 
-	perCap := limit
+	jobs := mi.grepRepoJobs(repoAllow)
 	out := make([]trigram.Match, 0, len(jobs)*8)
 	for _, j := range jobs {
-		hits, err := j.idx.GrepRegexp(pattern, pathPrefix, perCap)
+		hits, err := j.idx.GrepRegexp(pattern, pathPrefix, perRepoLimit)
 		if err != nil {
 			// First compile error short-circuits — the pattern is the
 			// caller's fault and won't compile in any other indexer
@@ -1988,13 +2054,7 @@ func (mi *MultiIndexer) GrepRegexp(pattern, pathPrefix string, limit int) ([]tri
 		if len(hits) == 0 {
 			continue
 		}
-		for i := range hits {
-			hits[i].Path = j.prefix + "/" + hits[i].Path
-		}
-		out = append(out, hits...)
-	}
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
+		out = append(out, stampGrepMatchPaths(j.prefix, hits)...)
 	}
 	return out, nil
 }

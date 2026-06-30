@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/zzet/gortex/internal/query"
 	"github.com/zzet/gortex/internal/search/trigram"
 )
 
@@ -37,6 +39,10 @@ func (s *Server) handleSearchText(ctx context.Context, req mcp.CallToolRequest) 
 	if s.indexer == nil && s.multiIndexer == nil {
 		return mcp.NewToolResultError("search_text: no indexer available"), nil
 	}
+	resolved, errResult := s.resolveScope(ctx, req, IntentLocate)
+	if errResult != nil {
+		return errResult, nil
+	}
 
 	limit := req.GetInt("limit", 100)
 	if limit < 1 {
@@ -59,10 +65,16 @@ func (s *Server) handleSearchText(ctx context.Context, req mcp.CallToolRequest) 
 	// the results flow through the identical enclosing-symbol
 	// enrichment so callers get the same shape either way.
 	useRegexp := req.GetBool("regexp", false)
+	pathFilter := s.resolvePathFilter(req, fieldQuery{})
+	scopedMultiGrep := s.multiIndexer != nil && (resolved.RepoAllow != nil || len(pathFilter) > 0)
 	var matches []trigram.Match
+	needsFinalLimit := false
 	if useRegexp {
 		var err error
-		if s.multiIndexer != nil {
+		if scopedMultiGrep {
+			matches, err = s.multiIndexer.GrepRegexpForRepos(query, "", resolved.RepoAllow, limit)
+			needsFinalLimit = true
+		} else if s.multiIndexer != nil {
 			matches, err = s.multiIndexer.GrepRegexp(query, "", limit)
 		} else {
 			matches, err = s.indexer.GrepRegexp(query, "", limit)
@@ -70,6 +82,9 @@ func (s *Server) handleSearchText(ctx context.Context, req mcp.CallToolRequest) 
 		if err != nil {
 			return mcp.NewToolResultError("search_text: invalid regexp: " + err.Error()), nil
 		}
+	} else if scopedMultiGrep {
+		matches = s.multiIndexer.GrepTextForRepos(query, resolved.RepoAllow, limit)
+		needsFinalLimit = true
 	} else if s.multiIndexer != nil {
 		matches = s.multiIndexer.GrepText(query, limit)
 	} else {
@@ -81,20 +96,24 @@ func (s *Server) handleSearchText(ctx context.Context, req mcp.CallToolRequest) 
 	// slice. In multi-repo mode MultiIndexer.GrepText stamps a repo
 	// prefix onto every match path, so the repo-relative filter is
 	// expanded with the tracked repo prefixes before the anchored test.
-	if pathFilter := s.resolvePathFilter(req, fieldQuery{}); len(pathFilter) > 0 {
+	if len(pathFilter) > 0 {
 		var repoPrefixes []string
 		if s.multiIndexer != nil {
 			repoPrefixes = s.multiIndexer.RepoPrefixes()
 		}
 		matches = filterTextMatchesByPath(matches, pathFilter, repoPrefixes)
 	}
+	matches = s.filterTextMatchesByResolvedScope(matches, resolved)
+	if needsFinalLimit {
+		matches = limitTextMatches(matches, limit)
+	}
 
 	enriched := s.enrichTextMatches(matches)
-	return s.respondJSONOrTOON(ctx, req, map[string]any{
+	return s.respondScopedJSONOrTOON(ctx, req, map[string]any{
 		"query":   query,
 		"matches": enriched,
 		"count":   len(enriched),
-	})
+	}, resolved)
 }
 
 // filterTextMatchesByPath keeps only the trigram matches whose file
@@ -113,6 +132,48 @@ func filterTextMatchesByPath(matches []trigram.Match, paths, repoPrefixes []stri
 		if pathMatchesAnyPrefix(m.Path, prefixes) {
 			out = append(out, m)
 		}
+	}
+	return out
+}
+
+func limitTextMatches(matches []trigram.Match, limit int) []trigram.Match {
+	if limit > 0 && len(matches) > limit {
+		return matches[:limit]
+	}
+	return matches
+}
+
+func (s *Server) filterTextMatchesByResolvedScope(matches []trigram.Match, resolved ResolvedScope) []trigram.Match {
+	if resolved.WorkspaceID == "" && resolved.ProjectID == "" && len(resolved.RepoAllow) == 0 {
+		return matches
+	}
+	opts := query.QueryOptions{
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
+	}
+	out := make([]trigram.Match, 0, len(matches))
+	for _, m := range matches {
+		repo, _, ok := strings.Cut(m.Path, "/")
+		// Repo allow-set: a match whose repo prefix is outside the
+		// allow-set is dropped outright.
+		if len(resolved.RepoAllow) > 0 && ok && repo != "" && !resolved.RepoAllow[repo] {
+			continue
+		}
+		// Fail CLOSED under active narrowing: keep a match only when it
+		// can be positively attributed to an in-scope graph node. A match
+		// whose path resolves to no node (graph unavailable, or a file the
+		// graph never turned into a node) cannot be proven in-scope, so
+		// dropping it is the safe choice — keeping it was a latent
+		// cross-scope leak.
+		if s.graph == nil {
+			continue
+		}
+		n := s.graph.GetNode(m.Path)
+		if n == nil || !opts.ScopeAllows(n) {
+			continue
+		}
+		out = append(out, m)
 	}
 	return out
 }

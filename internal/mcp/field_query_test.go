@@ -62,6 +62,9 @@ func TestFieldQueryHasFieldFilters(t *testing.T) {
 	if (fieldQuery{Project: "web"}).hasFieldFilters() {
 		t.Errorf("project: alone is scope, not a post-filter")
 	}
+	if (fieldQuery{Repo: "*"}).hasFieldFilters() {
+		t.Errorf("repo:* is a scope sentinel, not a post-filter")
+	}
 	for _, fq := range []fieldQuery{{Kind: "function"}, {Flavor: "struct"}, {Lang: "go"}, {Path: "src/"}, {Repo: "gortex"}} {
 		if !fq.hasFieldFilters() {
 			t.Errorf("%+v must report a field filter", fq)

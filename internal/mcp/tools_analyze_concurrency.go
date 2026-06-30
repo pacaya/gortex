@@ -101,6 +101,21 @@ func (s *Server) handleAnalyzeRaceWrites(ctx context.Context, req mcp.CallToolRe
 		})
 	}
 
+	// Scope filter: when the request narrows below the global graph
+	// (workspace-bound session or repo allow-set), keep only races
+	// whose field AND writer node are both visible. total/truncated
+	// below recompute over the kept rows. No-op for an unbound request.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]raceRow, 0, len(rows))
+		for _, r := range rows {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Field)) &&
+				s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Writer)) {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
+
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Field != rows[j].Field {
 			return rows[i].Field < rows[j].Field
@@ -365,6 +380,20 @@ func (s *Server) handleAnalyzeUnclosedChannels(ctx context.Context, req mcp.Call
 			Risk:     risk,
 			Reason:   reason,
 		})
+	}
+
+	// Scope filter: keep only channels whose channel node is visible to
+	// the current request. Senders/Sends/Recvs are counts (not node IDs)
+	// so they need no pruning. total/truncated recompute below. No-op for
+	// an unbound request.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]unclosedRow, 0, len(rows))
+		for _, r := range rows {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Channel)) {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
 	}
 
 	sort.Slice(rows, func(i, j int) bool {

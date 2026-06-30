@@ -9,6 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/zzet/gortex/internal/graph"
+	querypkg "github.com/zzet/gortex/internal/query"
 )
 
 // registerFindFilesTool wires `find_files` — the dedicated search-by-
@@ -32,6 +33,9 @@ func (s *Server) registerFindFilesTool() {
 			mcp.WithBoolean("fuzzy", mcp.Description("Also accept fuzzy subsequence matches of `query` against the basename (e.g. \"tcgo\" matches \"tools_coding.go\"). Lowest-ranked. Default false.")),
 			mcp.WithString("path", mcp.Description("Restrict to one or more anchored sub-path prefixes (comma-separated), repo-root-relative — the monorepo-service slice.")),
 			mcp.WithString("repo", mcp.Description("Restrict to a single repository prefix.")),
+			mcp.WithString("project", mcp.Description("Restrict to repositories in a specific project.")),
+			mcp.WithString("workspace", mcp.Description("Restrict to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) -- its repositories and paths narrow the matches. Ignored for repositories when an explicit repo / project / ref is also given.")),
 			mcp.WithNumber("limit", mcp.Description("Max files to return (default 50, capped at 500).")),
 			mcp.WithString("format", mcp.Description("Output format: json (default), gcx (compact wire format), or toon.")),
 		),
@@ -59,7 +63,10 @@ func (s *Server) handleFindFiles(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError("find_files: pass `query` (a filename/path substring) and/or `glob` (a path glob)"), nil
 	}
 	fuzzy := req.GetBool("fuzzy", false)
-	repoArg := strings.TrimSpace(req.GetString("repo", ""))
+	resolved, errResult := s.resolveScope(ctx, req, IntentLocate)
+	if errResult != nil {
+		return errResult, nil
+	}
 	limit := req.GetInt("limit", 50)
 	if limit < 1 {
 		limit = 50
@@ -68,6 +75,11 @@ func (s *Server) handleFindFiles(ctx context.Context, req mcp.CallToolRequest) (
 		limit = 500
 	}
 	pathFilter := s.resolvePathFilter(req, fieldQuery{})
+	scopeOpts := querypkg.QueryOptions{
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
+	}
 
 	hits := make([]fileHit, 0, 64)
 	for n := range s.graph.NodesByKind(graph.KindFile) {
@@ -77,7 +89,7 @@ func (s *Server) handleFindFiles(ctx context.Context, req mcp.CallToolRequest) (
 		if !s.nodeInSessionScope(ctx, n) {
 			continue
 		}
-		if repoArg != "" && n.RepoPrefix != repoArg {
+		if !scopeOpts.ScopeAllows(n) {
 			continue
 		}
 		rel := repoRelativePath(n)
@@ -128,13 +140,13 @@ func (s *Server) handleFindFiles(ctx context.Context, req mcp.CallToolRequest) (
 		hits = hits[:limit]
 	}
 
-	return s.respondJSONOrTOON(ctx, req, map[string]any{
+	return s.respondScopedJSONOrTOON(ctx, req, map[string]any{
 		"query":     query,
 		"glob":      glob,
 		"files":     hits,
 		"count":     len(hits),
 		"truncated": total > len(hits),
-	})
+	}, resolved)
 }
 
 // scoreFilenameMatch ranks how well query matches a file's basename or

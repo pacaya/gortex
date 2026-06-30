@@ -116,5 +116,58 @@ func analyzeDocStaleness(g graph.Store, limit int) docStalenessResult {
 
 func (s *Server) handleAnalyzeDocStaleness(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	res := analyzeDocStaleness(s.graph, req.GetInt("limit", 50))
+	if s.scopeFiltersActive(ctx) {
+		// Narrow to the session workspace + optional repo allow-set.
+		// Keep a row iff its Source (the keyed knowledge node) is visible.
+		// Within a kept row, prune only RESOLVED ("live") links whose
+		// target falls out of scope: dangling/pending links point at
+		// genuinely-absent nodes (GetNode==nil ⇒ analyzeNodeVisible==false)
+		// and carry the analyzer's entire signal, so they are NEVER
+		// dropped. Per-row counts and the global assessed-links tally
+		// recompute from the in-scope data. Unbound requests skip this
+		// branch — a byte-for-byte no-op.
+		kept := make([]docStalenessRow, 0, len(res.Stale))
+		for _, row := range res.Stale {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(row.Source)) {
+				continue
+			}
+			if len(row.Links) > 0 {
+				links := make([]docStalenessLink, 0, len(row.Links))
+				dangling, pending, total := 0, 0, 0
+				for _, l := range row.Links {
+					if l.State == "live" && !s.analyzeNodeVisible(ctx, s.graph.GetNode(l.Symbol)) {
+						continue
+					}
+					links = append(links, l)
+					total++
+					switch l.State {
+					case "dangling":
+						dangling++
+					case "pending":
+						pending++
+					}
+				}
+				row.Links = links
+				row.Dangling = dangling
+				row.Pending = pending
+				row.TotalRefs = total
+			}
+			kept = append(kept, row)
+		}
+		res.Stale = kept
+
+		// Recompute assessed_links as the in-scope motivates edges —
+		// those whose knowledge source node is visible.
+		assessed := 0
+		for _, e := range s.graph.AllEdges() {
+			if e == nil || e.Kind != graph.EdgeMotivates {
+				continue
+			}
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(e.From)) {
+				assessed++
+			}
+		}
+		res.AssessedLinks = assessed
+	}
 	return s.respondJSONOrTOON(ctx, req, res)
 }

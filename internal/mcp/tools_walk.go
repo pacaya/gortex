@@ -29,6 +29,8 @@ func (s *Server) registerWalkGraphTool() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag")),
+			mcp.WithString("workspace", mcp.Description("Workspace override. In workspace-bound sessions this must match the active workspace.")),
+			mcp.WithString("scope", mcp.Description("Saved scope name. Ignored for git diff scopes; explicit repo/project/ref filters take precedence.")),
 		),
 		s.handleWalkGraph,
 	)
@@ -70,11 +72,18 @@ func (s *Server) handleWalkGraph(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	eng := s.engineFor(ctx)
-	if eng.GetSymbol(id) == nil {
+	seed := eng.GetSymbol(id)
+	if seed == nil {
 		return mcp.NewToolResultError(fmt.Sprintf("symbol not found: %s", id)), nil
 	}
 
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
+	if !resolvedScopeAllowsNode(resolved, seed) {
+		return symbolNotFoundGuidance(id), nil
+	}
 
 	// Optional community constraint: accept either a community ID or
 	// label and resolve it to an ID, then hand the walk the node->comm
@@ -87,24 +96,21 @@ func (s *Server) handleWalkGraph(ctx context.Context, req mcp.CallToolRequest) (
 		Direction:   direction,
 		TokenBudget: tokenBudget,
 		MaxDepth:    maxDepth,
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
+		RepoAllow:   resolved.RepoAllow,
 		CommunityID: commID,
 		NodeToComm:  nodeToComm,
 	})
 
-	allowed, filterErr := s.resolveRepoFilter(ctx, req)
-	if filterErr != nil {
-		return mcp.NewToolResultError(filterErr.Error()), nil
-	}
 	budgetHit, stoppedAt := sg.BudgetHit, sg.StoppedAtDepth
-	sg = filterSubGraph(sg, allowed)
-	// filterSubGraph builds a fresh SubGraph and does not copy the
-	// budget fields — restore them so the response keeps them.
+	sg = filterSubGraphByResolvedScope(sg, resolved)
+	// Keep the traversal budget fields stable after the defensive
+	// post-filter.
 	sg.BudgetHit = budgetHit
 	sg.StoppedAtDepth = stoppedAt
 	enrichSubGraphEdges(sg)
-	return s.returnSubGraph(ctx, req, sg)
+	return s.returnScopedSubGraph(ctx, req, sg, resolved)
 }
 
 // resolveCommunityFilter turns a community ID-or-label request argument

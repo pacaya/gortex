@@ -72,6 +72,35 @@ func (s *Server) handleAnalyzeConnectedComponents(
 	}
 
 	results := s.runComponents(directed, analysis.ComponentOptions{MinSize: minSize})
+
+	// Narrow to the session workspace + optional repo allow-set when the
+	// request scopes below the global graph: prune each component's
+	// members to visible nodes, recompute Size, and drop components left
+	// empty. wcc/scc read s.graph directly, so without this the components
+	// would span every workspace. The row ID is an opaque component index
+	// (not a node ID), so it is left untouched. Filter before the limit
+	// cap and the per-component member-limit truncation so both land on
+	// the visible set. Strict no-op for an unbound session with no
+	// RepoAllow.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]analysis.ComponentResult, 0, len(results))
+		for _, r := range results {
+			visMembers := make([]string, 0, len(r.Members))
+			for _, id := range r.Members {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					visMembers = append(visMembers, id)
+				}
+			}
+			if len(visMembers) == 0 {
+				continue
+			}
+			r.Members = visMembers
+			r.Size = len(visMembers)
+			kept = append(kept, r)
+		}
+		results = kept
+	}
+
 	if limit > 0 && limit < len(results) {
 		results = results[:limit]
 	}

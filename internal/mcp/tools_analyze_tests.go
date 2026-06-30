@@ -120,6 +120,50 @@ func (s *Server) handleAnalyzeTestsAsEdges(ctx context.Context, req mcp.CallTool
 		})
 	}
 
+	// Scope narrowing: keep a row iff its primary symbol is visible to
+	// the request (workspace ceiling + optional repo allow-set), prune
+	// its related peers to the visible set, recompute Count, and rebuild
+	// the summary from the in-scope rows. Unbound requests skip this
+	// branch — a byte-for-byte no-op.
+	testEdges := edgeCount
+	testedSymbols := len(testsBySymbol)
+	testFunctions := len(symbolsByTest)
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]testEdgeRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, nodeByID[r.ID]) {
+				continue
+			}
+			related := make([]testEdgeRef, 0, len(r.Related))
+			for _, ref := range r.Related {
+				if s.analyzeNodeVisible(ctx, nodeByID[ref.ID]) {
+					related = append(related, ref)
+				}
+			}
+			r.Related = related
+			r.Count = len(related)
+			kept = append(kept, r)
+		}
+		rows = kept
+
+		edges := 0
+		relatedSet := make(map[string]struct{})
+		for _, r := range rows {
+			edges += r.Count
+			for _, ref := range r.Related {
+				relatedSet[ref.ID] = struct{}{}
+			}
+		}
+		testEdges = edges
+		if groupBy == "symbol" {
+			testedSymbols = len(rows)
+			testFunctions = len(relatedSet)
+		} else {
+			testFunctions = len(rows)
+			testedSymbols = len(relatedSet)
+		}
+	}
+
 	// Most-covered first — the symbols with the deepest test backing,
 	// or the tests exercising the most code.
 	sort.Slice(rows, func(i, j int) bool {
@@ -170,9 +214,9 @@ func (s *Server) handleAnalyzeTestsAsEdges(ctx context.Context, req mcp.CallTool
 		"rows":     projected,
 		"total":    total,
 		"summary": map[string]any{
-			"test_edges":     edgeCount,
-			"tested_symbols": len(testsBySymbol),
-			"test_functions": len(symbolsByTest),
+			"test_edges":     testEdges,
+			"tested_symbols": testedSymbols,
+			"test_functions": testFunctions,
 		},
 		"truncated": truncated,
 	}

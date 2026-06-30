@@ -78,6 +78,38 @@ func SessionCWDFromContext(ctx context.Context) string {
 	return ""
 }
 
+// repoAllowCtxKey carries the per-request repo allow-set resolved by
+// handleAnalyze (resolveScope → ResolvedScope.RepoAllow). The scoped-
+// node accessors (scopedNodes / scopedNodesByKinds / scopedNodeSlice)
+// read it to narrow within the workspace ceiling without threading a
+// param through their ~40 call sites. Unexported: only handleAnalyze
+// ever sets it, on the per-request ctx — use withRepoAllow /
+// repoAllowFromContext.
+type repoAllowCtxKey struct{}
+
+// withRepoAllow returns a context carrying the per-request repo
+// allow-set resolved by handleAnalyze. An empty/nil allow-set returns
+// ctx unchanged (the common no-narrowing case), so non-analyze callers
+// and unnarrowed analyze calls are byte-for-byte unaffected.
+func withRepoAllow(ctx context.Context, allow map[string]bool) context.Context {
+	if len(allow) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, repoAllowCtxKey{}, allow)
+}
+
+// repoAllowFromContext returns the repo allow-set attached via
+// withRepoAllow, or nil when none is present.
+func repoAllowFromContext(ctx context.Context) map[string]bool {
+	if ctx == nil {
+		return nil
+	}
+	if a, ok := ctx.Value(repoAllowCtxKey{}).(map[string]bool); ok {
+		return a
+	}
+	return nil
+}
+
 // sessionLocal bundles the per-client state that should not aggregate
 // across sessions: recent agent activity (viewed/modified files and
 // symbols), and session-scoped token-savings counters. Shared pieces —

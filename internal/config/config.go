@@ -470,6 +470,7 @@ type Config struct {
 	Index  IndexConfig  `mapstructure:"index"    yaml:"index,omitempty"`
 	Watch  WatchConfig  `mapstructure:"watch"    yaml:"watch,omitempty"`
 	Query  QueryConfig  `mapstructure:"query"    yaml:"query,omitempty"`
+	Scope  ScopeConfig  `mapstructure:"scope"    yaml:"scope,omitempty"`
 	Search SearchConfig `mapstructure:"search"   yaml:"search,omitempty"`
 	// Embedding configures the semantic-search vector channel: the
 	// embedding provider plus the chunking / concurrency knobs the
@@ -1261,6 +1262,23 @@ type QueryConfig struct {
 	MaxDepth     int `mapstructure:"max_depth"     yaml:"max_depth,omitempty"`
 }
 
+type ScopeConfig struct {
+	IntentDefaults bool `mapstructure:"intent_defaults" yaml:"intent_defaults,omitempty"`
+}
+
+// MergeEnv overlays the scope-specific environment knobs on top of
+// file/default config values. Invalid values are ignored so a typo does not
+// silently disable scoped queries.
+func (c ScopeConfig) MergeEnv() ScopeConfig {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GORTEX_SCOPE_INTENT_DEFAULTS"))) {
+	case "0", "false", "no":
+		c.IntentDefaults = false
+	case "1", "true", "yes":
+		c.IntentDefaults = true
+	}
+	return c
+}
+
 // SearchConfig configures the I13 11-signal rerank pipeline that
 // orders `search_symbols` / `winnow_symbols` results. The Weights
 // map is keyed by canonical signal name (rerank.SignalBM25,
@@ -1667,6 +1685,9 @@ func Default() *Config {
 			DefaultDepth: 3,
 			MaxDepth:     10,
 		},
+		Scope: ScopeConfig{
+			IntentDefaults: true,
+		},
 		MCP: MCPConfig{
 			Transport: "stdio",
 			Port:      8765,
@@ -1737,6 +1758,7 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, err
 	}
+	cfg.Scope = cfg.Scope.MergeEnv()
 
 	if err := cfg.validateWorkspaceSchema(); err != nil {
 		return nil, err

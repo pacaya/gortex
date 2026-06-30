@@ -92,6 +92,34 @@ func (s *Server) handleAnalyzeChannelOps(ctx context.Context, req mcp.CallToolRe
 		sort.Strings(r.Receivers)
 		rows = append(rows, r)
 	}
+	// Scope filter: keep a channel row iff its target node is visible to
+	// the request (session workspace ceiling + optional repo allow-set),
+	// and prune sender/receiver lists to visible nodes only. No-op for an
+	// unbound, un-narrowed request. Sends/Recvs are edge counts, left as-is.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*channelRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Channel)) {
+				continue
+			}
+			senders := make([]string, 0, len(r.Senders))
+			for _, id := range r.Senders {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					senders = append(senders, id)
+				}
+			}
+			r.Senders = senders
+			receivers := make([]string, 0, len(r.Receivers))
+			for _, id := range r.Receivers {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					receivers = append(receivers, id)
+				}
+			}
+			r.Receivers = receivers
+			kept = append(kept, r)
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		// Total op count desc; tie-break by channel id for stability.
 		ti := rows[i].Sends + rows[i].Recvs
@@ -177,6 +205,25 @@ func (s *Server) handleAnalyzeGoroutineSpawns(ctx context.Context, req mcp.CallT
 			r.Concurrency = &a
 		}
 		rows = append(rows, r)
+	}
+	// Scope filter: keep a spawn row iff its spawned target is visible,
+	// and prune spawners to visible nodes only. No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*spawnRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Target)) {
+				continue
+			}
+			spawners := make([]string, 0, len(r.Spawners))
+			for _, id := range r.Spawners {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					spawners = append(spawners, id)
+				}
+			}
+			r.Spawners = spawners
+			kept = append(kept, r)
+		}
+		rows = kept
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Spawns != rows[j].Spawns {
@@ -298,6 +345,25 @@ func (s *Server) handleAnalyzeFieldWriters(ctx context.Context, req mcp.CallTool
 		sort.Strings(r.Writers)
 		rows = append(rows, r)
 	}
+	// Scope filter: keep a field row iff the field node is visible, and
+	// prune writers to visible nodes only. No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*writerRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Field)) {
+				continue
+			}
+			writers := make([]string, 0, len(r.Writers))
+			for _, id := range r.Writers {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					writers = append(writers, id)
+				}
+			}
+			r.Writers = writers
+			kept = append(kept, r)
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Writes != rows[j].Writes {
 			return rows[i].Writes > rows[j].Writes
@@ -394,6 +460,26 @@ func (s *Server) handleAnalyzeIndirectMutations(ctx context.Context, req mcp.Cal
 		sort.Slice(r.Mutators, func(i, j int) bool { return r.Mutators[i].Function < r.Mutators[j].Function })
 		rows = append(rows, r)
 	}
+	// Scope filter: keep a field row iff the field node is visible, and
+	// prune mutators to those whose function node is visible. The `via`
+	// method name is not a node ID, so it is left intact. No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*fieldRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Field)) {
+				continue
+			}
+			mutators := make([]mutator, 0, len(r.Mutators))
+			for _, m := range r.Mutators {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(m.Function)) {
+					mutators = append(mutators, m)
+				}
+			}
+			r.Mutators = mutators
+			kept = append(kept, r)
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Mutations != rows[j].Mutations {
 			return rows[i].Mutations > rows[j].Mutations
@@ -432,8 +518,15 @@ func (s *Server) handleAnalyzeSpeculative(ctx context.Context, req mcp.CallToolR
 	}
 	byShape := map[string]*shapeRow{}
 	total := 0
+	scoped := s.scopeFiltersActive(ctx)
 	for e := range edgesByKinds(s.graph, graph.EdgeCalls) {
 		if !e.IsSpeculative() {
+			continue
+		}
+		// Scope filter: a speculative edge is a from->to peer pair; drop it
+		// unless both endpoints are visible. Gating the loop recomputes
+		// Edges, total, and Samples together. No-op when unbound.
+		if scoped && (!s.analyzeNodeVisible(ctx, s.graph.GetNode(e.From)) || !s.analyzeNodeVisible(ctx, s.graph.GetNode(e.To))) {
 			continue
 		}
 		total++
@@ -509,8 +602,14 @@ func (s *Server) handleAnalyzeRefFacts(ctx context.Context, req mcp.CallToolRequ
 
 	var facts []fact
 	truncated := false
+	scoped := s.scopeFiltersActive(ctx)
 	for _, n := range nodes {
 		if n == nil {
+			continue
+		}
+		// Scope filter: drop reference facts whose origin node is out of
+		// scope. No-op when unbound.
+		if scoped && !s.analyzeNodeVisible(ctx, n) {
 			continue
 		}
 		for _, e := range s.graph.GetOutEdges(n.ID) {
@@ -518,6 +617,11 @@ func (s *Server) handleAnalyzeRefFacts(ctx context.Context, req mcp.CallToolRequ
 				continue
 			}
 			if e.To == "" || graph.IsUnresolvedTarget(e.To) || graph.IsStub(e.To) {
+				continue
+			}
+			// Scope filter: also drop facts whose resolved target is out
+			// of scope, so no cross-workspace target id leaks into a row.
+			if scoped && !s.analyzeNodeVisible(ctx, s.graph.GetNode(e.To)) {
 				continue
 			}
 			refName := ""
@@ -593,6 +697,17 @@ func (s *Server) handleAnalyzeAnnotationUsers(ctx context.Context, req mcp.CallT
 				Args:   argsStr,
 			})
 		}
+		// Scope filter: keep an annotated-symbol row iff the annotated
+		// symbol node is visible. No-op when unbound.
+		if s.scopeFiltersActive(ctx) {
+			kept := make([]annotatedRow, 0, len(rows))
+			for _, r := range rows {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Symbol)) {
+					kept = append(kept, r)
+				}
+			}
+			rows = kept
+		}
 		sort.Slice(rows, func(i, j int) bool {
 			if rows[i].File != rows[j].File {
 				return rows[i].File < rows[j].File
@@ -654,6 +769,17 @@ func (s *Server) handleAnalyzeAnnotationUsers(ctx context.Context, req mcp.CallT
 	rows := make([]*annoRow, 0, len(byID))
 	for _, r := range byID {
 		rows = append(rows, r)
+	}
+	// Scope filter: keep an annotation row iff the annotation node is
+	// visible. No-op when unbound. Users is a count, left as-is.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*annoRow, 0, len(rows))
+		for _, r := range rows {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Users != rows[j].Users {
@@ -746,6 +872,25 @@ func (s *Server) handleAnalyzeConfigReaders(ctx context.Context, req mcp.CallToo
 	for _, r := range byKey {
 		sort.Strings(r.Readers)
 		rows = append(rows, r)
+	}
+	// Scope filter: keep a config-key row iff the key node is visible, and
+	// prune readers to visible nodes only. No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*configRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
+				continue
+			}
+			readers := make([]string, 0, len(r.Readers))
+			for _, id := range r.Readers {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					readers = append(readers, id)
+				}
+			}
+			r.Readers = readers
+			kept = append(kept, r)
+		}
+		rows = kept
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Reads != rows[j].Reads {
@@ -854,6 +999,25 @@ func (s *Server) handleAnalyzeEnvVarUsers(ctx context.Context, req mcp.CallToolR
 		sort.Strings(r.Readers)
 		rows = append(rows, r)
 	}
+	// Scope filter: keep an env-var row iff the key node is visible, and
+	// prune readers to visible nodes only. No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*envRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
+				continue
+			}
+			readers := make([]string, 0, len(r.Readers))
+			for _, id := range r.Readers {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					readers = append(readers, id)
+				}
+			}
+			r.Readers = readers
+			kept = append(kept, r)
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Reads != rows[j].Reads {
 			return rows[i].Reads > rows[j].Reads
@@ -960,6 +1124,25 @@ func (s *Server) handleAnalyzeEventEmitters(ctx context.Context, req mcp.CallToo
 	for _, r := range byEvent {
 		sort.Strings(r.Emitters)
 		rows = append(rows, r)
+	}
+	// Scope filter: keep an event row iff the event node is visible, and
+	// prune emitters to visible nodes only. No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*eventRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
+				continue
+			}
+			emitters := make([]string, 0, len(r.Emitters))
+			for _, id := range r.Emitters {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					emitters = append(emitters, id)
+				}
+			}
+			r.Emitters = emitters
+			kept = append(kept, r)
+		}
+		rows = kept
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Emits != rows[j].Emits {
@@ -1105,6 +1288,33 @@ func (s *Server) handleAnalyzePubsub(ctx context.Context, req mcp.CallToolReques
 		sort.Strings(r.Subscribers)
 		rows = append(rows, r)
 	}
+	// Scope filter: keep a topic row iff the topic node is visible, and
+	// prune publisher/subscriber lists to visible nodes only. No-op when
+	// unbound. Publishes/Subscribes are edge counts, left as-is.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*pubsubRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
+				continue
+			}
+			publishers := make([]string, 0, len(r.Publishers))
+			for _, id := range r.Publishers {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					publishers = append(publishers, id)
+				}
+			}
+			r.Publishers = publishers
+			subscribers := make([]string, 0, len(r.Subscribers))
+			for _, id := range r.Subscribers {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					subscribers = append(subscribers, id)
+				}
+			}
+			r.Subscribers = subscribers
+			kept = append(kept, r)
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		ti := rows[i].Publishes + rows[i].Subscribes
 		tj := rows[j].Publishes + rows[j].Subscribes
@@ -1245,6 +1455,28 @@ func (s *Server) handleAnalyzeErrorSurface(ctx context.Context, req mcp.CallTool
 			sort.Strings(r.ErrorMsgs)
 			rows = append(rows, r)
 		}
+	}
+	// Scope filter: keep a thrower row iff the throwing symbol is visible,
+	// and prune the error-target list to visible nodes only. Error message
+	// literals (ErrorMsgs) are string values, not node ids, left intact.
+	// Applies to both the ThrowerErrorSurfacer and fallback build paths.
+	// No-op when unbound.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*throwerRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Symbol)) {
+				continue
+			}
+			errs := make([]string, 0, len(r.Errors))
+			for _, id := range r.Errors {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+					errs = append(errs, id)
+				}
+			}
+			r.Errors = errs
+			kept = append(kept, r)
+		}
+		rows = kept
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		// Throwers with the most distinct error targets surface

@@ -218,6 +218,127 @@ func TestSearchText_MultiRepoFanout(t *testing.T) {
 	require.True(t, strings.HasPrefix(betaOut.Matches[0].Path, "beta/"))
 }
 
+func TestSearchText_MultiRepoScopedGrepDoesNotLetOutOfScopeRepoConsumeLimit(t *testing.T) {
+	repoA := setupSearchTextWorkspaceRepo(t, "alpha", "shared",
+		"package alpha\n\n// shared_scope_marker alpha one\n// shared_scope_marker alpha two\nfunc A() {}\n")
+	repoB := setupSearchTextWorkspaceRepo(t, "beta", "shared",
+		"package beta\n\n// shared_scope_marker beta\nfunc B() {}\n")
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: repoA, Name: "alpha", Project: "backend"},
+			{Path: repoB, Name: "beta", Project: "backend"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	reg := parser.NewRegistry()
+	reg.Register(languages.NewGoExtractor())
+	g := graph.New()
+	mi := indexer.NewMultiIndexer(g, reg, search.NewBM25(), cm, zap.NewNop())
+	_, err = mi.IndexAll()
+	require.NoError(t, err)
+
+	eng := query.NewEngine(g)
+	flagOn := true
+	srv := NewServer(eng, g, nil, nil, zap.NewNop(), nil, MultiRepoOptions{
+		ConfigManager:       cm,
+		MultiIndexer:        mi,
+		ScopeIntentDefaults: &flagOn,
+	})
+
+	req := makeReq("search_text", map[string]any{"query": "shared_scope_marker", "limit": 1})
+	res, err := srv.handleSearchText(sessionCtx("s-beta", repoB), req)
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	var out struct {
+		Matches []searchTextMatch `json:"matches"`
+		Count   int               `json:"count"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(res.Content[0].(mcplib.TextContent).Text), &out))
+	require.Equal(t, 1, out.Count)
+	require.Len(t, out.Matches, 1)
+	require.True(t, strings.HasPrefix(out.Matches[0].Path, "beta/"),
+		"out-of-scope alpha matches must not consume the limit before beta is searched, got %q", out.Matches[0].Path)
+	require.NotNil(t, res.Meta)
+	require.Equal(t, "repo:beta", res.Meta.AdditionalFields["scope_applied"])
+}
+
+// TestFilterTextMatchesByResolvedScope_FailsClosed pins the fail-CLOSED
+// contract of the scope-narrowing filter. Before the fix it FAILED OPEN:
+// a match whose enclosing-node lookup returned nil was kept even under an
+// active narrowing — a latent cross-scope leak. Now, under active
+// narrowing, a match that cannot be positively attributed to an in-scope
+// graph node is dropped; with NO narrowing active the filter passes every
+// match through untouched.
+func TestFilterTextMatchesByResolvedScope_FailsClosed(t *testing.T) {
+	repoA := setupSearchTextWorkspaceRepo(t, "alpha", "shared",
+		"package alpha\n\n// marker\nfunc A() {}\n")
+	repoB := setupSearchTextWorkspaceRepo(t, "beta", "shared",
+		"package beta\n\n// marker\nfunc B() {}\n")
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: repoA, Name: "alpha", Project: "backend"},
+			{Path: repoB, Name: "beta", Project: "backend"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	reg := parser.NewRegistry()
+	reg.Register(languages.NewGoExtractor())
+	g := graph.New()
+	mi := indexer.NewMultiIndexer(g, reg, search.NewBM25(), cm, zap.NewNop())
+	_, err = mi.IndexAll()
+	require.NoError(t, err)
+
+	eng := query.NewEngine(g)
+	srv := NewServer(eng, g, nil, nil, zap.NewNop(), nil, MultiRepoOptions{
+		ConfigManager: cm,
+		MultiIndexer:  mi,
+	})
+
+	// Fixture invariants: the real beta file node is keyed by its
+	// repo-prefixed path (so a match positively attributes to it); a ghost
+	// path under beta maps to NO node at all.
+	require.NotNil(t, g.GetNode("beta/main.go"), "fixture invariant: beta file node must exist")
+	require.Nil(t, g.GetNode("beta/ghost.go"), "fixture invariant: ghost path must map to no node")
+
+	realMatch := trigram.Match{Path: "beta/main.go", Line: 3, Text: "// marker"}
+	ghostMatch := trigram.Match{Path: "beta/ghost.go", Line: 1, Text: "// marker"}
+	in := []trigram.Match{realMatch, ghostMatch}
+
+	// Active narrowing (workspace ceiling + repo allow-set): the
+	// unattributable ghost match is dropped; the node-backed real match
+	// survives.
+	narrowed := srv.filterTextMatchesByResolvedScope(in, ResolvedScope{
+		WorkspaceID: "shared",
+		RepoAllow:   map[string]bool{"beta": true},
+	})
+	gotPaths := make([]string, 0, len(narrowed))
+	for _, m := range narrowed {
+		gotPaths = append(gotPaths, m.Path)
+	}
+	require.Contains(t, gotPaths, "beta/main.go", "a node-backed in-scope match must survive narrowing")
+	require.NotContains(t, gotPaths, "beta/ghost.go",
+		"FAIL-CLOSED: under active narrowing a match that maps to no graph node must be dropped")
+
+	// No narrowing active: pass-through unchanged — the ghost match is kept
+	// (exactly the legacy behaviour the early-return preserves).
+	passthrough := srv.filterTextMatchesByResolvedScope(in, ResolvedScope{})
+	require.Len(t, passthrough, len(in),
+		"with no narrowing active the filter must pass every match through untouched")
+}
+
 // TestGetFileSummary_MultiRepoRelativePath pins the multi-repo path
 // normalisation: get_file_summary (and get_editing_context, which shares
 // graphRelPath) must accept a repo-relative path and resolve it to the
@@ -312,6 +433,16 @@ func setupMiniRepoNamed(t *testing.T, name, body string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(body), 0o644))
+	return dir
+}
+
+func setupSearchTextWorkspaceRepo(t *testing.T, name, workspace, body string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gortex.yaml"),
+		[]byte("workspace: "+workspace+"\nproject: backend\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.go"), []byte(body), 0o644))
 	return dir
 }

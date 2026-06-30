@@ -52,7 +52,16 @@ func (s *Server) handleAnalyzeEdgeAudit(ctx context.Context, req mcp.CallToolReq
 	implemented := map[string]bool{}  // interface ID → has an implementor
 	var weakCalls []string            // text-matched "from -> to"
 
+	// When the request narrows scope (workspace-bound session or repo
+	// allow-set), drop edges/nodes outside it so every count map and
+	// diagnostic array recomputes from the in-scope subgraph. Unbound
+	// requests skip the gate entirely — a byte-for-byte no-op.
+	scoped := s.scopeFiltersActive(ctx)
+
 	for _, e := range s.graph.AllEdges() {
+		if scoped && (!s.analyzeNodeVisible(ctx, s.graph.GetNode(e.From)) || !s.analyzeNodeVisible(ctx, s.graph.GetNode(e.To))) {
+			continue
+		}
 		tier := edgeTierLabel(e.Origin)
 		edgeTiers[tier]++
 		switch e.Kind {
@@ -73,6 +82,9 @@ func (s *Server) handleAnalyzeEdgeAudit(ctx context.Context, req mcp.CallToolReq
 	// positives once test callers are policy-excluded.
 	var testOnly []string
 	for _, n := range s.graph.AllNodes() {
+		if scoped && !s.analyzeNodeVisible(ctx, n) {
+			continue
+		}
 		switch n.Kind {
 		case graph.KindInterface:
 			if !implemented[n.ID] {

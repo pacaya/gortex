@@ -409,7 +409,7 @@ func (e *Engine) FindUsagesScoped(nodeID string, opts QueryOptions) *SubGraph {
 		// find_usages on an Image returns workloads pulling it.
 		if isUsageEdgeKind(edge.Kind) {
 			from := fromByID[edge.From]
-			if opts.WorkspaceID != "" && !opts.ScopeAllows(from) {
+			if opts.hasScopeFilter() && (from == nil || !opts.ScopeAllows(from)) {
 				continue
 			}
 			if opts.ExcludeTests && isTestSource(from) {
@@ -423,7 +423,9 @@ func (e *Engine) FindUsagesScoped(nodeID string, opts QueryOptions) *SubGraph {
 	}
 	// Include the target node itself (already in the batch above).
 	if n := fromByID[nodeID]; n != nil {
-		nodeMap[n.ID] = n
+		if !opts.hasScopeFilter() || opts.ScopeAllows(n) {
+			nodeMap[n.ID] = n
+		}
 	}
 	nodes := make([]*graph.Node, 0, len(nodeMap))
 	for _, n := range nodeMap {
@@ -461,7 +463,7 @@ func (e *Engine) SearchSymbolsRanked(query string, limit int, opts QueryOptions,
 		limit = 20
 	}
 	fetchLimit := limit
-	if opts.WorkspaceID != "" {
+	if opts.hasScopeFilter() {
 		fetchLimit = limit * 4
 		if fetchLimit > 200 {
 			fetchLimit = 200
@@ -493,7 +495,7 @@ func (e *Engine) SearchSymbolsRanked(query string, limit int, opts QueryOptions,
 		}
 	}
 
-	if opts.WorkspaceID != "" {
+	if opts.hasScopeFilter() {
 		kept := cands[:0]
 		for _, c := range cands {
 			if !opts.ScopeAllows(c.Node) {
@@ -1069,6 +1071,10 @@ func (e *Engine) bfs(nodeID string, opts QueryOptions, forward bool, edgeKinds [
 	if opts.Limit <= 0 {
 		opts.Limit = 50
 	}
+	seed := e.g.GetNode(nodeID)
+	if opts.hasScopeFilter() && (seed == nil || !opts.ScopeAllows(seed)) {
+		return &SubGraph{}
+	}
 
 	bidir := edgeKinds == nil
 	kindSet := make(map[graph.EdgeKind]bool, len(edgeKinds))
@@ -1085,7 +1091,7 @@ func (e *Engine) bfs(nodeID string, opts QueryOptions, forward bool, edgeKinds [
 	// agree by construction; a backend without it (or a capability error)
 	// falls through to the Go walk, which stays the correctness oracle.
 	if capStore, ok := e.g.(graph.BFSCapable); ok && !bidir && len(edgeKinds) > 0 &&
-		opts.WorkspaceID == "" && !opts.ExcludeTests && !opts.IncludeDispatch {
+		!opts.hasScopeFilter() && !opts.ExcludeTests && !opts.IncludeDispatch {
 		if sg, ok := e.bfsViaCapability(capStore, nodeID, opts, forward, edgeKinds, kindSet); ok {
 			return sg
 		}
@@ -1103,11 +1109,11 @@ func (e *Engine) bfs(nodeID string, opts QueryOptions, forward bool, edgeKinds [
 	var boundaries []graph.EpistemicBoundary
 	boundarySeen := map[string]bool{}
 
-	if n := e.g.GetNode(nodeID); n != nil {
-		// The seed always enters the result, regardless of scope —
-		// callers ask "what reaches X" with X already in mind. The
-		// scope check applies to neighbours discovered by traversal.
-		allNodes = append(allNodes, n)
+	if seed != nil {
+		// The seed enters only after the scope gate above; neighbours
+		// discovered by traversal pass through the same scope check in
+		// admit.
+		allNodes = append(allNodes, seed)
 	}
 
 	// admit is the single place edge/node bookkeeping lives, shared by
@@ -1156,7 +1162,7 @@ func (e *Engine) bfs(nodeID string, opts QueryOptions, forward bool, edgeKinds [
 		}
 		// Workspace/project scope: neighbours outside the bound scope are
 		// dropped along with the edge that pointed at them.
-		if opts.WorkspaceID != "" && neighbor != nil && !opts.ScopeAllows(neighbor) {
+		if opts.hasScopeFilter() && neighbor != nil && !opts.ScopeAllows(neighbor) {
 			return ""
 		}
 		allEdges = append(allEdges, edge)

@@ -510,17 +510,16 @@ func NewSharedServer(cfg SharedServerConfig) (*SharedServer, error) {
 		Allow:  conf.MCP.Tools.Allow,
 		Deny:   conf.MCP.Tools.Deny,
 	}
-	var multiOpts []gortexmcp.MultiRepoOptions
-	if mi != nil || cm != nil {
-		multiOpts = append(multiOpts, gortexmcp.MultiRepoOptions{
-			MultiIndexer:   mi,
-			ConfigManager:  cm,
-			ActiveProject:  cfg.ActiveProject,
-			ScopeWorkspace: cfg.ScopeWorkspace,
-			ScopeProject:   cfg.ScopeProject,
-			ToolPolicy:     &toolPolicyCfg,
-		})
-	}
+	scopeIntentDefaults := conf.Scope.IntentDefaults
+	multiOpts := []gortexmcp.MultiRepoOptions{{
+		MultiIndexer:        mi,
+		ConfigManager:       cm,
+		ActiveProject:       cfg.ActiveProject,
+		ScopeWorkspace:      cfg.ScopeWorkspace,
+		ScopeProject:        cfg.ScopeProject,
+		ToolPolicy:          &toolPolicyCfg,
+		ScopeIntentDefaults: &scopeIntentDefaults,
+	}}
 
 	eng := query.NewEngine(g)
 	eng.SetSearchProvider(idx.Search)

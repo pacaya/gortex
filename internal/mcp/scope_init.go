@@ -25,6 +25,16 @@ package mcp
 //     existing per-call `repo` parameter already produces a single
 //     focused result and migration to fan-out is a UX change worth a
 //     separate review.
+//
+// Note: `analyze` now accepts the uniform repo / project / workspace /
+// scope overrides (resolved via resolveScope, applied as a RepoAllow in
+// the scoped-node accessors and the analyzeNodeVisible Tier-2 filter),
+// clamped to the session workspace. The narrowing reaches its
+// graph-node kinds (dead_code, hotspots, cycles, health_score, todos,
+// ownership, impact, …); edge-walk / file-scan / git-mining kinds stay
+// workspace-bound but are not repo-narrowed in v1. The ScopeRepo wire-
+// schema classification below is orthogonal to that narrowing and is
+// unchanged.
 var defaultToolScopes = map[string]ToolScope{
 	// --- Workspace-shaped tools ----------------------------------
 	// "What can I ask about?" — bootstrap surface so an agent can
@@ -125,6 +135,45 @@ var defaultToolScopes = map[string]ToolScope{
 	// Per-function control-flow graphs: built from one symbol's
 	// source in the active repo.
 	"get_cfg": ScopeRepo,
+}
+
+var toolIntent = map[string]ToolIntent{
+	// Locate: find definitions/files/text near the session's home repo by default.
+	"search_symbols": IntentLocate,
+	"search_text":    IntentLocate,
+	"find_files":     IntentLocate,
+
+	// Reach: traversal/call-graph tools need the workspace to answer cross-repo use.
+	"find_usages":          IntentReach,
+	"get_callers":          IntentReach,
+	"get_call_chain":       IntentReach,
+	"get_dependencies":     IntentReach,
+	"get_dependents":       IntentReach,
+	"find_implementations": IntentReach,
+	"find_overrides":       IntentReach,
+	"get_class_hierarchy":  IntentReach,
+	"get_cluster":          IntentReach,
+	"walk_graph":           IntentReach,
+	"context_closure":      IntentReach,
+	"contracts":            IntentReach,
+
+	// Analyze: rollups stay at workspace breadth unless explicitly narrowed.
+	"analyze":             IntentAnalyze,
+	"review":              IntentAnalyze,
+	"sast":                IntentAnalyze,
+	"hotspots":            IntentAnalyze,
+	"dead_code":           IntentAnalyze,
+	"cycles":              IntentAnalyze,
+	"health_score":        IntentAnalyze,
+	"impact":              IntentAnalyze,
+	"connectivity_health": IntentAnalyze,
+}
+
+func toolIntentForName(name string) ToolIntent {
+	if intent, ok := toolIntent[name]; ok {
+		return intent
+	}
+	return IntentAnalyze
 }
 
 // applyDefaultToolScopes registers the canonical scope for every

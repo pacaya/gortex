@@ -154,7 +154,7 @@ func (s *Server) registerEnhancementTools() {
 	// analyze — unified graph analysis tool (dead_code, hotspots, cycles, would_create_cycle)
 	s.addTool(
 		mcp.NewTool("analyze",
-			mcp.WithDescription("Unified graph analysis. kind=dead_code: symbols with zero incoming edges. kind=hotspots: high-complexity symbols by fan-in/out. kind=cycles: circular dependency chains. kind=would_create_cycle: check if a new edge would form a cycle (requires from_id, to_id). kind=todos: list KindTodo nodes with optional tag/assignee/ticket/has_assignee filters. kind=blame: run `git blame` against the indexed repo and stamp meta.last_authored on every symbol-level node. kind=coverage: parse a Go cover.out profile (path via `profile` arg) and stamp meta.coverage_pct on every executable symbol. kind=stale_code: list symbols whose meta.last_authored is older than the threshold (requires blame-enriched graph). kind=ownership: group blame metadata by author email — symbol count, files touched, oldest/newest timestamps; supports path_prefix scoping (requires blame-enriched graph). kind=coverage_gaps: list symbols whose meta.coverage_pct falls in [min_pct, max_pct) — sorted ascending so the most undertested code surfaces first (requires coverage-enriched graph). kind=unsafe_patterns: bundled scan for panic-prone / undefined-behaviour primitives across every supported language — Go panic, Rust .unwrap/.expect/panic!/todo!/unimplemented!/unreachable!/assert!/unsafe blocks, Python assert, JS/TS throw — aggregated into one row-per-site response with a per-detector summary. Filters: language, detector, severity, path_prefix, limit, exclude_tests. kind=sast / kind=hygiene: Bandit-parity SAST rule library — 190+ structural rules across Python / Go / JS+TS / Java / Ruby / PHP / Rust, each carrying CWE + OWASP + tags metadata. Per-detector summary + per-CWE rollup. Filters: language, detector, severity, cwe, tag, path_prefix, limit, exclude_tests, kinds_only. kind=review: idiomatic / correctness rule library for Go + Python (nil-deref-prone type assertions, inverted error checks, check-then-act races, query-in-loop N+1) carrying error/warning severity. Undecidable rows (N+1, check-then-act) are refined by a graph-grounding post-pass that drops sites the resolved call / loop metadata refutes. Same row shape + filters as sast. kind=health_score: composite per-symbol health value (0..100) + A..F grade aggregated from coverage_pct, complexity (fan-in/out + community-crossings), recency (last_authored), and session churn. Per-axis breakdown surfaced on every row; missing axes are skipped (not zero-imputed). Always returns a population distribution (mean / median / std_dev / Gini coefficient over inequality of risk + per-grade counts). Pass roll_up='file' or 'repo' for per-file / per-repo averages with min/max bands and per-grade counts. Filters: path_prefix, kinds, grade, min_score, max_score, min_axes, limit, roll_up. Sorted ascending so worst symbols surface first. kind=impact: composite per-symbol change-impact score (0..100, higher = more impactful) plus a risk label, ranking symbols by blast radius from five axes — PageRank centrality, transitive reach, cyclomatic complexity, git co-change coupling, and community span. Per-axis breakdown on every row. Filters: ids, path_prefix, kinds, min_score, max_score, limit. kind=bottlenecks: rank functions by computation-bottleneck risk from index-time per-function metrics (cyclomatic + cognitive complexity, max loop depth) plus interprocedural signals computed over the call graph — transitive_loop_depth (deepest nested-loop chain across calls, a hidden-O(n^k) detector) and recursion (unguarded when recursive with no branching base case). Each row carries a score and human-readable reasons. Filters: path_prefix, kinds, min_score, limit. kind=named: run a named query bundle — a reusable, named selection of structural detectors. Pass name=<bundle> to fan every selected detector across the codebase and aggregate matches; omit name to list every bundle. Ten bundles ship built-in (sql-injection, command-injection, hardcoded-secrets, weak-crypto, xss, unsafe-deserialization, path-traversal, ssrf, xxe, debug-leftovers); a repo defines its own in .gortex.yaml::queries. Filters: name, language, severity, path_prefix, limit, exclude_tests. kind=tests_as_edges: a first-class view over the EdgeTests test→code edge layer. group_by=symbol (default) lists each tested symbol with the tests covering it; group_by=test inverts it to each test with the symbols it exercises. Always carries a summary of the edge layer's size. Filters: group_by, path_prefix, limit. kind=connectivity_health: a graph-EXTRACTION quality diagnostic — reports isolated nodes (zero edges of ANY kind, structural edges included), leaf / source-only / sink-only counts, effective-vs-nominal graph size and ratio, plus a per-node-kind breakdown and a dead-weight-by-file ranking that localises extraction gaps. Distinct from kind=dead_code: dead_code finds unreachable CODE (zero incoming usage edges, safe to delete); connectivity_health finds mis-EXTRACTED nodes (a normally indexed symbol always carries a structural edge, so an isolated node means the indexer failed, not that the code is unused). Filter: limit (caps dead_weight_by_file). kind=retrieval_log: mine the append-only retrieval query log (every search_symbols / smart_context / find_usages / search_text … call: question, corpus, nodes_returned, duration_ms, zero-result signal) for offline recall tuning — surfaces the top zero-result queries (the highest-signal candidates for synonym expansion or index gaps) plus per-tool latency (p50/p95) and result-size rollups. Filters: limit, tool, zero_only, since, top, include_recent. Gated by GORTEX_QUERY_LOG_DISABLE."),
+			mcp.WithDescription("Unified graph analysis. kind=dead_code: symbols with zero incoming edges. kind=hotspots: high-complexity symbols by fan-in/out. kind=cycles: circular dependency chains. kind=would_create_cycle: check if a new edge would form a cycle (requires from_id, to_id). kind=todos: list KindTodo nodes with optional tag/assignee/ticket/has_assignee filters. kind=blame: run `git blame` against the indexed repo and stamp meta.last_authored on every symbol-level node. kind=coverage: parse a Go cover.out profile (path via `profile` arg) and stamp meta.coverage_pct on every executable symbol. kind=stale_code: list symbols whose meta.last_authored is older than the threshold (requires blame-enriched graph). kind=ownership: group blame metadata by author email — symbol count, files touched, oldest/newest timestamps; supports path_prefix scoping (requires blame-enriched graph). kind=coverage_gaps: list symbols whose meta.coverage_pct falls in [min_pct, max_pct) — sorted ascending so the most undertested code surfaces first (requires coverage-enriched graph). kind=unsafe_patterns: bundled scan for panic-prone / undefined-behaviour primitives across every supported language — Go panic, Rust .unwrap/.expect/panic!/todo!/unimplemented!/unreachable!/assert!/unsafe blocks, Python assert, JS/TS throw — aggregated into one row-per-site response with a per-detector summary. Filters: language, detector, severity, path_prefix, limit, exclude_tests. kind=sast / kind=hygiene: Bandit-parity SAST rule library — 190+ structural rules across Python / Go / JS+TS / Java / Ruby / PHP / Rust, each carrying CWE + OWASP + tags metadata. Per-detector summary + per-CWE rollup. Filters: language, detector, severity, cwe, tag, path_prefix, limit, exclude_tests, kinds_only. kind=review: idiomatic / correctness rule library for Go + Python (nil-deref-prone type assertions, inverted error checks, check-then-act races, query-in-loop N+1) carrying error/warning severity. Undecidable rows (N+1, check-then-act) are refined by a graph-grounding post-pass that drops sites the resolved call / loop metadata refutes. Same row shape + filters as sast. kind=health_score: composite per-symbol health value (0..100) + A..F grade aggregated from coverage_pct, complexity (fan-in/out + community-crossings), recency (last_authored), and session churn. Per-axis breakdown surfaced on every row; missing axes are skipped (not zero-imputed). Always returns a population distribution (mean / median / std_dev / Gini coefficient over inequality of risk + per-grade counts). Pass roll_up='file' or 'repo' for per-file / per-repo averages with min/max bands and per-grade counts. Filters: path_prefix, kinds, grade, min_score, max_score, min_axes, limit, roll_up. Sorted ascending so worst symbols surface first. kind=impact: composite per-symbol change-impact score (0..100, higher = more impactful) plus a risk label, ranking symbols by blast radius from five axes — PageRank centrality, transitive reach, cyclomatic complexity, git co-change coupling, and community span. Per-axis breakdown on every row. Filters: ids, path_prefix, kinds, min_score, max_score, limit. kind=bottlenecks: rank functions by computation-bottleneck risk from index-time per-function metrics (cyclomatic + cognitive complexity, max loop depth) plus interprocedural signals computed over the call graph — transitive_loop_depth (deepest nested-loop chain across calls, a hidden-O(n^k) detector) and recursion (unguarded when recursive with no branching base case). Each row carries a score and human-readable reasons. Filters: path_prefix, kinds, min_score, limit. kind=named: run a named query bundle — a reusable, named selection of structural detectors. Pass name=<bundle> to fan every selected detector across the codebase and aggregate matches; omit name to list every bundle. Ten bundles ship built-in (sql-injection, command-injection, hardcoded-secrets, weak-crypto, xss, unsafe-deserialization, path-traversal, ssrf, xxe, debug-leftovers); a repo defines its own in .gortex.yaml::queries. Filters: name, language, severity, path_prefix, limit, exclude_tests. kind=tests_as_edges: a first-class view over the EdgeTests test→code edge layer. group_by=symbol (default) lists each tested symbol with the tests covering it; group_by=test inverts it to each test with the symbols it exercises. Always carries a summary of the edge layer's size. Filters: group_by, path_prefix, limit. kind=connectivity_health: a graph-EXTRACTION quality diagnostic — reports isolated nodes (zero edges of ANY kind, structural edges included), leaf / source-only / sink-only counts, effective-vs-nominal graph size and ratio, plus a per-node-kind breakdown and a dead-weight-by-file ranking that localises extraction gaps. Distinct from kind=dead_code: dead_code finds unreachable CODE (zero incoming usage edges, safe to delete); connectivity_health finds mis-EXTRACTED nodes (a normally indexed symbol always carries a structural edge, so an isolated node means the indexer failed, not that the code is unused). Filter: limit (caps dead_weight_by_file). kind=retrieval_log: mine the append-only retrieval query log (every search_symbols / smart_context / find_usages / search_text … call: question, corpus, nodes_returned, duration_ms, zero-result signal) for offline recall tuning — surfaces the top zero-result queries (the highest-signal candidates for synonym expansion or index gaps) plus per-tool latency (p50/p95) and result-size rollups. Filters: limit, tool, zero_only, since, top, include_recent. Gated by GORTEX_QUERY_LOG_DISABLE.\n\nSCOPE: accepts the uniform repo / project / workspace / scope narrowing (clamped to the session workspace) for graph-node, edge-walk, graph-algorithm, framework, and file/AST-scan kinds (dead_code, hotspots, cycles, health_score, todos, ownership, impact, bottlenecks, k8s_resources, channel_ops, pubsub, routes, models, pagerank, sast, …); the response carries a scope_applied meta field. The remaining long-tail kinds — community detection (clusters, concepts, suggest_boundaries), git/disk-mining (blame, coverage, fixes_history, retrieval_log, temporal_verify), per-id (would_create_cycle, def_use), synthesizers / resolution_outcomes, and sql_rebuild — are workspace-bound but not repo-narrowed in v1 — a scope_note flags this when a narrowing arg is passed."),
 			mcp.WithString("kind", mcp.Required(), mcp.Description(fmt.Sprintf("Analysis kind, one of: %s", analyzeKindsCSV()))),
 			mcp.WithString("framework", mcp.Description("(dbt_models) Filter to one transformation framework — dbt or sqlmesh")),
 			mcp.WithString("materialized", mcp.Description("(dbt_models) Substring match on the model materialization — table, view, incremental, …")),
@@ -168,7 +168,10 @@ func (s *Server) registerEnhancementTools() {
 			mcp.WithBoolean("include_linkname_targets", mcp.Description("(dead_code) Include //go:linkname targets — default false; they are linked by name from outside the package")),
 			mcp.WithBoolean("skip_cross_repo_nodes", mcp.Description("(dead_code) Drop nodes whose RepoPrefix is set — useful when cross-repo linking is incomplete")),
 			mcp.WithNumber("threshold", mcp.Description("(hotspots) Complexity score threshold (default: mean + 2σ)")),
-			mcp.WithString("scope", mcp.Description("(cycles) File path or package prefix to limit scope")),
+			mcp.WithString("repo", mcp.Description("Narrow this analysis to a single repository prefix, clamped to the session workspace. Applies to graph-node, edge-walk, graph-algorithm, framework, and file/AST-scan kinds (dead_code, hotspots, cycles, health_score, todos, stale_code, ownership, coverage_gaps, impact, bottlenecks, k8s_resources, dbt_models, external_calls, channel_ops, pubsub, routes, models, pagerank, sast, …). Community / git-mining / per-id / synthesizer kinds are workspace-bound but not repo-narrowed in v1. NOTE: for kind=cross_repo this names the repo whose cross-repo boundary dependencies to report (its existing meaning), not a result narrow.")),
+			mcp.WithString("project", mcp.Description("Narrow this analysis to the repositories in a project, clamped to the session workspace. Applies to graph-node kinds (see `repo`).")),
+			mcp.WithString("workspace", mcp.Description("Restrict the analysis to the active workspace slug; daemon sessions may only name their own workspace.")),
+			mcp.WithString("scope", mcp.Description("Name of a saved scope (see save_scope) — its repositories narrow graph-node analyses, clamped to the session workspace. NOTE: for kind=cycles this is instead a file-path / package prefix that limits the cycle search (its existing meaning), not a saved-scope name. Community / git-mining / per-id / synthesizer kinds (clusters, concepts, suggest_boundaries, blame, coverage, fixes_history, retrieval_log, temporal_verify, would_create_cycle, def_use, synthesizers, resolution_outcomes, sql_rebuild) are workspace-bound but not repo-narrowed in v1.")),
 			mcp.WithString("from_id", mcp.Description("(would_create_cycle) Source symbol ID")),
 			mcp.WithString("to_id", mcp.Description("(would_create_cycle) Target symbol ID")),
 			mcp.WithString("profile", mcp.Description("(coverage) Path to a Go cover.out profile, absolute or relative to the indexed repo root")),
@@ -184,7 +187,6 @@ func (s *Server) registerEnhancementTools() {
 			mcp.WithString("assignee", mcp.Description("(todos) Filter by exact assignee — case-sensitive")),
 			mcp.WithString("ticket", mcp.Description("(todos) Filter by exact ticket reference — e.g. PROJ-42")),
 			mcp.WithBoolean("has_assignee", mcp.Description("(todos) Keep only TODOs that have an assignee set")),
-			mcp.WithString("repo", mcp.Description("(cross_repo) Scope to repo-boundary dependencies touching this repository prefix on either side")),
 			mcp.WithString("base_kind", mcp.Description("(cross_repo) Scope to one base relation — calls, implements, or extends")),
 			mcp.WithNumber("limit", mcp.Description("(cross_repo, error_surface, unsafe_patterns) Cap the number of rows returned — default 200")),
 			mcp.WithString("language", mcp.Description("(unsafe_patterns, sast, hygiene) Comma-separated subset of languages to keep — rust, python, javascript, typescript, go, java, ruby, php")),
@@ -762,164 +764,278 @@ func (s *Server) handleAnalyze(ctx context.Context, req mcp.CallToolRequest) (*m
 	if err != nil {
 		return mcp.NewToolResultError("kind is required (one of: " + analyzeKindsCSV() + ")"), nil
 	}
+
+	// Uniform repo/project/workspace/scope narrowing, clamped to the
+	// session workspace. A few kinds own one of the uniform arg names as
+	// a kind-specific filter, so strip those from the scope-resolution
+	// view (the handlers still read their own arg off the untouched req):
+	//   - cycles owns `scope` as a path/package prefix — left in, it would
+	//     be looked up as a saved scope and hard-error.
+	//   - cross_repo owns `repo` as a boundary filter it reads directly.
+	//   - images owns `ref` as the image reference (e.g. "ghcr.io/acme") —
+	//     left in, resolveScope mis-reads it as a git ref / scope dimension
+	//     and errors ("configuration manager is not available") or narrows
+	//     to nothing.
+	resolveReq := req
 	switch kind {
-	case "dead_code":
-		return s.handleFindDeadCode(ctx, req)
-	case "hotspots":
-		return s.handleFindHotspots(ctx, req)
 	case "cycles":
-		return s.handleFindCycles(ctx, req)
-	case "would_create_cycle":
-		return s.handleWouldCreateCycle(ctx, req)
-	case "todos":
-		return s.handleAnalyzeTodos(ctx, req)
-	case "blame":
-		return s.handleAnalyzeBlame(ctx, req)
-	case "coverage":
-		return s.handleAnalyzeCoverage(ctx, req)
-	case "stale_code":
-		return s.handleAnalyzeStaleCode(ctx, req)
-	case "ownership":
-		return s.handleAnalyzeOwnership(ctx, req)
-	case "coverage_gaps":
-		return s.handleAnalyzeCoverageGaps(ctx, req)
-	case "stale_flags":
-		return s.handleAnalyzeStaleFlags(ctx, req)
-	case "doc_staleness":
-		return s.handleAnalyzeDocStaleness(ctx, req)
-	case "releases":
-		return s.handleAnalyzeReleases(ctx, req)
-	case "cgo_users":
-		return s.handleAnalyzeInteropUsers(ctx, req, "uses_cgo", "cgo_users")
-	case "wasm_users":
-		return s.handleAnalyzeInteropUsers(ctx, req, "uses_wasm_bindgen", "wasm_users")
-	case "orphan_tables":
-		return s.handleAnalyzeOrphanTables(ctx, req)
-	case "unreferenced_tables":
-		return s.handleAnalyzeUnreferencedTables(ctx, req)
-	case "coverage_summary":
-		return s.handleAnalyzeCoverageSummary(ctx, req)
-	case "channel_ops":
-		return s.handleAnalyzeChannelOps(ctx, req)
-	case "def_use":
-		return s.handleAnalyzeDefUse(ctx, req)
-	case "goroutine_spawns":
-		return s.handleAnalyzeGoroutineSpawns(ctx, req)
-	case "field_writers":
-		return s.handleAnalyzeFieldWriters(ctx, req)
-	case "indirect_mutations":
-		return s.handleAnalyzeIndirectMutations(ctx, req)
-	case "speculative":
-		return s.handleAnalyzeSpeculative(ctx, req)
-	case "ref_facts":
-		return s.handleAnalyzeRefFacts(ctx, req)
-	case "race_writes":
-		return s.handleAnalyzeRaceWrites(ctx, req)
-	case "unclosed_channels":
-		return s.handleAnalyzeUnclosedChannels(ctx, req)
-	case "unsafe_patterns":
-		return s.handleAnalyzeUnsafePatterns(ctx, req)
-	case "sast", "hygiene":
-		return s.handleAnalyzeSAST(ctx, req, kind)
-	case "review":
-		return s.handleAnalyzeSAST(ctx, req, "review")
-	case "domain":
-		return s.handleAnalyzeSAST(ctx, req, "domain")
-	case "health_score":
-		return s.handleAnalyzeHealthScore(ctx, req)
-	case "annotation_users":
-		return s.handleAnalyzeAnnotationUsers(ctx, req)
-	case "config_readers":
-		return s.handleAnalyzeConfigReaders(ctx, req)
-	case "env_var_users":
-		return s.handleAnalyzeEnvVarUsers(ctx, req)
-	case "sql_call_sites":
-		return s.handleAnalyzeSQLCallSites(ctx, req)
-	case "fixes_history":
-		return s.handleAnalyzeFixesHistory(ctx, req)
-	case "edge_audit":
-		return s.handleAnalyzeEdgeAudit(ctx, req)
-	case "event_emitters":
-		return s.handleAnalyzeEventEmitters(ctx, req)
-	case "pubsub":
-		return s.handleAnalyzePubsub(ctx, req)
-	case "string_emitters":
-		return s.handleAnalyzeStringEmitters(ctx, req)
-	case "error_surface":
-		return s.handleAnalyzeErrorSurface(ctx, req)
-	case "log_events":
-		return s.handleAnalyzeLogEvents(ctx, req)
-	case "sql_rebuild":
-		return s.handleAnalyzeSQLRebuild(ctx, req)
-	case "external_calls":
-		return s.handleAnalyzeExternalCalls(ctx, req)
-	case "synthesizers":
-		return s.handleAnalyzeSynthesizers(ctx, req)
-	case "temporal_orphans":
-		return s.handleAnalyzeTemporalOrphans(ctx, req)
-	case "resolution_outcomes":
-		return s.handleAnalyzeResolutionOutcomes(ctx, req)
-	case "temporal_verify":
-		return s.handleAnalyzeTemporalVerify(ctx, req)
-	case "retrieval_log":
-		return s.handleAnalyzeRetrievalLog(ctx, req)
-	case "routes":
-		return s.handleAnalyzeRoutes(ctx, req)
-	case "route_frameworks":
-		return s.handleAnalyzeRouteFrameworks(ctx, req)
-	case "drupal_hooks":
-		return s.handleAnalyzeDrupalHooks(ctx, req)
-	case "swiftui_views":
-		return s.handleAnalyzeSwiftUIViews(ctx, req)
-	case "uikit_classes":
-		return s.handleAnalyzeUIKitClasses(ctx, req)
-	case "models":
-		return s.handleAnalyzeModels(ctx, req)
-	case "components":
-		return s.handleAnalyzeComponents(ctx, req)
-	case "k8s_resources":
-		return s.handleAnalyzeK8sResources(ctx, req)
-	case "images":
-		return s.handleAnalyzeImages(ctx, req)
-	case "kustomize":
-		return s.handleAnalyzeKustomize(ctx, req)
+		resolveReq = requestWithoutArgs(req, "scope")
 	case "cross_repo":
-		return s.handleAnalyzeCrossRepo(ctx, req)
-	case "dbt_models":
-		return s.handleAnalyzeDbtModels(ctx, req)
-	case "role":
-		return s.handleAnalyzeRole(ctx, req)
-	case "constructors_missing_fields":
-		return s.handleAnalyzeConstructorsMissingFields(ctx, req)
-	case "clusters":
-		return s.handleAnalyzeClusters(ctx, req)
-	case "suggest_boundaries":
-		return s.handleSuggestBoundaries(ctx, req)
-	case "concepts":
-		return s.handleAnalyzeConcepts(ctx, req)
-	case "impact":
-		return s.handleAnalyzeImpactComposite(ctx, req)
-	case "bottlenecks":
-		return s.handleAnalyzeBottlenecks(ctx, req)
-	case "named":
-		return s.handleAnalyzeNamed(ctx, req)
-	case "tests_as_edges":
-		return s.handleAnalyzeTestsAsEdges(ctx, req)
-	case "connectivity_health":
-		return s.handleAnalyzeConnectivityHealth(ctx, req)
-	case "pagerank":
-		return s.handleAnalyzePageRank(ctx, req)
-	case "louvain":
-		return s.handleAnalyzeLouvain(ctx, req)
-	case "wcc":
-		return s.handleAnalyzeConnectedComponents(ctx, req, false)
-	case "scc":
-		return s.handleAnalyzeConnectedComponents(ctx, req, true)
-	case "kcore":
-		return s.handleAnalyzeKCore(ctx, req)
-	default:
-		return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: " + analyzeKindsCSV() + ")"), nil
+		resolveReq = requestWithoutArgs(req, "repo")
+	case "images":
+		resolveReq = requestWithoutArgs(req, "ref")
 	}
+	resolved, errResult := s.resolveScope(ctx, resolveReq, IntentAnalyze)
+	if errResult != nil {
+		return errResult, nil
+	}
+	ctx = withRepoAllow(ctx, resolved.RepoAllow)
+
+	// The dispatch switch is wrapped in a closure so every analyze
+	// response is uniformly decorated with scope_applied below. It stays
+	// inline in handleAnalyze on purpose — the AST anti-drift test
+	// (TestAnalyzeKinds_MatchesSwitch) requires the kind switch to live
+	// in this method's body.
+	res, err := func() (*mcp.CallToolResult, error) {
+		switch kind {
+		case "dead_code":
+			return s.handleFindDeadCode(ctx, req)
+		case "hotspots":
+			return s.handleFindHotspots(ctx, req)
+		case "cycles":
+			return s.handleFindCycles(ctx, req)
+		case "would_create_cycle":
+			return s.handleWouldCreateCycle(ctx, req)
+		case "todos":
+			return s.handleAnalyzeTodos(ctx, req)
+		case "blame":
+			return s.handleAnalyzeBlame(ctx, req)
+		case "coverage":
+			return s.handleAnalyzeCoverage(ctx, req)
+		case "stale_code":
+			return s.handleAnalyzeStaleCode(ctx, req)
+		case "ownership":
+			return s.handleAnalyzeOwnership(ctx, req)
+		case "coverage_gaps":
+			return s.handleAnalyzeCoverageGaps(ctx, req)
+		case "stale_flags":
+			return s.handleAnalyzeStaleFlags(ctx, req)
+		case "doc_staleness":
+			return s.handleAnalyzeDocStaleness(ctx, req)
+		case "releases":
+			return s.handleAnalyzeReleases(ctx, req)
+		case "cgo_users":
+			return s.handleAnalyzeInteropUsers(ctx, req, "uses_cgo", "cgo_users")
+		case "wasm_users":
+			return s.handleAnalyzeInteropUsers(ctx, req, "uses_wasm_bindgen", "wasm_users")
+		case "orphan_tables":
+			return s.handleAnalyzeOrphanTables(ctx, req)
+		case "unreferenced_tables":
+			return s.handleAnalyzeUnreferencedTables(ctx, req)
+		case "coverage_summary":
+			return s.handleAnalyzeCoverageSummary(ctx, req)
+		case "channel_ops":
+			return s.handleAnalyzeChannelOps(ctx, req)
+		case "def_use":
+			return s.handleAnalyzeDefUse(ctx, req)
+		case "goroutine_spawns":
+			return s.handleAnalyzeGoroutineSpawns(ctx, req)
+		case "field_writers":
+			return s.handleAnalyzeFieldWriters(ctx, req)
+		case "indirect_mutations":
+			return s.handleAnalyzeIndirectMutations(ctx, req)
+		case "speculative":
+			return s.handleAnalyzeSpeculative(ctx, req)
+		case "ref_facts":
+			return s.handleAnalyzeRefFacts(ctx, req)
+		case "race_writes":
+			return s.handleAnalyzeRaceWrites(ctx, req)
+		case "unclosed_channels":
+			return s.handleAnalyzeUnclosedChannels(ctx, req)
+		case "unsafe_patterns":
+			return s.handleAnalyzeUnsafePatterns(ctx, req)
+		case "sast", "hygiene":
+			return s.handleAnalyzeSAST(ctx, req, kind)
+		case "review":
+			return s.handleAnalyzeSAST(ctx, req, "review")
+		case "domain":
+			return s.handleAnalyzeSAST(ctx, req, "domain")
+		case "health_score":
+			return s.handleAnalyzeHealthScore(ctx, req)
+		case "annotation_users":
+			return s.handleAnalyzeAnnotationUsers(ctx, req)
+		case "config_readers":
+			return s.handleAnalyzeConfigReaders(ctx, req)
+		case "env_var_users":
+			return s.handleAnalyzeEnvVarUsers(ctx, req)
+		case "sql_call_sites":
+			return s.handleAnalyzeSQLCallSites(ctx, req)
+		case "fixes_history":
+			return s.handleAnalyzeFixesHistory(ctx, req)
+		case "edge_audit":
+			return s.handleAnalyzeEdgeAudit(ctx, req)
+		case "event_emitters":
+			return s.handleAnalyzeEventEmitters(ctx, req)
+		case "pubsub":
+			return s.handleAnalyzePubsub(ctx, req)
+		case "string_emitters":
+			return s.handleAnalyzeStringEmitters(ctx, req)
+		case "error_surface":
+			return s.handleAnalyzeErrorSurface(ctx, req)
+		case "log_events":
+			return s.handleAnalyzeLogEvents(ctx, req)
+		case "sql_rebuild":
+			return s.handleAnalyzeSQLRebuild(ctx, req)
+		case "external_calls":
+			return s.handleAnalyzeExternalCalls(ctx, req)
+		case "synthesizers":
+			return s.handleAnalyzeSynthesizers(ctx, req)
+		case "temporal_orphans":
+			return s.handleAnalyzeTemporalOrphans(ctx, req)
+		case "resolution_outcomes":
+			return s.handleAnalyzeResolutionOutcomes(ctx, req)
+		case "temporal_verify":
+			return s.handleAnalyzeTemporalVerify(ctx, req)
+		case "retrieval_log":
+			return s.handleAnalyzeRetrievalLog(ctx, req)
+		case "routes":
+			return s.handleAnalyzeRoutes(ctx, req)
+		case "route_frameworks":
+			return s.handleAnalyzeRouteFrameworks(ctx, req)
+		case "drupal_hooks":
+			return s.handleAnalyzeDrupalHooks(ctx, req)
+		case "swiftui_views":
+			return s.handleAnalyzeSwiftUIViews(ctx, req)
+		case "uikit_classes":
+			return s.handleAnalyzeUIKitClasses(ctx, req)
+		case "models":
+			return s.handleAnalyzeModels(ctx, req)
+		case "components":
+			return s.handleAnalyzeComponents(ctx, req)
+		case "k8s_resources":
+			return s.handleAnalyzeK8sResources(ctx, req)
+		case "images":
+			return s.handleAnalyzeImages(ctx, req)
+		case "kustomize":
+			return s.handleAnalyzeKustomize(ctx, req)
+		case "cross_repo":
+			return s.handleAnalyzeCrossRepo(ctx, req)
+		case "dbt_models":
+			return s.handleAnalyzeDbtModels(ctx, req)
+		case "role":
+			return s.handleAnalyzeRole(ctx, req)
+		case "constructors_missing_fields":
+			return s.handleAnalyzeConstructorsMissingFields(ctx, req)
+		case "clusters":
+			return s.handleAnalyzeClusters(ctx, req)
+		case "suggest_boundaries":
+			return s.handleSuggestBoundaries(ctx, req)
+		case "concepts":
+			return s.handleAnalyzeConcepts(ctx, req)
+		case "impact":
+			return s.handleAnalyzeImpactComposite(ctx, req)
+		case "bottlenecks":
+			return s.handleAnalyzeBottlenecks(ctx, req)
+		case "named":
+			return s.handleAnalyzeNamed(ctx, req)
+		case "tests_as_edges":
+			return s.handleAnalyzeTestsAsEdges(ctx, req)
+		case "connectivity_health":
+			return s.handleAnalyzeConnectivityHealth(ctx, req)
+		case "pagerank":
+			return s.handleAnalyzePageRank(ctx, req)
+		case "louvain":
+			return s.handleAnalyzeLouvain(ctx, req)
+		case "wcc":
+			return s.handleAnalyzeConnectedComponents(ctx, req, false)
+		case "scc":
+			return s.handleAnalyzeConnectedComponents(ctx, req, true)
+		case "kcore":
+			return s.handleAnalyzeKCore(ctx, req)
+		default:
+			return mcp.NewToolResultError("unknown analyze kind: " + kind + " (expected: " + analyzeKindsCSV() + ")"), nil
+		}
+	}()
+
+	// Disclose when the caller asked to narrow (repo/project/scope) but
+	// the chosen kind does not repo-narrow its rows in v1 — it enumerates
+	// edges / scans files / mines git. scope_applied stays uniform and
+	// truthful about the resolved scope; scope_note prevents it from
+	// misleading a caller whose kind ignored the narrowing ("no silent
+	// no-ops").
+	if err == nil && res != nil && resolved.RepoAllow != nil && !analyzeScopeAwareKinds[kind] {
+		stampScopeNote(res, kind)
+	}
+	return withScopeResult(res, err, resolved)
+}
+
+// requestWithoutArgs returns a shallow copy of req with the named
+// argument keys removed, so resolveScope doesn't mistake a kind-specific
+// arg (cross_repo's `repo`, cycles' `scope`) for the uniform scope
+// dimension. The original req is untouched.
+func requestWithoutArgs(req mcp.CallToolRequest, keys ...string) mcp.CallToolRequest {
+	src := req.GetArguments()
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	for _, k := range keys {
+		delete(dst, k)
+	}
+	out := req
+	out.Params.Arguments = dst
+	return out
+}
+
+// stampScopeNote records on the response that the caller asked to narrow
+// but the chosen kind does not repo-narrow its rows in v1, keeping
+// scope_applied uniform while disclosing the no-op.
+func stampScopeNote(res *mcp.CallToolResult, kind string) {
+	if res == nil {
+		return
+	}
+	note := "kind '" + kind + "' is not scope-narrowed in v1 (a community / git-mining / per-id / synthesizer kind); it reads the full graph directly, so results may span the entire index / all workspaces — not just the session workspace"
+	if res.Meta == nil {
+		res.Meta = mcp.NewMetaFromMap(map[string]any{"scope_note": note})
+		return
+	}
+	if res.Meta.AdditionalFields == nil {
+		res.Meta.AdditionalFields = map[string]any{}
+	}
+	res.Meta.AdditionalFields["scope_note"] = note
+}
+
+// analyzeNodeVisible reports whether a node may appear in an analyze
+// result for the current request: inside the session workspace ceiling
+// AND inside the optional ctx RepoAllow narrowing. It reuses the same
+// gates as the scoped-node accessors so the bypass kinds that filter
+// through it (dead_code, hotspots, cycles) match the AUTO kinds and
+// simultaneously honour the workspace boundary they would otherwise
+// ignore (those kinds read s.graph directly). Returns true for an
+// unbound session with no RepoAllow, so an unconditional filter is a
+// strict no-op in that case.
+func (s *Server) analyzeNodeVisible(ctx context.Context, n *graph.Node) bool {
+	if n == nil {
+		return false
+	}
+	if !s.nodeInSessionScope(ctx, n) {
+		return false
+	}
+	if allow := repoAllowFromContext(ctx); len(allow) > 0 && !allow[n.RepoPrefix] {
+		return false
+	}
+	return true
+}
+
+// scopeFiltersActive reports whether the current request narrows analyze
+// output below the global graph — a workspace-bound session or a ctx
+// RepoAllow. When false, analyzeNodeVisible passes every node, so the
+// Tier-2 filters skip the work and preserve byte-for-byte output.
+func (s *Server) scopeFiltersActive(ctx context.Context) bool {
+	if _, _, bound := s.sessionScope(ctx); bound {
+		return true
+	}
+	return len(repoAllowFromContext(ctx)) > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1981,6 +2097,12 @@ func (s *Server) handleAnalyzeReleases(ctx context.Context, req mcp.CallToolRequ
 		if n.Kind != graph.KindRelease {
 			continue
 		}
+		// Gate every release node on the session workspace ceiling +
+		// resolved RepoAllow narrowing (stamped into ctx by handleAnalyze).
+		// Strict no-op for an unbound session with no RepoAllow.
+		if !s.analyzeNodeVisible(ctx, n) {
+			continue
+		}
 		if repoFilter != "" && n.RepoPrefix != repoFilter {
 			continue
 		}
@@ -2027,6 +2149,9 @@ func (s *Server) handleAnalyzeReleases(ctx context.Context, req mcp.CallToolRequ
 			if n.Kind != graph.KindFile || n.FilePath == "" {
 				continue
 			}
+			if !s.analyzeNodeVisible(ctx, n) {
+				continue
+			}
 			if repoFilter != "" && n.RepoPrefix != repoFilter {
 				continue
 			}
@@ -2058,6 +2183,9 @@ func (s *Server) handleAnalyzeReleases(ctx context.Context, req mcp.CallToolRequ
 			hasAnyAddedIn = true
 		} else {
 			for _, n := range s.graph.AllNodes() {
+				if !s.analyzeNodeVisible(ctx, n) {
+					continue
+				}
 				if n.Kind == graph.KindFile && n.Meta != nil {
 					if _, ok := n.Meta["added_in"].(string); ok {
 						hasAnyAddedIn = true
@@ -2191,6 +2319,21 @@ func (s *Server) handleFindDeadCode(ctx context.Context, req mcp.CallToolRequest
 
 	entries := analysis.FindDeadCode(s.graph, s.getProcesses(), nil, opts)
 
+	// dead_code reads s.graph directly, bypassing the scoped-node
+	// accessors, so narrow its rows to the session workspace + optional
+	// repo allow-set here. This also closes the latent cross-workspace
+	// leak for this kind. Strict no-op for an unbound session with no
+	// RepoAllow. Counts below are computed after this filter.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]analysis.DeadCodeEntry, 0, len(entries))
+		for _, e := range entries {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(e.ID)) {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
+
 	// Cap response size — large repos surface thousands of dead-code
 	// candidates and the default JSON encoding spills past the MCP
 	// per-response token cap. Callers that need the full list can
@@ -2305,6 +2448,20 @@ func (s *Server) handleFindHotspots(ctx context.Context, req mcp.CallToolRequest
 			direction = "adds"
 		}
 		entries = rerankHotspots(entries, s.graph, mode, direction, windowDays)
+	}
+
+	// hotspots reads s.graph directly, bypassing the scoped-node
+	// accessors, so narrow its rows to the session workspace + optional
+	// repo allow-set here (also closing the latent cross-workspace leak).
+	// Strict no-op for an unbound session with no RepoAllow.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]analysis.HotspotEntry, 0, len(entries))
+		for _, e := range entries {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(e.ID)) {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
 	}
 
 	// Truncate to top 20
@@ -2431,10 +2588,41 @@ func (s *Server) handleScaffold(ctx context.Context, req mcp.CallToolRequest) (*
 // 10.7 handleFindCycles and handleWouldCreateCycle
 // ---------------------------------------------------------------------------
 
+// cycleVisible reports whether every node on a cycle's path is visible
+// to the current request (workspace ceiling + optional repo allow-set).
+// A cycle is surfaced only when it is entirely in scope, so a chain that
+// crosses the boundary is dropped rather than leaking its out-of-scope
+// members.
+func (s *Server) cycleVisible(ctx context.Context, c analysis.Cycle) bool {
+	for _, id := range c.Path {
+		if !s.analyzeNodeVisible(ctx, s.graph.GetNode(id)) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleFindCycles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	scope := req.GetString("scope", "")
 
 	cycles := analysis.DetectCycles(s.graph, s.getCommunities(), scope)
+
+	// cycles reads s.graph directly, bypassing the scoped-node accessors,
+	// so narrow here to the session workspace + optional repo allow-set.
+	// A cycle is kept only when EVERY node on its path is visible, so a
+	// chain that crosses the boundary is dropped rather than leaking its
+	// cross-repo / cross-workspace members. Strict no-op for an unbound
+	// session with no RepoAllow. Runs before the GCX / empty / total
+	// blocks so all of them observe the filtered set.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]analysis.Cycle, 0, len(cycles))
+		for _, c := range cycles {
+			if s.cycleVisible(ctx, c) {
+				kept = append(kept, c)
+			}
+		}
+		cycles = kept
+	}
 
 	if s.isGCX(ctx, req) {
 		items := make([]cycleItem, 0, len(cycles))
@@ -3501,16 +3689,15 @@ func (s *Server) handleGetContracts(ctx context.Context, req mcp.CallToolRequest
 		includeDeps = v
 	}
 
-	// resolveRepoFilter unifies repo/project/ref into a single allow-set
-	// and falls back to the active project when no axis is given — same
-	// default scoping every other query tool uses. all_repos=true opts out.
-	var allowed map[string]bool
+	var resolved ResolvedScope
+	var contractRepoAllow map[string]bool
 	if !allRepos {
-		var err error
-		allowed, err = s.resolveRepoFilter(ctx, req)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		var errResult *mcp.CallToolResult
+		resolved, errResult = s.resolveScope(ctx, req, IntentReach)
+		if errResult != nil {
+			return errResult, nil
 		}
+		contractRepoAllow = s.contractRepoAllowForRequest(ctx, req, resolved)
 	}
 
 	all := registry.All()
@@ -3522,7 +3709,7 @@ func (s *Server) handleGetContracts(ctx context.Context, req mcp.CallToolRequest
 	for _, c := range all {
 		isDep := c.Type == contracts.ContractDependency || excludes.IsVendored(c.FilePath)
 
-		if allowed != nil && c.RepoPrefix != "" && !allowed[c.RepoPrefix] {
+		if !allRepos && !contractInResolvedScope(c, resolved, contractRepoAllow) {
 			if includeDeps || !isDep {
 				otherRepos[c.RepoPrefix]++
 			}
@@ -3598,7 +3785,11 @@ func (s *Server) handleGetContracts(ctx context.Context, req mcp.CallToolRequest
 		if depsSkipped > 0 {
 			fmt.Fprintf(&b, "dependencies_skipped: %d (pass include_deps=true to include)\n", depsSkipped)
 		}
-		return mcp.NewToolResultText(b.String()), nil
+		res := mcp.NewToolResultText(b.String())
+		if !allRepos {
+			res = decorateResultWithScope(res, resolved)
+		}
+		return res, nil
 	}
 
 	if s.isGCX(ctx, req) {
@@ -3610,7 +3801,11 @@ func (s *Server) handleGetContracts(ctx context.Context, req mcp.CallToolRequest
 		if depsSkipped > 0 {
 			extra = append(extra, "dependencies_skipped", fmt.Sprintf("%d", depsSkipped))
 		}
-		return s.gcxResponseWithBudget(req)(encodeContractsList(filtered, len(filtered), extra...))
+		res, err := s.gcxResponseWithBudget(req)(encodeContractsList(filtered, len(filtered), extra...))
+		if !allRepos {
+			return withScopeResult(res, err, resolved)
+		}
+		return res, err
 	}
 
 	// Group by repo, then by type for structured output.
@@ -3656,7 +3851,40 @@ func (s *Server) handleGetContracts(ctx context.Context, req mcp.CallToolRequest
 			"hint":  "pass include_deps=true to include type=dependency and vendor-pathed contracts",
 		}
 	}
+	if !allRepos {
+		return s.respondScopedJSONOrTOON(ctx, req, payload, resolved)
+	}
 	return s.respondJSONOrTOON(ctx, req, payload)
+}
+
+func (s *Server) contractRepoAllowForRequest(ctx context.Context, req mcp.CallToolRequest, resolved ResolvedScope) map[string]bool {
+	if resolved.RepoAllow != nil {
+		return resolved.RepoAllow
+	}
+	if strings.TrimSpace(req.GetString("repo", "")) == "" &&
+		strings.TrimSpace(req.GetString("project", "")) == "" &&
+		strings.TrimSpace(req.GetString("ref", "")) == "" &&
+		strings.TrimSpace(req.GetString("scope", "")) == "" {
+		return nil
+	}
+	allowed, err := s.resolveRepoFilter(ctx, req)
+	if err != nil {
+		return nil
+	}
+	return allowed
+}
+
+func contractInResolvedScope(c contracts.Contract, resolved ResolvedScope, repoAllow map[string]bool) bool {
+	if resolved.WorkspaceID != "" && c.EffectiveWorkspace() != resolved.WorkspaceID {
+		return false
+	}
+	if len(repoAllow) > 0 && c.RepoPrefix != "" && !repoAllow[c.RepoPrefix] {
+		return false
+	}
+	if len(repoAllow) == 0 && resolved.ProjectID != "" && c.EffectiveProject() != resolved.ProjectID {
+		return false
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -3669,23 +3897,15 @@ func (s *Server) handleCheckContracts(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError("no contract registry available — index a repository first"), nil
 	}
 
-	// resolveRepoFilter folds repo/project/ref into one allow-set so
-	// `contracts check` can answer "does project X match" without the
-	// caller having to list its repos by hand. A nil allow-set means
-	// "all tracked repos" and keeps the original single-registry fast
-	// path — avoids a pointless copy of the full registry.
-	allowed, err := s.resolveRepoFilter(ctx, req)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
 	}
+	contractRepoAllow := s.contractRepoAllowForRequest(ctx, req, resolved)
 
-	reg := registry
-	if allowed != nil {
-		reg = contracts.NewRegistry()
-		for _, c := range registry.All() {
-			if c.RepoPrefix != "" && !allowed[c.RepoPrefix] {
-				continue
-			}
+	reg := contracts.NewRegistry()
+	for _, c := range registry.All() {
+		if contractInResolvedScope(c, resolved, contractRepoAllow) {
 			reg.Add(c)
 		}
 	}
@@ -3730,11 +3950,12 @@ func (s *Server) handleCheckContracts(ctx context.Context, req mcp.CallToolReque
 			}
 			fmt.Fprintf(&b, "  [%s] %s %s:%d\n", repoLabel, o.ID, o.FilePath, o.Line)
 		}
-		return mcp.NewToolResultText(b.String()), nil
+		return decorateResultWithScope(mcp.NewToolResultText(b.String()), resolved), nil
 	}
 
 	if s.isGCX(ctx, req) {
-		return s.gcxResponseWithBudget(req)(encodeContractsCheck(result))
+		res, err := s.gcxResponseWithBudget(req)(encodeContractsCheck(result))
+		return withScopeResult(res, err, resolved)
 	}
 
 	payload := map[string]any{
@@ -3747,7 +3968,7 @@ func (s *Server) handleCheckContracts(ctx context.Context, req mcp.CallToolReque
 			"orphan_consumers": len(result.OrphanConsumers),
 		},
 	}
-	return s.respondJSONOrTOON(ctx, req, payload)
+	return s.respondScopedJSONOrTOON(ctx, req, payload, resolved)
 }
 
 // ---------------------------------------------------------------------------
@@ -3766,18 +3987,15 @@ func (s *Server) handleValidateContracts(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError("no contract registry available — index a repository first"), nil
 	}
 
-	allowed, err := s.resolveRepoFilter(ctx, req)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
 	}
+	contractRepoAllow := s.contractRepoAllowForRequest(ctx, req, resolved)
 
-	reg := registry
-	if allowed != nil {
-		reg = contracts.NewRegistry()
-		for _, c := range registry.All() {
-			if c.RepoPrefix != "" && !allowed[c.RepoPrefix] {
-				continue
-			}
+	reg := contracts.NewRegistry()
+	for _, c := range registry.All() {
+		if contractInResolvedScope(c, resolved, contractRepoAllow) {
 			reg.Add(c)
 		}
 	}
@@ -3826,14 +4044,14 @@ func (s *Server) handleValidateContracts(ctx context.Context, req mcp.CallToolRe
 			fmt.Fprintf(&b, "  [%s] %s %s field=%s prov=%s cons=%s %s\n",
 				is.Severity, is.ContractID, is.Kind, field, is.Provider, is.Consumer, is.Details)
 		}
-		return mcp.NewToolResultText(b.String()), nil
+		return decorateResultWithScope(mcp.NewToolResultText(b.String()), resolved), nil
 	}
 
 	payload := map[string]any{
 		"issues":  issues,
 		"summary": summary,
 	}
-	return s.respondJSONOrTOON(ctx, req, payload)
+	return s.respondScopedJSONOrTOON(ctx, req, payload, resolved)
 }
 
 // ---------------------------------------------------------------------------

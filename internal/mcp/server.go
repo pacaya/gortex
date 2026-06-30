@@ -107,7 +107,10 @@ type Server struct {
 	// than reading the fields directly.
 	scopeWorkspace string
 	scopeProject   string
-	logger         *zap.Logger
+	// scopeIntentDefaults gates Layer-B intent defaults: locate tools
+	// start at the session repo, reach/analyze tools at the workspace.
+	scopeIntentDefaults bool
+	logger              *zap.Logger
 	// recorder counts allow-listed, consent-gated usage telemetry. nil or
 	// disabled when telemetry is off; Record is nil-safe and fail-silent so
 	// the dispatch hot path never branches on it.
@@ -982,6 +985,9 @@ type MultiRepoOptions struct {
 	// preset / allow-deny set (the `mcp.tools` config block). Nil leaves
 	// the full surface; GORTEX_TOOLS / GORTEX_TOOLS_MODE still override.
 	ToolPolicy *ToolPolicyConfig
+	// ScopeIntentDefaults overrides the default-on intent scoping flag
+	// from `.gortex.yaml::scope.intent_defaults`.
+	ScopeIntentDefaults *bool
 }
 
 // serverInstructions is the server-level `instructions` field returned
@@ -1126,12 +1132,13 @@ func (s *Server) activeProjectName(cwd string) string {
 // NewServer creates an MCP server with all Gortex tools registered.
 func NewServer(engine *query.Engine, g graph.Store, idx *indexer.Indexer, watcher *indexer.Watcher, logger *zap.Logger, guardRules []config.GuardRule, opts ...MultiRepoOptions) *Server {
 	s := &Server{
-		engine:     engine,
-		graph:      g,
-		indexer:    idx,
-		logger:     logger,
-		session:    newSessionState(),
-		tokenStats: &tokenStats{},
+		engine:              engine,
+		graph:               g,
+		indexer:             idx,
+		logger:              logger,
+		session:             newSessionState(),
+		scopeIntentDefaults: true,
+		tokenStats:          &tokenStats{},
 		symHistory: &symbolHistory{
 			entries: make(map[string][]SymbolModification),
 		},
@@ -1198,6 +1205,9 @@ func NewServer(engine *query.Engine, g graph.Store, idx *indexer.Indexer, watche
 		s.activeProject = o.ActiveProject
 		s.scopeWorkspace = o.ScopeWorkspace
 		s.scopeProject = o.ScopeProject
+		if o.ScopeIntentDefaults != nil {
+			s.scopeIntentDefaults = *o.ScopeIntentDefaults
+		}
 	}
 
 	// Proactive-notification broadcasters. Constructed up-front so
@@ -1593,10 +1603,14 @@ func (s *Server) nodeInSessionScope(ctx context.Context, n *graph.Node) bool {
 func (s *Server) scopedNodes(ctx context.Context) []*graph.Node {
 	all := s.graph.AllNodes()
 	sessWS, _, bound := s.sessionScope(ctx)
-	if !bound {
+	repoAllow := repoAllowFromContext(ctx)
+	if !bound && len(repoAllow) == 0 {
 		return all
 	}
-	opts := query.QueryOptions{WorkspaceID: sessWS}
+	opts := query.QueryOptions{RepoAllow: repoAllow}
+	if bound {
+		opts.WorkspaceID = sessWS
+	}
 	out := make([]*graph.Node, 0, len(all))
 	for _, n := range all {
 		if opts.ScopeAllows(n) {
@@ -1646,10 +1660,14 @@ func (s *Server) scopedNodesByKinds(ctx context.Context, kinds []graph.NodeKind)
 		}
 	}
 	sessWS, _, bound := s.sessionScope(ctx)
-	if !bound {
+	repoAllow := repoAllowFromContext(ctx)
+	if !bound && len(repoAllow) == 0 {
 		return nodes
 	}
-	opts := query.QueryOptions{WorkspaceID: sessWS}
+	opts := query.QueryOptions{RepoAllow: repoAllow}
+	if bound {
+		opts.WorkspaceID = sessWS
+	}
 	out := make([]*graph.Node, 0, len(nodes))
 	for _, n := range nodes {
 		if opts.ScopeAllows(n) {
@@ -1664,10 +1682,14 @@ func (s *Server) scopedNodesByKinds(ctx context.Context, kinds []graph.NodeKind)
 // (engine list methods that don't take QueryOptions).
 func (s *Server) scopedNodeSlice(ctx context.Context, nodes []*graph.Node) []*graph.Node {
 	sessWS, _, bound := s.sessionScope(ctx)
-	if !bound {
+	repoAllow := repoAllowFromContext(ctx)
+	if !bound && len(repoAllow) == 0 {
 		return nodes
 	}
-	opts := query.QueryOptions{WorkspaceID: sessWS}
+	opts := query.QueryOptions{RepoAllow: repoAllow}
+	if bound {
+		opts.WorkspaceID = sessWS
+	}
 	out := make([]*graph.Node, 0, len(nodes))
 	for _, n := range nodes {
 		if opts.ScopeAllows(n) {
@@ -1675,48 +1697,6 @@ func (s *Server) scopedNodeSlice(ctx context.Context, nodes []*graph.Node) []*gr
 		}
 	}
 	return out
-}
-
-// resolveQueryScope resolves the (workspace, project) scope for a
-// query. For a workspace-bound session the session's workspace is an
-// immovable ceiling: a `workspace` arg can never widen it (cross-
-// workspace values are rejected up front in resolveRepoFilter), while
-// a `project` arg may narrow within it. For an unbound session it
-// merges the server-level default scope with caller-supplied arg
-// overrides — the legacy `gortex server --workspace` behaviour.
-func (s *Server) resolveQueryScope(ctx context.Context, argWorkspace, argProject string) (workspace, project string) {
-	if sessWS, sessProj, bound := s.sessionScope(ctx); bound {
-		workspace = sessWS
-		project = sessProj
-		if argProject != "" {
-			project = argProject
-		}
-		return
-	}
-	workspace = s.scopeWorkspace
-	if argWorkspace != "" {
-		workspace = argWorkspace
-	}
-	project = s.scopeProject
-	if argProject != "" {
-		project = argProject
-	}
-	return
-}
-
-// scopeFromRequest pulls `workspace` / `project` arg overrides off
-// the MCP request and resolves them against the session boundary.
-// Convenience wrapper around resolveQueryScope for handlers that take
-// the request directly.
-func (s *Server) scopeFromRequest(ctx context.Context, req scopeArgGetter) (workspace, project string) {
-	return s.resolveQueryScope(ctx, req.GetString("workspace", ""), req.GetString("project", ""))
-}
-
-// scopeArgGetter is the minimum interface for reading MCP string
-// args; mirrors mcp.CallToolRequest's GetString without forcing
-// every caller to import the mcp pkg here.
-type scopeArgGetter interface {
-	GetString(key, fallback string) string
 }
 
 // InitCombo initializes the query→symbol combo tracker. Persists per-repo,

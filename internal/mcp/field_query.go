@@ -26,7 +26,8 @@ type fieldQuery struct {
 // / path / repo) was supplied. project: is excluded — it merges into
 // the query scope rather than acting as a post-filter.
 func (fq fieldQuery) hasFieldFilters() bool {
-	return fq.Kind != "" || fq.Flavor != "" || fq.Lang != "" || fq.Path != "" || fq.Repo != "" || fq.Name != ""
+	repo := strings.TrimSpace(fq.Repo)
+	return fq.Kind != "" || fq.Flavor != "" || fq.Lang != "" || fq.Path != "" || (repo != "" && repo != "*") || fq.Name != ""
 }
 
 // parseFieldQuery splits a raw search string into its free text and
@@ -69,6 +70,37 @@ func parseFieldQuery(raw string) fieldQuery {
 	return fq
 }
 
+// requestWithInlineScopeClauses returns a request whose repo/project args
+// include inline field-query scope clauses when the corresponding explicit
+// request arg is absent. The original request is left untouched.
+func requestWithInlineScopeClauses(req mcp.CallToolRequest, fq fieldQuery) mcp.CallToolRequest {
+	inlineRepo := strings.TrimSpace(fq.Repo)
+	inlineProject := strings.TrimSpace(fq.Project)
+	if inlineRepo == "" && inlineProject == "" {
+		return req
+	}
+
+	repoArg := strings.TrimSpace(req.GetString("repo", ""))
+	projectArg := strings.TrimSpace(req.GetString("project", ""))
+	if (repoArg != "" || inlineRepo == "") && (projectArg != "" || inlineProject == "") {
+		return req
+	}
+
+	merged := req
+	args := make(map[string]any, len(req.GetArguments())+2)
+	for k, v := range req.GetArguments() {
+		args[k] = v
+	}
+	if repoArg == "" && inlineRepo != "" {
+		args["repo"] = inlineRepo
+	}
+	if projectArg == "" && inlineProject != "" {
+		args["project"] = inlineProject
+	}
+	merged.Params.Arguments = args
+	return merged
+}
+
 // normalizeLang folds the common short language aliases (ts, js, py,
 // …) onto the canonical language names the indexer stamps on nodes.
 // An unrecognised value is returned lowercased and trimmed.
@@ -105,6 +137,9 @@ func applyFieldFilters(nodes []*graph.Node, fq fieldQuery) []*graph.Node {
 	lang := normalizeLang(fq.Lang)
 	path := strings.ToLower(strings.TrimSpace(fq.Path))
 	repo := strings.TrimSpace(fq.Repo)
+	if repo == "*" {
+		repo = ""
+	}
 	name := strings.ToLower(strings.TrimSpace(fq.Name))
 	if lang == "" && path == "" && repo == "" && name == "" {
 		return nodes

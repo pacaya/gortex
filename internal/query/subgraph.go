@@ -76,6 +76,12 @@ type QueryOptions struct {
 	// be ambiguous (two workspaces could declare a project with the
 	// same name).
 	ProjectID string `json:"project_id,omitempty"`
+	// RepoAllow, when non-empty, restricts traversal to nodes whose
+	// RepoPrefix is present in the allow-set. Nil or empty preserves
+	// the legacy no-repo-filter behaviour. This is intentionally a
+	// soft breadth control inside any workspace boundary, not a
+	// replacement for caller-side workspace isolation.
+	RepoAllow map[string]bool `json:"repo_allow,omitempty"`
 	// ExcludeTests, when true, drops edges originating from a function
 	// flagged as a test (Node.Meta["is_test"] = true) — set by the
 	// indexer's test-edge pass. Lets find_usages / get_callers answer
@@ -213,24 +219,35 @@ type SearchTimings struct {
 // boundary on by-id and whole-graph handlers that don't route through
 // the engine's scoped traversal.
 func (o QueryOptions) ScopeAllows(n *graph.Node) bool {
-	if o.WorkspaceID == "" || n == nil {
+	if n == nil {
 		return true
 	}
-	ws := n.WorkspaceID
-	if ws == "" {
-		ws = n.RepoPrefix
+	if o.WorkspaceID != "" {
+		ws := n.WorkspaceID
+		if ws == "" {
+			ws = n.RepoPrefix
+		}
+		if ws != o.WorkspaceID {
+			return false
+		}
+		if o.ProjectID != "" {
+			proj := n.ProjectID
+			if proj == "" {
+				proj = n.RepoPrefix
+			}
+			if proj != o.ProjectID {
+				return false
+			}
+		}
 	}
-	if ws != o.WorkspaceID {
+	if len(o.RepoAllow) > 0 && !o.RepoAllow[n.RepoPrefix] {
 		return false
 	}
-	if o.ProjectID == "" {
-		return true
-	}
-	proj := n.ProjectID
-	if proj == "" {
-		proj = n.RepoPrefix
-	}
-	return proj == o.ProjectID
+	return true
+}
+
+func (o QueryOptions) hasScopeFilter() bool {
+	return o.WorkspaceID != "" || len(o.RepoAllow) > 0
 }
 
 // FilterByMinTier drops edges whose Origin rank is below minTier.
@@ -496,11 +513,12 @@ type WalkOptions struct {
 	// token budget would allow deeper expansion. A non-positive value
 	// falls back to a built-in default.
 	MaxDepth int
-	// WorkspaceID / ProjectID scope the traversal exactly as the
+	// WorkspaceID / ProjectID / RepoAllow scope the traversal exactly as the
 	// matching QueryOptions fields do — neighbours outside the scope
 	// are dropped along with the edge that reached them.
 	WorkspaceID string
 	ProjectID   string
+	RepoAllow   map[string]bool
 	// CommunityID, when non-empty, constrains the walk to a single
 	// detected community: a neighbour is admitted only when it has no
 	// community membership (a structural node Leiden never partitioned
@@ -521,5 +539,5 @@ type WalkOptions struct {
 // scope. Mirrors QueryOptions.ScopeAllows so budgeted walks enforce the
 // same boundary without duplicating the fallback rules.
 func (o WalkOptions) scopeAllows(n *graph.Node) bool {
-	return QueryOptions{WorkspaceID: o.WorkspaceID, ProjectID: o.ProjectID}.ScopeAllows(n)
+	return QueryOptions{WorkspaceID: o.WorkspaceID, ProjectID: o.ProjectID, RepoAllow: o.RepoAllow}.ScopeAllows(n)
 }

@@ -66,6 +66,21 @@ func (s *Server) handleAnalyzeRoutes(ctx context.Context, req mcp.CallToolReques
 			Line:    e.Line,
 		})
 	}
+	// routes reads EdgeHandlesRoute directly off s.graph; narrow each row to
+	// the session workspace + optional repo allow-set. Keep a row only when
+	// BOTH endpoints — the handler (e.From) and the route contract (e.To) —
+	// are visible. Unbound sessions see every row (analyzeNodeVisible passes),
+	// so this is a strict no-op there. total recomputes after this block.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*routeRow, 0, len(rows))
+		for _, r := range rows {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Handler)) &&
+				s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Route)) {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Kind != rows[j].Kind {
 			return rows[i].Kind < rows[j].Kind
@@ -109,8 +124,17 @@ func (s *Server) handleAnalyzeRoutes(ctx context.Context, req mcp.CallToolReques
 // registry.
 func (s *Server) handleAnalyzeRouteFrameworks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	frameworkCounts := map[string]int{}
+	// route_frameworks tallies route contract nodes per framework straight off
+	// s.graph.AllNodes(). Gate the contributing loop on visibility so the
+	// per-framework counts (and total_passes) reflect only the session
+	// workspace + optional repo allow-set. Unbound sessions count every
+	// contract node, so the gate is a strict no-op there.
+	scoped := s.scopeFiltersActive(ctx)
 	for _, n := range s.graph.AllNodes() {
 		if n == nil || n.Kind != graph.KindContract || n.Meta == nil {
+			continue
+		}
+		if scoped && !s.analyzeNodeVisible(ctx, n) {
 			continue
 		}
 		if fw := routeFramework(n); fw != "" {
@@ -166,12 +190,21 @@ func routeFramework(n *graph.Node) string {
 func (s *Server) handleAnalyzeSwiftUIViews(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	roleFilter := strings.TrimSpace(stringArg(req.GetArguments(), "role"))
 	byRole := map[string][]string{}
+	// swiftui_views groups SwiftUI types straight off s.graph.AllNodes(). Gate
+	// the contributing loop on visibility so each role's member list (and its
+	// recomputed Count) covers only the session workspace + optional repo
+	// allow-set; a role with no in-scope members never gets a map key, so it
+	// drops out naturally. Unbound sessions keep every type (no-op gate).
+	scoped := s.scopeFiltersActive(ctx)
 	for _, n := range s.graph.AllNodes() {
 		if n == nil || n.Meta == nil {
 			continue
 		}
 		role, _ := n.Meta["swiftui_role"].(string)
 		if role == "" || (roleFilter != "" && role != roleFilter) {
+			continue
+		}
+		if scoped && !s.analyzeNodeVisible(ctx, n) {
 			continue
 		}
 		byRole[role] = append(byRole[role], n.ID)
@@ -205,12 +238,21 @@ func (s *Server) handleAnalyzeSwiftUIViews(ctx context.Context, req mcp.CallTool
 func (s *Server) handleAnalyzeUIKitClasses(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	roleFilter := strings.TrimSpace(stringArg(req.GetArguments(), "role"))
 	byRole := map[string][]string{}
+	// uikit_classes groups UIKit types straight off s.graph.AllNodes(). Gate
+	// the contributing loop on visibility so each role's member list (and its
+	// recomputed Count) covers only the session workspace + optional repo
+	// allow-set; a role with no in-scope members never gets a map key, so it
+	// drops out naturally. Unbound sessions keep every type (no-op gate).
+	scoped := s.scopeFiltersActive(ctx)
 	for _, n := range s.graph.AllNodes() {
 		if n == nil || n.Meta == nil {
 			continue
 		}
 		role, _ := n.Meta["uikit_role"].(string)
 		if role == "" || (roleFilter != "" && role != roleFilter) {
+			continue
+		}
+		if scoped && !s.analyzeNodeVisible(ctx, n) {
 			continue
 		}
 		byRole[role] = append(byRole[role], n.ID)
@@ -242,12 +284,22 @@ func (s *Server) handleAnalyzeUIKitClasses(ctx context.Context, req mcp.CallTool
 func (s *Server) handleAnalyzeDrupalHooks(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	nameFilter := strings.TrimSpace(stringArg(req.GetArguments(), "name"))
 	hooks := map[string][]string{}
+	// drupal_hooks groups hook implementations straight off s.graph.AllNodes().
+	// Gate the contributing loop on visibility so each hook's implementation
+	// list (and its recomputed Count) covers only the session workspace +
+	// optional repo allow-set; a hook with no in-scope implementations never
+	// gets a map key, so it drops out naturally. Unbound sessions keep every
+	// implementation (no-op gate).
+	scoped := s.scopeFiltersActive(ctx)
 	for _, n := range s.graph.AllNodes() {
 		if n == nil || n.Meta == nil {
 			continue
 		}
 		hook, _ := n.Meta["drupal_hook"].(string)
 		if hook == "" || (nameFilter != "" && hook != nameFilter) {
+			continue
+		}
+		if scoped && !s.analyzeNodeVisible(ctx, n) {
 			continue
 		}
 		hooks[hook] = append(hooks[hook], n.ID)
@@ -368,6 +420,19 @@ func (s *Server) handleAnalyzeModels(ctx context.Context, req mcp.CallToolReques
 			Line:       e.Line,
 		})
 	}
+	// models reads EdgeModelsTable directly off s.graph; narrow each row to the
+	// session workspace + optional repo allow-set. Table is a plain name (not a
+	// node ID), so visibility hinges on the model node (e.From, r.Model) only.
+	// Unbound sessions see every model (no-op gate); total recomputes below.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*modelRow, 0, len(rows))
+		for _, r := range rows {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(r.Model)) {
+				kept = append(kept, r)
+			}
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].ORM != rows[j].ORM {
 			return rows[i].ORM < rows[j].ORM
@@ -448,7 +513,17 @@ func (s *Server) componentsRollup(ctx context.Context, req mcp.CallToolRequest, 
 		stats[id] = row
 		return row
 	}
+	// components reads EdgeRendersChild directly off s.graph. When the request
+	// narrows scope, gate the edge loop on BOTH endpoints being visible so the
+	// fan-in / fan-out tallies (and which nodes enter `stats`) cover only the
+	// session workspace + optional repo allow-set — no out-of-scope neighbor
+	// inflates a count. Unbound sessions count every edge (no-op gate).
+	scoped := s.scopeFiltersActive(ctx)
 	for e := range edgesByKinds(s.graph, graph.EdgeRendersChild) {
+		if scoped && (!s.analyzeNodeVisible(ctx, s.graph.GetNode(e.From)) ||
+			!s.analyzeNodeVisible(ctx, s.graph.GetNode(e.To))) {
+			continue
+		}
 		parent := get(e.From)
 		parent.FanOut++
 		// Skip the child if it never resolved to a real node — leaving
@@ -466,6 +541,13 @@ func (s *Server) componentsRollup(ctx context.Context, req mcp.CallToolRequest, 
 			continue
 		}
 		if r.FanIn == 0 && r.FanOut == 0 {
+			continue
+		}
+		// Belt-and-suspenders row gate: keep a row only when its component node
+		// is itself visible. Redundant given the edge-loop gate above (under
+		// scope, `stats` only holds visible nodes) but kept explicit per the
+		// scope contract; a strict no-op for unbound sessions.
+		if scoped && !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
 			continue
 		}
 		rows = append(rows, r)
@@ -512,8 +594,17 @@ func (s *Server) componentsForOne(ctx context.Context, req mcp.CallToolRequest, 
 		Line     int    `json:"line"`
 	}
 	var rows []*childRow
+	// components(id=…) reads the parent's out-edges directly off s.graph. Under
+	// an active scope, emit no children when the requested parent is itself out
+	// of scope, and prune children to visible resolved targets (e.To). Unbound
+	// sessions see the parent and every child (both gates collapse to no-ops).
+	scoped := s.scopeFiltersActive(ctx)
+	parentInScope := !scoped || s.analyzeNodeVisible(ctx, s.graph.GetNode(parentID))
 	for _, e := range s.graph.GetOutEdges(parentID) {
 		if e.Kind != graph.EdgeRendersChild {
+			continue
+		}
+		if scoped && (!parentInScope || !s.analyzeNodeVisible(ctx, s.graph.GetNode(e.To))) {
 			continue
 		}
 		name, _ := e.Meta["child_name"].(string)

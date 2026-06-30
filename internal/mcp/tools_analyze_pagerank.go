@@ -64,13 +64,42 @@ func (s *Server) handleAnalyzePageRank(ctx context.Context, req mcp.CallToolRequ
 	}
 	nodeKinds := parseKindFilter(stringArg(args, "node_kinds"))
 
+	// runPageRank applies the limit internally on BOTH the engine-native
+	// and in-process paths. When the request narrows scope we must rank the
+	// full graph, drop out-of-scope hits, and only THEN cap — capping first
+	// would spend the limit on rows the caller can't see and return fewer
+	// than `limit` visible symbols. So request unbounded under scope and
+	// re-apply the limit after the visibility filter below.
+	prLimit := limit
+	if s.scopeFiltersActive(ctx) {
+		prLimit = 0
+	}
+
 	hits := s.runPageRank(graph.PageRankOpts{
 		NodeKinds:     nodeKinds,
 		DampingFactor: damping,
 		MaxIterations: maxIter,
 		Tolerance:     tolerance,
-		Limit:         limit,
+		Limit:         prLimit,
 	})
+
+	// Narrow to the session workspace + optional repo allow-set, then
+	// re-apply the original limit (runPageRank ran unbounded above under
+	// scope). pagerank reads s.graph directly, so without this the authority
+	// ranking would span every workspace. Strict no-op for an unbound
+	// session with no RepoAllow.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]graph.PageRankHit, 0, len(hits))
+		for _, h := range hits {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(h.NodeID)) {
+				kept = append(kept, h)
+			}
+		}
+		hits = kept
+		if limit > 0 && limit < len(hits) {
+			hits = hits[:limit]
+		}
+	}
 
 	// Batch-materialise hit nodes in one backend round-trip instead
 	// of per-id GetNode. On a disk backend each GetNode is a
@@ -212,6 +241,47 @@ func (s *Server) handleAnalyzeLouvain(ctx context.Context, req mcp.CallToolReque
 	}
 
 	communities := result.Communities
+	totalCommunities := len(result.Communities)
+
+	// Narrow to the session workspace + optional repo allow-set when the
+	// request scopes below the global graph: prune each community's members
+	// to visible nodes, recompute Size/Files, and drop communities left
+	// empty. louvain reads s.graph directly, so without this the partition
+	// would span every workspace. Hub is a symbol name (not a node ID) so it
+	// is left untouched. Filter before the limit cap so the cap and the
+	// total recompute over the visible set. Strict no-op for an unbound
+	// session with no RepoAllow.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]analysis.Community, 0, len(communities))
+		for _, c := range communities {
+			visMembers := make([]string, 0, len(c.Members))
+			files := make([]string, 0, len(c.Files))
+			seenFile := make(map[string]struct{}, len(c.Files))
+			for _, id := range c.Members {
+				n := s.graph.GetNode(id)
+				if !s.analyzeNodeVisible(ctx, n) {
+					continue
+				}
+				visMembers = append(visMembers, id)
+				if n.FilePath != "" {
+					if _, dup := seenFile[n.FilePath]; !dup {
+						seenFile[n.FilePath] = struct{}{}
+						files = append(files, n.FilePath)
+					}
+				}
+			}
+			if len(visMembers) == 0 {
+				continue
+			}
+			c.Members = visMembers
+			c.Size = len(visMembers)
+			c.Files = files
+			kept = append(kept, c)
+		}
+		communities = kept
+		totalCommunities = len(kept)
+	}
+
 	if limit > 0 && limit < len(communities) {
 		communities = communities[:limit]
 	}
@@ -224,7 +294,7 @@ func (s *Server) handleAnalyzeLouvain(ctx context.Context, req mcp.CallToolReque
 	}
 	if isCompact(req) {
 		var b strings.Builder
-		fmt.Fprintf(&b, "modularity=%.4f communities=%d\n", result.Modularity, len(result.Communities))
+		fmt.Fprintf(&b, "modularity=%.4f communities=%d\n", result.Modularity, totalCommunities)
 		for _, c := range communities {
 			fmt.Fprintf(&b, "  %s size=%d cohesion=%.3f label=%s hub=%s\n",
 				c.ID, c.Size, c.Cohesion, c.Label, c.Hub)
@@ -234,7 +304,7 @@ func (s *Server) handleAnalyzeLouvain(ctx context.Context, req mcp.CallToolReque
 	return s.respondJSONOrTOON(ctx, req, map[string]any{
 		"communities": communities,
 		"modularity":  result.Modularity,
-		"total":       len(result.Communities),
+		"total":       totalCommunities,
 	})
 }
 

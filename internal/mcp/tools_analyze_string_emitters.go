@@ -63,6 +63,27 @@ func (s *Server) handleAnalyzeStringEmitters(ctx context.Context, req mcp.CallTo
 		sort.Strings(r.Emitters)
 		rows = append(rows, r)
 	}
+	// Scope filter: keep a row iff its string node (subject) is visible to
+	// the current request, and prune its emitter (actor) list to visible
+	// emitters. Emits is an edge count (not a node ID) so it is left
+	// intact; total recomputes below. No-op for an unbound request.
+	if s.scopeFiltersActive(ctx) {
+		kept := make([]*stringRow, 0, len(rows))
+		for _, r := range rows {
+			if !s.analyzeNodeVisible(ctx, s.graph.GetNode(r.ID)) {
+				continue
+			}
+			emitters := make([]string, 0, len(r.Emitters))
+			for _, em := range r.Emitters {
+				if s.analyzeNodeVisible(ctx, s.graph.GetNode(em)) {
+					emitters = append(emitters, em)
+				}
+			}
+			r.Emitters = emitters
+			kept = append(kept, r)
+		}
+		rows = kept
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Emits != rows[j].Emits {
 			return rows[i].Emits > rows[j].Emits

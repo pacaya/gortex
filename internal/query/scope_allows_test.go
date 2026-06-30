@@ -86,6 +86,44 @@ func TestQueryOptions_ScopeAllows(t *testing.T) {
 			node: node("vio", "web", "web"),
 			want: false,
 		},
+		{
+			name: "repo allow nil does not narrow",
+			opts: QueryOptions{WorkspaceID: "gortex"},
+			node: node("gortex", "core", "core"),
+			want: true,
+		},
+		{
+			name: "repo allow match passes",
+			opts: QueryOptions{RepoAllow: map[string]bool{"core": true}},
+			node: node("", "", "core"),
+			want: true,
+		},
+		{
+			name: "repo allow mismatch is rejected",
+			opts: QueryOptions{RepoAllow: map[string]bool{"web": true}},
+			node: node("", "", "core"),
+			want: false,
+		},
+		{
+			name: "workspace project and repo allow compose",
+			opts: QueryOptions{
+				WorkspaceID: "gortex",
+				ProjectID:   "backend",
+				RepoAllow:   map[string]bool{"payments": true},
+			},
+			node: node("gortex", "backend", "payments"),
+			want: true,
+		},
+		{
+			name: "repo allow cannot rescue a project mismatch",
+			opts: QueryOptions{
+				WorkspaceID: "gortex",
+				ProjectID:   "backend",
+				RepoAllow:   map[string]bool{"payments": true},
+			},
+			node: node("gortex", "frontend", "payments"),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

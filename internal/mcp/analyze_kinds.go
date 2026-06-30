@@ -93,6 +93,101 @@ var analyzeKinds = []string{
 	"would_create_cycle",
 }
 
+// analyzeScopeAwareKinds is the set of analyze kinds whose result rows
+// are genuinely narrowed by the uniform repo/project/workspace/scope
+// overrides in v1. Three tiers populate it:
+//
+//   - AUTO: kinds that obtain their working node set through the
+//     scopedNodes / scopedNodesByKinds / scopedNodeSlice accessors, so
+//     RepoAllow narrows them centrally with no per-handler code.
+//   - Per-row-filtered: kinds that read s.graph directly but gate every
+//     emitted row on analyzeNodeVisible (workspace ceiling + optional
+//     repo allow-set) — the three flagship kinds (dead_code, hotspots,
+//     cycles) plus the category-(a) edge-walk / graph-algorithm /
+//     framework kinds that prune their rows and re-tally their counts.
+//   - File-path-filtered: the category-(c) file/AST scans (sast, hygiene,
+//     review, domain, named, unsafe_patterns), already narrowed by
+//     resolveRepoFilter / buildASTTargets before the handler runs.
+//
+// handleAnalyze consults this set so that when a caller asks to narrow
+// (resolved.RepoAllow != nil) but picks a kind that is NOT in the set,
+// the response carries a `scope_note` disclosing that the kind is not
+// repo-narrowed in v1 (a community / git-mining / per-id / synthesizer
+// kind). This keeps the uniform `scope_applied` truthful while flagging
+// the remaining long-tail no-op kinds — "no silent no-ops".
+var analyzeScopeAwareKinds = map[string]bool{
+	// AUTO — narrowed centrally by the scoped-node accessors.
+	"todos":                       true,
+	"stale_code":                  true,
+	"ownership":                   true,
+	"coverage_gaps":               true,
+	"stale_flags":                 true,
+	"cgo_users":                   true,
+	"wasm_users":                  true,
+	"orphan_tables":               true,
+	"unreferenced_tables":         true,
+	"coverage_summary":            true,
+	"health_score":                true,
+	"external_calls":              true,
+	"k8s_resources":               true,
+	"images":                      true,
+	"kustomize":                   true,
+	"dbt_models":                  true,
+	"role":                        true,
+	"constructors_missing_fields": true,
+	"impact":                      true,
+	"bottlenecks":                 true,
+	"connectivity_health":         true,
+	// Tier-2 — bypass the accessors but filtered via analyzeNodeVisible.
+	"dead_code": true,
+	"hotspots":  true,
+	"cycles":    true,
+	// releases reads s.graph directly (NOT via the scoped-node accessors);
+	// per-row filtered via analyzeNodeVisible like the three flagship kinds.
+	"releases": true,
+	// Category (a) — per-row visibility filtered (workspace + repo allow-set).
+	"channel_ops":        true,
+	"goroutine_spawns":   true,
+	"field_writers":      true,
+	"indirect_mutations": true,
+	"config_readers":     true,
+	"env_var_users":      true,
+	"event_emitters":     true,
+	"pubsub":             true,
+	"error_surface":      true,
+	"speculative":        true,
+	"ref_facts":          true,
+	"annotation_users":   true,
+	"race_writes":        true,
+	"unclosed_channels":  true,
+	"log_events":         true,
+	"sql_call_sites":     true,
+	"string_emitters":    true,
+	"routes":             true,
+	"route_frameworks":   true,
+	"swiftui_views":      true,
+	"uikit_classes":      true,
+	"drupal_hooks":       true,
+	"models":             true,
+	"components":         true,
+	"pagerank":           true,
+	"louvain":            true,
+	"kcore":              true,
+	"wcc":                true,
+	"scc":                true,
+	"edge_audit":         true,
+	"tests_as_edges":     true,
+	"doc_staleness":      true,
+	"temporal_orphans":   true,
+	// Category (c) — file/AST scans, already narrowed via resolveRepoFilter/buildASTTargets.
+	"sast":            true,
+	"hygiene":         true,
+	"review":          true,
+	"domain":          true,
+	"named":           true,
+	"unsafe_patterns": true,
+}
+
 // AnalyzeKinds returns a defensive copy of the canonical analyze-kind
 // set, in sorted order. Callers must not mutate the returned slice's
 // backing array of the package-level source.

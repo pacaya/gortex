@@ -155,10 +155,13 @@ func (e *Engine) WalkBudgeted(startID string, opts WalkOptions) *SubGraph {
 	}
 
 	visited[startID] = true
-	// byteEstimate tracks the running encoded size. The seed always
-	// enters the result, so it is counted up front.
+	// byteEstimate tracks the running encoded size. The seed enters
+	// only after the scope gate, so it is counted up front when kept.
 	byteEstimate := 0
 	if n := e.g.GetNode(startID); n != nil {
+		if !opts.scopeAllows(n) {
+			return &SubGraph{}
+		}
 		allNodes = append(allNodes, n)
 		byteEstimate += walkTokenEstimate
 	}

@@ -40,6 +40,8 @@ func (s *Server) registerContextClosureTool() {
 			mcp.WithString("repo", mcp.Description("Filter results to a specific repository prefix.")),
 			mcp.WithString("project", mcp.Description("Filter results to repositories in a specific project.")),
 			mcp.WithString("ref", mcp.Description("Filter results to repositories with a specific reference tag.")),
+			mcp.WithString("workspace", mcp.Description("Workspace override. In workspace-bound sessions this must match the active workspace.")),
+			mcp.WithString("scope", mcp.Description("Saved scope name. Ignored for git diff scopes; explicit repo/project/ref filters take precedence.")),
 		),
 		s.handleContextClosure,
 	)
@@ -54,7 +56,10 @@ func (s *Server) handleContextClosure(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError("graph engine unavailable"), nil
 	}
 
-	scopeWS, scopeProj := s.scopeFromRequest(ctx, &req)
+	resolved, errResult := s.resolveScope(ctx, req, IntentReach)
+	if errResult != nil {
+		return errResult, nil
+	}
 
 	// Resolve the seed set: every symbol defined in each seed file,
 	// plus every explicit seed symbol ID. Files are resolved through
@@ -109,18 +114,14 @@ func (s *Server) handleContextClosure(ctx context.Context, req mcp.CallToolReque
 		EdgeKinds:   edgeKinds,
 		MaxDepth:    req.GetInt("max_depth", 0),
 		MaxNodes:    req.GetInt("max_nodes", 0),
-		WorkspaceID: scopeWS,
-		ProjectID:   scopeProj,
+		WorkspaceID: resolved.WorkspaceID,
+		ProjectID:   resolved.ProjectID,
 	})
 
 	// Apply the repo filter (defence in depth alongside the scope the
 	// closure already enforced) before ranking, so the manifest and the
 	// summary agree on the member set.
-	allowed, filterErr := s.resolveRepoFilter(ctx, req)
-	if filterErr != nil {
-		return mcp.NewToolResultError(filterErr.Error()), nil
-	}
-	members := filterClosureNodes(closure.Nodes, allowed)
+	members := filterClosureNodes(closure.Nodes, resolved.RepoAllow)
 
 	rankMode := strings.ToLower(strings.TrimSpace(req.GetString("rank", "distance")))
 	if rankMode != "proximity" {
@@ -183,7 +184,7 @@ func (s *Server) handleContextClosure(ctx context.Context, req mcp.CallToolReque
 		result["missing_symbols"] = missingSymbols
 	}
 
-	return s.respondJSONOrTOON(ctx, req, result)
+	return s.respondScopedJSONOrTOON(ctx, req, result, resolved)
 }
 
 // closureProximity returns a per-node seeded random-walk-with-restart

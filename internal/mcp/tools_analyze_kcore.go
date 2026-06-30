@@ -68,6 +68,23 @@ func (s *Server) handleAnalyzeKCore(ctx context.Context, req mcp.CallToolRequest
 		}
 		hits = filtered
 	}
+
+	// Narrow to the session workspace + optional repo allow-set when the
+	// request scopes below the global graph. kcore reads s.graph directly,
+	// so without this the densely-connected core would span every
+	// workspace. Filter after the min_degree pass and before the limit cap
+	// so the cap lands on the visible set and count recomputes. Strict
+	// no-op for an unbound session with no RepoAllow.
+	if s.scopeFiltersActive(ctx) {
+		kept := hits[:0]
+		for _, h := range hits {
+			if s.analyzeNodeVisible(ctx, s.graph.GetNode(h.NodeID)) {
+				kept = append(kept, h)
+			}
+		}
+		hits = kept
+	}
+
 	if limit > 0 && limit < len(hits) {
 		hits = hits[:limit]
 	}
