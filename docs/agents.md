@@ -102,7 +102,7 @@ gortex init --agents=claude-code,cursor     # allow-list
 gortex init --agents-skip=antigravity       # block-list
 gortex init --dry-run --json         # plan, emit JSON report
 gortex init --force                  # overwrite merge-preserved keys
-gortex init --hooks-only             # refresh Claude Code hooks only
+gortex init --hooks-only             # refresh supported agent hooks only
 
 # Observe-only
 gortex init doctor                   # read-only state report

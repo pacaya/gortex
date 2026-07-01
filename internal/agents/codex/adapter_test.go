@@ -174,6 +174,208 @@ func TestCodexInstallsPostToolUseHook(t *testing.T) {
 	}
 }
 
+func TestCodexInstallHooksOnlyCreatesOnlyHooks(t *testing.T) {
+	env := codexGlobalEnv(t)
+	path := codexConfigPath(env)
+
+	action, err := InstallHooksOnly(env.Stderr, path, env, agents.ApplyOpts{})
+	if err != nil {
+		t.Fatalf("install hooks only: %v", err)
+	}
+	if action.Action != agents.ActionCreate {
+		t.Fatalf("action=%s want create", action.Action)
+	}
+	if len(action.Keys) != 1 || action.Keys[0] != "hooks" {
+		t.Fatalf("keys=%#v want hooks only", action.Keys)
+	}
+
+	cfg := readCodexConfig(t, env)
+	if _, ok := cfg["mcp_servers"]; ok {
+		t.Fatalf("hooks-only should not write mcp_servers: %#v", cfg["mcp_servers"])
+	}
+	if _, err := os.Stat(filepath.Join(env.Root, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("hooks-only should not write AGENTS.md, stat err=%v", err)
+	}
+	if count := gortexSessionStartHookCount(t, cfg); count != 1 {
+		t.Fatalf("SessionStart hooks=%d want 1", count)
+	}
+	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
+		t.Fatalf("PreToolUse hooks=%d want 1", count)
+	}
+	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
+		t.Fatalf("PostToolUse hooks=%d want 1", count)
+	}
+
+	action, err = InstallHooksOnly(env.Stderr, path, env, agents.ApplyOpts{})
+	if err != nil {
+		t.Fatalf("second install hooks only: %v", err)
+	}
+	if action.Action != agents.ActionSkip {
+		t.Fatalf("second action=%s want skip", action.Action)
+	}
+}
+
+func TestCodexInstallHooksOnlyPreservesExistingConfig(t *testing.T) {
+	env := codexGlobalEnv(t)
+	path := codexConfigPath(env)
+	seed := `model = "gpt-5-codex"
+
+[mcp_servers.gortex]
+command = "custom-gortex"
+args = ["mcp", "--custom"]
+
+[mcp_servers.other]
+command = "other"
+
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "echo user-pretooluse"
+statusMessage = "User PreToolUse"
+
+[[hooks.PostToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "echo user-posttooluse"
+statusMessage = "User PostToolUse"
+`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	action, err := InstallHooksOnly(env.Stderr, path, env, agents.ApplyOpts{})
+	if err != nil {
+		t.Fatalf("install hooks only: %v", err)
+	}
+	if action.Action != agents.ActionMerge {
+		t.Fatalf("action=%s want merge", action.Action)
+	}
+	if len(action.Keys) != 1 || action.Keys[0] != "hooks" {
+		t.Fatalf("keys=%#v want hooks only", action.Keys)
+	}
+
+	cfg := readCodexConfig(t, env)
+	if cfg["model"] != "gpt-5-codex" {
+		t.Fatalf("unrelated top-level key was clobbered: %#v", cfg)
+	}
+	servers := cfg["mcp_servers"].(map[string]any)
+	gortexServer := servers["gortex"].(map[string]any)
+	if gortexServer["command"] != "custom-gortex" {
+		t.Fatalf("hooks-only rewrote mcp_servers.gortex: %#v", gortexServer)
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Fatalf("existing MCP server was clobbered: %#v", servers)
+	}
+	if !hasHookCommand(t, cfg, "PreToolUse", "echo user-pretooluse") {
+		t.Fatalf("user PreToolUse hook was not preserved: %#v", preToolUseEntries(t, cfg))
+	}
+	if !hasHookCommand(t, cfg, "PostToolUse", "echo user-posttooluse") {
+		t.Fatalf("user PostToolUse hook was not preserved: %#v", postToolUseEntries(t, cfg))
+	}
+	if count := gortexSessionStartHookCount(t, cfg); count != 1 {
+		t.Fatalf("SessionStart hooks=%d want 1", count)
+	}
+	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
+		t.Fatalf("PreToolUse hooks=%d want 1", count)
+	}
+	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
+		t.Fatalf("PostToolUse hooks=%d want 1", count)
+	}
+}
+
+func TestCodexInstallHooksOnlyForceReplacesOnlyGortexHooks(t *testing.T) {
+	env := codexGlobalEnv(t)
+	path := codexConfigPath(env)
+	seed := `[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "echo user-pretooluse"
+statusMessage = "User PreToolUse"
+
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/tmp/old-gortex hook --agent=codex --mode=enrich"
+statusMessage = "Old Gortex PreToolUse"
+
+[[hooks.PostToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "echo user-posttooluse"
+statusMessage = "User PostToolUse"
+
+[[hooks.PostToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/tmp/old-gortex hook --agent=codex --mode=enrich"
+statusMessage = "Old Gortex PostToolUse"
+`
+	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	if _, err := InstallHooksOnly(env.Stderr, path, env, agents.ApplyOpts{Force: true}); err != nil {
+		t.Fatalf("install hooks only: %v", err)
+	}
+
+	cfg := readCodexConfig(t, env)
+	if !hasHookCommand(t, cfg, "PreToolUse", "echo user-pretooluse") {
+		t.Fatalf("Force removed user PreToolUse hook: %#v", preToolUseEntries(t, cfg))
+	}
+	if !hasHookCommand(t, cfg, "PostToolUse", "echo user-posttooluse") {
+		t.Fatalf("Force removed user PostToolUse hook: %#v", postToolUseEntries(t, cfg))
+	}
+	if hasHookCommand(t, cfg, "PreToolUse", "/tmp/old-gortex hook --agent=codex --mode=enrich") {
+		t.Fatalf("Force kept stale Gortex PreToolUse hook: %#v", preToolUseEntries(t, cfg))
+	}
+	if hasHookCommand(t, cfg, "PostToolUse", "/tmp/old-gortex hook --agent=codex --mode=enrich") {
+		t.Fatalf("Force kept stale Gortex PostToolUse hook: %#v", postToolUseEntries(t, cfg))
+	}
+	if !hasHookCommand(t, cfg, "PreToolUse", "/tmp/test-gortex hook --agent=codex --mode=enrich") {
+		t.Fatalf("Force did not install current Gortex PreToolUse hook: %#v", preToolUseEntries(t, cfg))
+	}
+	if !hasHookCommand(t, cfg, "PostToolUse", "/tmp/test-gortex hook --agent=codex --mode=enrich") {
+		t.Fatalf("Force did not install current Gortex PostToolUse hook: %#v", postToolUseEntries(t, cfg))
+	}
+	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
+		t.Fatalf("Gortex PreToolUse hooks=%d want 1", count)
+	}
+	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
+		t.Fatalf("Gortex PostToolUse hooks=%d want 1", count)
+	}
+}
+
+func TestCodexInstallHooksOnlyDryRunDoesNotWrite(t *testing.T) {
+	env := codexGlobalEnv(t)
+	path := codexConfigPath(env)
+
+	action, err := InstallHooksOnly(env.Stderr, path, env, agents.ApplyOpts{DryRun: true})
+	if err != nil {
+		t.Fatalf("install hooks only dry-run: %v", err)
+	}
+	if action.Action != agents.ActionWouldCreate {
+		t.Fatalf("action=%s want would-create", action.Action)
+	}
+	if len(action.Keys) != 1 || action.Keys[0] != "hooks" {
+		t.Fatalf("keys=%#v want hooks only", action.Keys)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not write config.toml, stat err=%v", err)
+	}
+}
+
 func TestCodexPreToolUseCommandFallsBackToGortexHook(t *testing.T) {
 	command := codexPreToolUseCommand(agents.Env{})
 	if command != "gortex hook --agent=codex --mode=enrich" {

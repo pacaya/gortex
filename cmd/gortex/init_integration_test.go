@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	toml "github.com/pelletier/go-toml/v2"
 )
 
 // TestInitDryRunJSONReportShape is the end-to-end contract test for
@@ -212,6 +214,123 @@ func TestInitDryRunSkipsProjectMarker(t *testing.T) {
 	}
 }
 
+func TestInitHooksOnlyRefreshesClaudeAndCodexHooks(t *testing.T) {
+	restore := saveInitGlobals(t)
+	defer restore()
+
+	repo := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexConfig := filepath.Join(codexDir, "config.toml")
+	seed := `model = "gpt-5-codex"
+
+[mcp_servers.gortex]
+command = "custom-gortex"
+args = ["mcp", "--custom"]
+`
+	if err := os.WriteFile(codexConfig, []byte(seed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initYes = true
+	initHooksOnly = true
+	initHookMode = "enrich"
+	initDryRun = false
+	initJSON = false
+	initAgents = ""
+
+	var stdout, stderr bytes.Buffer
+	initCmd.SetOut(&stdout)
+	initCmd.SetErr(&stderr)
+	t.Cleanup(func() {
+		initCmd.SetOut(nil)
+		initCmd.SetErr(nil)
+	})
+
+	if err := runInit(initCmd, []string{repo}); err != nil {
+		t.Fatalf("runInit: %v\nstderr: %s", err, stderr.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(repo, ".claude", "settings.local.json")); err != nil {
+		t.Fatalf("expected Claude Code hooks to be refreshed: %v", err)
+	}
+	cfg := readTOMLFile(t, codexConfig)
+	if cfg["model"] != "gpt-5-codex" {
+		t.Fatalf("Codex hooks-only clobbered model: %#v", cfg)
+	}
+	servers := cfg["mcp_servers"].(map[string]any)
+	gortexServer := servers["gortex"].(map[string]any)
+	if gortexServer["command"] != "custom-gortex" {
+		t.Fatalf("Codex hooks-only rewrote mcp_servers.gortex: %#v", gortexServer)
+	}
+	hooks, ok := cfg["hooks"].(map[string]any)
+	if !ok {
+		t.Fatalf("Codex hooks-only did not write hooks: %#v", cfg)
+	}
+	for _, event := range []string{"SessionStart", "PreToolUse", "PostToolUse"} {
+		if _, ok := hooks[event]; !ok {
+			t.Fatalf("Codex hooks-only missing %s hook: %#v", event, hooks)
+		}
+	}
+
+	for _, p := range []string{
+		filepath.Join(repo, ".gortex"),
+		filepath.Join(repo, "AGENTS.md"),
+		filepath.Join(repo, ".claude", "skills"),
+		filepath.Join(home, ".gortex", "config.yaml"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("hooks-only should not create %s", p)
+		}
+	}
+}
+
+func TestInitHooksOnlyDryRunDoesNotWriteHooks(t *testing.T) {
+	restore := saveInitGlobals(t)
+	defer restore()
+
+	repo := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	initYes = true
+	initHooksOnly = true
+	initDryRun = true
+	initJSON = false
+	initAgents = ""
+
+	var stdout, stderr bytes.Buffer
+	initCmd.SetOut(&stdout)
+	initCmd.SetErr(&stderr)
+	t.Cleanup(func() {
+		initCmd.SetOut(nil)
+		initCmd.SetErr(nil)
+	})
+
+	if err := runInit(initCmd, []string{repo}); err != nil {
+		t.Fatalf("runInit: %v\nstderr: %s", err, stderr.String())
+	}
+
+	for _, p := range []string{
+		filepath.Join(repo, ".claude", "settings.local.json"),
+		filepath.Join(home, ".codex", "config.toml"),
+		filepath.Join(repo, ".gortex"),
+		filepath.Join(repo, "AGENTS.md"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("dry-run hooks-only should not write %s", p)
+		}
+	}
+}
+
 func TestInitDryRunIntakeJSONDoesNotWrite(t *testing.T) {
 	saved := struct {
 		yes, dryRun, json, dryRunIntake bool
@@ -262,4 +381,47 @@ func TestInitDryRunIntakeJSONDoesNotWrite(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, ".gortex")); err == nil {
 		t.Fatal("dry-run-intake wrote .gortex/ — must be inspection-only")
 	}
+}
+
+func saveInitGlobals(t *testing.T) func() {
+	t.Helper()
+	saved := struct {
+		analyze, installHooks, noHooks, hooksOnly bool
+		hookMode                                  string
+		skills, noSkills                          bool
+		skillsMinSize, skillsMaxSkills            int
+		yes, interactive                          bool
+		agents, agentsSkip                        string
+		json, dryRun, dryRunIntake, force         bool
+	}{
+		initAnalyze, initInstallHooks, initNoHooks, initHooksOnly,
+		initHookMode,
+		initSkills, initNoSkills,
+		initSkillsMinSize, initSkillsMaxSkills,
+		initYes, initInteractive,
+		initAgents, initAgentsSkip,
+		initJSON, initDryRun, initDryRunIntake, initForce,
+	}
+	return func() {
+		initAnalyze, initInstallHooks, initNoHooks, initHooksOnly = saved.analyze, saved.installHooks, saved.noHooks, saved.hooksOnly
+		initHookMode = saved.hookMode
+		initSkills, initNoSkills = saved.skills, saved.noSkills
+		initSkillsMinSize, initSkillsMaxSkills = saved.skillsMinSize, saved.skillsMaxSkills
+		initYes, initInteractive = saved.yes, saved.interactive
+		initAgents, initAgentsSkip = saved.agents, saved.agentsSkip
+		initJSON, initDryRun, initDryRunIntake, initForce = saved.json, saved.dryRun, saved.dryRunIntake, saved.force
+	}
+}
+
+func readTOMLFile(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var out map[string]any
+	if err := toml.Unmarshal(data, &out); err != nil {
+		t.Fatalf("parse %s: %v\n%s", path, err, data)
+	}
+	return out
 }

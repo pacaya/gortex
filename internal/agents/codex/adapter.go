@@ -14,6 +14,7 @@ package codex
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,13 +110,7 @@ func (a *Adapter) Apply(env agents.Env, opts agents.ApplyOpts) (*agents.Result, 
 		}
 
 		if env.InstallHooks {
-			if upsertSessionStartHook(root, opts) {
-				changed = true
-			}
-			if upsertPreToolUseHook(root, env, opts) {
-				changed = true
-			}
-			if upsertPostToolUseHook(root, env, opts) {
+			if upsertCodexHooks(root, env, opts) {
 				changed = true
 			}
 		}
@@ -154,6 +149,35 @@ func upsertPreToolUseHook(root map[string]any, env agents.Env, opts agents.Apply
 
 func upsertPostToolUseHook(root map[string]any, env agents.Env, opts agents.ApplyOpts) bool {
 	return upsertCodexHook(root, "PostToolUse", codexHookEntryIsGortexPostToolUse, codexPostToolUseHookEntry(env), opts)
+}
+
+// InstallHooksOnly refreshes the Codex lifecycle hooks in configPath without
+// touching MCP server entries, AGENTS.md, or any other Codex adapter surface.
+func InstallHooksOnly(w io.Writer, configPath string, env agents.Env, opts agents.ApplyOpts) (agents.FileAction, error) {
+	action, err := agents.MergeTOML(w, configPath, func(root map[string]any, _ bool) (bool, error) {
+		return upsertCodexHooks(root, env, opts), nil
+	}, opts)
+	if err != nil {
+		return agents.FileAction{}, err
+	}
+	if action.Action != agents.ActionSkip {
+		action.Keys = []string{"hooks"}
+	}
+	return action, nil
+}
+
+func upsertCodexHooks(root map[string]any, env agents.Env, opts agents.ApplyOpts) bool {
+	changed := false
+	if upsertSessionStartHook(root, opts) {
+		changed = true
+	}
+	if upsertPreToolUseHook(root, env, opts) {
+		changed = true
+	}
+	if upsertPostToolUseHook(root, env, opts) {
+		changed = true
+	}
+	return changed
 }
 
 func upsertCodexHook(root map[string]any, event string, isGortex func(any) bool, desired map[string]any, opts agents.ApplyOpts) bool {

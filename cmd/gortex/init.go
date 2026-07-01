@@ -90,7 +90,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initAnalyze, "analyze", false, "index the repo to generate a richer CLAUDE.md with codebase overview")
 	initCmd.Flags().BoolVar(&initInstallHooks, "hooks", true, "install supported agent hooks; use --no-hooks to skip")
 	initCmd.Flags().BoolVar(&initNoHooks, "no-hooks", false, "skip installing supported agent hooks (inverse of --hooks)")
-	initCmd.Flags().BoolVar(&initHooksOnly, "hooks-only", false, "only install/update Claude Code hooks in .claude/settings.local.json, skip everything else")
+	initCmd.Flags().BoolVar(&initHooksOnly, "hooks-only", false, "only install/update supported agent hooks, skip everything else")
 	initCmd.Flags().StringVar(&initHookMode, "hook-mode", "deny",
 		"hook posture: 'deny' (PreToolUse redirects Grep/Glob/Read of indexed source) or 'enrich' "+
 			"(PreToolUse never denies; PostToolUse appends graph context after the tool runs)")
@@ -200,19 +200,10 @@ func runInit(cmd *cobra.Command, args []string) (err error) {
 		}
 	}
 
-	// --hooks-only short-circuit: install/heal Claude Code hooks
+	// --hooks-only short-circuit: install/heal supported agent hooks
 	// and exit. Everything else is a no-op.
 	if initHooksOnly {
-		settingsPath := filepath.Join(absRoot, ".claude", "settings.local.json")
-		if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
-			return err
-		}
-		action, err := claudecode.InstallHookWithMode(cmd.ErrOrStderr(), settingsPath, initHookMode, agents.ApplyOpts{DryRun: initDryRun, Force: initForce})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "[gortex init --hooks-only] %s %s\n", action.Action, action.Path)
-		return nil
+		return runInitHooksOnly(cmd, absRoot)
 	}
 
 	realStderr := cmd.ErrOrStderr()
@@ -347,6 +338,43 @@ func runInit(cmd *cobra.Command, args []string) (err error) {
 			return err
 		}
 	}
+	return nil
+}
+
+func runInitHooksOnly(cmd *cobra.Command, absRoot string) error {
+	opts := agents.ApplyOpts{DryRun: initDryRun, Force: initForce}
+
+	settingsPath := filepath.Join(absRoot, ".claude", "settings.local.json")
+	claudeAction, err := claudecode.InstallHookWithMode(cmd.ErrOrStderr(), settingsPath, initHookMode, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "[gortex init --hooks-only] %s %s\n", claudeAction.Action, claudeAction.Path)
+
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return nil
+	}
+	env := agents.Env{
+		Root:         absRoot,
+		Home:         home,
+		HookCommand:  claudecode.ResolveHookCommand(cmd.ErrOrStderr()),
+		Mode:         agents.ModeProject,
+		InstallHooks: true,
+		HookMode:     initHookMode,
+		Stderr:       cmd.ErrOrStderr(),
+	}
+	detected, _ := codex.New().Detect(env)
+	if !detected {
+		return nil
+	}
+
+	codexPath := filepath.Join(home, ".codex", "config.toml")
+	codexAction, err := codex.InstallHooksOnly(cmd.ErrOrStderr(), codexPath, env, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "[gortex init --hooks-only] %s %s\n", codexAction.Action, codexAction.Path)
 	return nil
 }
 
