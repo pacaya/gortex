@@ -246,7 +246,14 @@ func (o QueryOptions) ScopeAllows(n *graph.Node) bool {
 			}
 		}
 	}
-	if len(o.RepoAllow) > 0 && !o.RepoAllow[n.RepoPrefix] {
+	// A node with an empty RepoPrefix was minted in single-repo
+	// (unprefixed) mode — the RepoAllow keys are registry prefixes,
+	// which unprefixed nodes never carry, so a repo narrow can only
+	// ever be satisfied vacuously. Admit the node: the workspace /
+	// project checks above still bound it for scoped sessions. Same
+	// carve-out the MCP layer's filterNodes / field-query / API-impact
+	// filters already apply.
+	if len(o.RepoAllow) > 0 && n.RepoPrefix != "" && !o.RepoAllow[n.RepoPrefix] {
 		return false
 	}
 	return true

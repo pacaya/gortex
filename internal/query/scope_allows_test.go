@@ -124,6 +124,38 @@ func TestQueryOptions_ScopeAllows(t *testing.T) {
 			node: node("gortex", "frontend", "payments"),
 			want: false,
 		},
+		{
+			// Single-repo (unprefixed) mode: nodes carry no RepoPrefix
+			// while the registry — and therefore every RepoAllow set —
+			// keys the repo by name. Repo narrowing must not reject the
+			// lone repo's own nodes (the fresh-install search_symbols
+			// zero-rows regression).
+			name: "repo allow admits an unprefixed single-repo node",
+			opts: QueryOptions{RepoAllow: map[string]bool{"gin": true}},
+			node: node("gin", "gin", ""),
+			want: true,
+		},
+		{
+			name: "unprefixed node passes repo allow under a matching workspace",
+			opts: QueryOptions{
+				WorkspaceID: "gin",
+				RepoAllow:   map[string]bool{"gin": true},
+			},
+			node: node("gin", "gin", ""),
+			want: true,
+		},
+		{
+			// The carve-out must not weaken the workspace boundary: an
+			// unprefixed node outside the session workspace stays
+			// rejected even when RepoAllow would vacuously admit it.
+			name: "workspace mismatch still rejects an unprefixed node",
+			opts: QueryOptions{
+				WorkspaceID: "other",
+				RepoAllow:   map[string]bool{"other": true},
+			},
+			node: node("gin", "gin", ""),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

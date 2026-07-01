@@ -154,10 +154,16 @@ func (s *Server) filterTextMatchesByResolvedScope(matches []trigram.Match, resol
 	}
 	out := make([]trigram.Match, 0, len(matches))
 	for _, m := range matches {
-		repo, _, ok := strings.Cut(m.Path, "/")
-		// Repo allow-set: a match whose repo prefix is outside the
-		// allow-set is dropped outright.
-		if len(resolved.RepoAllow) > 0 && ok && repo != "" && !resolved.RepoAllow[repo] {
+		repo, rest, ok := strings.Cut(m.Path, "/")
+		// Repo allow-set fast path: a match whose stamped repo prefix
+		// is outside the allow-set is dropped outright. Only applies
+		// when the first path segment actually names a tracked repo —
+		// on an unstamped (single-indexer / unprefixed) path the first
+		// segment is an ordinary directory and must not be mistaken
+		// for a repo prefix. The node-attribution check below stays
+		// authoritative either way.
+		knownRepo := ok && repo != "" && s.multiIndexer != nil && s.multiIndexer.GetMetadata(repo) != nil
+		if len(resolved.RepoAllow) > 0 && knownRepo && !resolved.RepoAllow[repo] {
 			continue
 		}
 		// Fail CLOSED under active narrowing: keep a match only when it
@@ -170,6 +176,16 @@ func (s *Server) filterTextMatchesByResolvedScope(matches []trigram.Match, resol
 			continue
 		}
 		n := s.graph.GetNode(m.Path)
+		if n == nil && knownRepo {
+			// GrepTextForRepos stamps the registry prefix onto every
+			// match path, but a repo indexed in single-repo mode minted
+			// UNPREFIXED node IDs (RepoMetadata.Unprefixed) — the
+			// stamped path misses the graph key. Retry with the prefix
+			// stripped so attribution works in a lone-repo daemon.
+			if meta := s.multiIndexer.GetMetadata(repo); meta != nil && meta.Unprefixed {
+				n = s.graph.GetNode(rest)
+			}
+		}
 		if n == nil || !opts.ScopeAllows(n) {
 			continue
 		}
