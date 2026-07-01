@@ -37,7 +37,7 @@ func TestRunCodexPreToolUseBashSoftAdditionalContext(t *testing.T) {
 	}
 	t.Cleanup(func() { grepProbe = oldProbe })
 
-	data := []byte(`{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"codex-1","tool_input":{"command":"rg Foo"}}`)
+	data := codexBashPayload("rg Foo")
 	out := captureStdout(t, func() {
 		withStdin(t, data, func() { RunCodex(0) })
 	})
