@@ -315,6 +315,25 @@ func decorateResultWithScope(res *mcp.CallToolResult, scope ResolvedScope) *mcp.
 	return res
 }
 
+// scopeZeroNote is the body-visible variant of the scope disclosure for a
+// Locate result that came back EMPTY while repo narrowing was active. The
+// scope_applied / scope_widen_hint fields ride in _meta, which CLI output
+// and most MCP clients never render — without this note a scope-narrowed
+// zero is indistinguishable from "not in the graph". outside is the number
+// of candidates a workspace-wide recheck found beyond the narrowed scope;
+// pass -1 when no recheck ran.
+func scopeZeroNote(scope ResolvedScope, outside int) string {
+	label := scopeApplied(scope)
+	switch {
+	case outside > 0:
+		return fmt.Sprintf("0 results within the active scope (%s); %d candidate(s) match outside it — widen with repo:\"*\" or pass an explicit repo:/project:", label, outside)
+	case outside == 0:
+		return fmt.Sprintf("0 results within the active scope (%s); a workspace-wide recheck also found nothing", label)
+	default:
+		return fmt.Sprintf("0 results within the active scope (%s) — widen with repo:\"*\" or pass an explicit repo:/project:", label)
+	}
+}
+
 func withScopeResult(res *mcp.CallToolResult, err error, scope ResolvedScope) (*mcp.CallToolResult, error) {
 	if err != nil {
 		return res, err

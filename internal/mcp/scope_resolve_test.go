@@ -794,3 +794,110 @@ func TestFilterTextMatches_LoneUnprefixedRepoAttribution(t *testing.T) {
 	require.Len(t, kept, 1,
 		"a stamped match in an unprefixed lone repo must attribute to its graph node")
 }
+
+// newTwoRepoServer builds a server tracking two repos ("alpha" holding
+// AlphaThing, "beta" holding ZebraWidget) — multi-repo mode, so nodes carry
+// registry prefixes and the Locate intent default genuinely narrows.
+func newTwoRepoServer(t *testing.T) (*Server, string) {
+	t.Helper()
+
+	alphaDir := filepath.Join(t.TempDir(), "alpha")
+	betaDir := filepath.Join(t.TempDir(), "beta")
+	require.NoError(t, os.MkdirAll(alphaDir, 0o755))
+	require.NoError(t, os.MkdirAll(betaDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(alphaDir, "main.go"),
+		[]byte("package main\n\nfunc AlphaThing() {}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(betaDir, "main.go"),
+		[]byte("package main\n\nfunc ZebraWidget() {}\n"), 0o644))
+
+	tmpCfg := filepath.Join(t.TempDir(), "config.yaml")
+	// Both repos share one declared workspace: repo:"*" widens RepoAllow
+	// but never crosses workspaces, so the "candidates outside the scope"
+	// recheck is only meaningful inside a shared workspace.
+	gc := &config.GlobalConfig{
+		Repos: []config.RepoEntry{
+			{Path: alphaDir, Name: "alpha", Workspace: "shared"},
+			{Path: betaDir, Name: "beta", Workspace: "shared"},
+		},
+	}
+	gc.SetConfigPath(tmpCfg)
+	require.NoError(t, gc.Save())
+
+	cm, err := config.NewConfigManager(tmpCfg)
+	require.NoError(t, err)
+
+	g := graph.New()
+	reg := parser.NewRegistry()
+	languages.RegisterAll(reg)
+	bm := search.NewBM25()
+	mi := indexer.NewMultiIndexer(g, reg, bm, cm, zap.NewNop())
+	_, err = mi.IndexScoped("", "")
+	require.NoError(t, err)
+
+	eng := query.NewEngine(g)
+	eng.SetSearch(bm)
+
+	flagVal := true
+	srv := NewServer(eng, g, nil, nil, zap.NewNop(), nil, MultiRepoOptions{
+		MultiIndexer:        mi,
+		ConfigManager:       cm,
+		ScopeIntentDefaults: &flagVal,
+	})
+	return srv, alphaDir
+}
+
+// TestScopeNote_SearchSymbols_NarrowedZeroIsBodyVisible: a session bound
+// in repo alpha searches for a symbol that lives only in repo beta. The
+// Locate default narrows to alpha → 0 results — and the response BODY
+// must say so, including that candidates exist outside the scope. The
+// _meta-only disclosure is invisible in CLI output and most clients.
+func TestScopeNote_SearchSymbols_NarrowedZeroIsBodyVisible(t *testing.T) {
+	srv, alphaDir := newTwoRepoServer(t)
+	ctx := sessionCtx("s-note", alphaDir)
+
+	req := makeReq("search_symbols", map[string]any{"query": "ZebraWidget"})
+	res, err := srv.handleSearchSymbols(ctx, req)
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(res.Content[0].(mcplib.TextContent).Text), &resp))
+	require.Empty(t, resultIDs(resp), "ZebraWidget must be filtered out by the alpha narrowing")
+
+	note, _ := resp["scope_note"].(string)
+	require.NotEmpty(t, note, "a scope-narrowed zero must carry a body-visible scope_note")
+	assert.Contains(t, note, "outside", "the recheck must report candidates beyond the scope")
+	assert.Contains(t, note, `repo:"*"`, "the note must teach the widen escape hatch")
+}
+
+// TestScopeNote_SearchSymbols_AbsentOnHitsAndOnTrueZero: no note rides a
+// result that has hits, and a query matching nothing anywhere reports the
+// recheck came back empty too.
+func TestScopeNote_SearchSymbols_AbsentOnHitsAndOnTrueZero(t *testing.T) {
+	srv, alphaDir := newTwoRepoServer(t)
+	ctx := sessionCtx("s-note2", alphaDir)
+
+	res, err := srv.handleSearchSymbols(ctx, makeReq("search_symbols", map[string]any{"query": "AlphaThing"}))
+	require.NoError(t, err)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal([]byte(res.Content[0].(mcplib.TextContent).Text), &resp))
+	require.NotEmpty(t, resultIDs(resp))
+	_, hasNote := resp["scope_note"]
+	assert.False(t, hasNote, "results with hits must not carry a scope_note")
+
+	res, err = srv.handleSearchSymbols(ctx, makeReq("search_symbols", map[string]any{"query": "NoSuchIdentifierAnywhere"}))
+	require.NoError(t, err)
+	resp = map[string]any{}
+	require.NoError(t, json.Unmarshal([]byte(res.Content[0].(mcplib.TextContent).Text), &resp))
+	if note, ok := resp["scope_note"].(string); ok {
+		assert.Contains(t, note, "also found nothing",
+			"a true zero must say the workspace-wide recheck found nothing")
+	}
+}
+
+func TestScopeZeroNote_Branches(t *testing.T) {
+	scope := ResolvedScope{RepoAllow: map[string]bool{"alpha": true}, Applied: "repo:alpha"}
+	assert.Contains(t, scopeZeroNote(scope, 3), "3 candidate(s)")
+	assert.Contains(t, scopeZeroNote(scope, 0), "also found nothing")
+	assert.Contains(t, scopeZeroNote(scope, -1), `widen with repo:"*"`)
+}

@@ -109,11 +109,18 @@ func (s *Server) handleSearchText(ctx context.Context, req mcp.CallToolRequest) 
 	}
 
 	enriched := s.enrichTextMatches(matches)
-	return s.respondScopedJSONOrTOON(ctx, req, map[string]any{
+	resp := map[string]any{
 		"query":   query,
 		"matches": enriched,
 		"count":   len(enriched),
-	}, resolved)
+	}
+	// Body-visible disclosure for a repo-narrowed zero (the _meta scope
+	// fields are invisible in CLI output and most clients). No recheck
+	// here — the note still names the scope and the widen escape hatch.
+	if len(enriched) == 0 && len(resolved.RepoAllow) > 0 {
+		resp["scope_note"] = scopeZeroNote(resolved, -1)
+	}
+	return s.respondScopedJSONOrTOON(ctx, req, resp, resolved)
 }
 
 // filterTextMatchesByPath keeps only the trigram matches whose file
