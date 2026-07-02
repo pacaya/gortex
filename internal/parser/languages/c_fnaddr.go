@@ -96,21 +96,47 @@ func captureCFnAddressRefs(result *parser.ExtractionResult, root *sitter.Node, f
 
 // cFnAddressPosition reports whether an identifier node sits in a C value
 // position that can hold a function address, and the fn_ref_form to tag ("" for
-// a plain value). These positions cover the generated-table shape: a macro /
-// call argument (`MAKE_CMD(..., getCommand, ...)`), an aggregate initializer
-// element (`{ ..., getCommand }`), and a designated initializer value
-// (`{ .proc = getCommand }`).
+// a plain value, "address_of" for `&fn`). Positions cover the generated-table
+// shape — a macro / call argument (`MAKE_CMD(..., getCommand, ...)`), an
+// aggregate initializer element (`{ ..., getCommand }`), a designated
+// initializer value (`{ .proc = getCommand }`) — and the in-function
+// function-pointer idioms: a `==` / `!=` comparison (`c->cmd->proc !=
+// execCommand`), an assignment or declaration-initializer right-hand side
+// (`c->proc = execCommand`, `cmdProc p = execCommand`), a return operand, and
+// `&fn`.
 func cFnAddressPosition(n *sitter.Node) (string, bool) {
 	p := n.Parent()
 	if p == nil {
 		return "", false
 	}
 	switch p.Type() {
-	case "argument_list", "initializer_list":
+	case "argument_list", "initializer_list", "return_statement":
 		return "", true
 	case "initializer_pair":
 		if isFieldChild(p, "value", n) {
 			return "", true
+		}
+	case "assignment_expression":
+		if isFieldChild(p, "right", n) {
+			return "", true
+		}
+	case "init_declarator":
+		if isFieldChild(p, "value", n) {
+			return "", true
+		}
+	case "binary_expression":
+		// A function pointer is compared for identity, never ordered — only
+		// `==` / `!=` operands are candidate function addresses.
+		if op := p.ChildByFieldName("operator"); op != nil {
+			if t := op.Type(); t == "==" || t == "!=" {
+				return "", true
+			}
+		}
+	case "pointer_expression":
+		// `&fn` address-of. tree-sitter-c models it as a pointer_expression
+		// with a '&' operator; a '*' operator is a dereference, not a value.
+		if op := p.ChildByFieldName("operator"); op != nil && op.Type() == "&" {
+			return "address_of", true
 		}
 	}
 	return "", false

@@ -178,12 +178,42 @@ func resolveUniqueFnValue(g graph.Store, name string) string {
 	return match
 }
 
-// resolveFnValueCrossModule binds a qualified-path function value to a
-// uniquely-named function/method anywhere in the repo. The same-file path is
-// preferred by the caller; this is the cross-module fallback for an explicit
-// path value.
+// resolveFnValueCrossModule binds a function value to a uniquely-named
+// function/method anywhere in the repo, skipping any candidate with file-local
+// linkage (a C/C++ `static` function, stamped scope_static): such a definition
+// is invisible outside its translation unit, so a cross-module reference can
+// never target it, and a same-named static in an unrelated file must not make
+// the name look ambiguous. The same-file path is preferred by the caller; this
+// is the cross-module fallback.
 func resolveFnValueCrossModule(g graph.Store, name string) string {
-	return resolveUniqueFnValue(g, name)
+	match := ""
+	for _, n := range g.FindNodesByName(name) {
+		if n == nil {
+			continue
+		}
+		if n.Kind != graph.KindFunction && n.Kind != graph.KindMethod {
+			continue
+		}
+		if isFileLocalLinkage(n) {
+			continue
+		}
+		if match != "" && match != n.ID {
+			return "" // ambiguous — drop
+		}
+		match = n.ID
+	}
+	return match
+}
+
+// isFileLocalLinkage reports whether a node was stamped with translation-unit
+// (C/C++ static) linkage, so it cannot be the target of a cross-module value
+// reference.
+func isFileLocalLinkage(n *graph.Node) bool {
+	if n.Meta == nil {
+		return false
+	}
+	v, _ := n.Meta["scope_static"].(bool)
+	return v
 }
 
 // resolveMemberByType binds member to a uniquely-named method of typeName
