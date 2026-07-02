@@ -100,8 +100,8 @@ type CrossRepoResolver struct {
 	// the full doc. Cross-repo always scopes by callerRepo, so a
 	// dep declared by repo A's go.mod never satisfies an import in
 	// repo B even if the module path matches.
-	depModuleIndex       map[string][]depModuleEntry
-	mu                   *sync.Mutex
+	depModuleIndex map[string][]depModuleEntry
+	mu             *sync.Mutex
 	// validateLiveness turns on the concurrent-edit guards in resolveEdge.
 	// Set only on the chunked resolve path (ResolveAll with chunking), where
 	// the pass releases mu between chunks so an interactive single-file edit
@@ -112,7 +112,7 @@ type CrossRepoResolver struct {
 	// dangling edge). Off (the default, and the whole-pass-locked path) it is
 	// a no-op: nothing can mutate the graph mid-pass, so every edge and
 	// candidate is live by construction.
-	validateLiveness bool
+	validateLiveness     bool
 	crossWorkspaceLookup CrossWorkspaceDepLookup
 	// npmAlias rewrites a JS/TS import specifier that matches an
 	// npm-alias dependency key in the importing file's nearest-
@@ -988,14 +988,23 @@ func (cr *CrossRepoResolver) filterLiveReindex(batch []graph.EdgeReindex) []grap
 
 // edgeStillLive reports whether e is currently present as an out-edge of its
 // source node — i.e. it was not evicted by a concurrent single-file edit
-// since the resolve pass snapshotted its pending set. GetOutEdges returns the
-// live stored *Edge pointers, so identity comparison is exact.
+// since the resolve pass snapshotted its pending set. The in-memory store
+// returns the live stored *Edge pointers, so identity comparison is exact
+// there; disk-backed stores materialise a fresh copy per read, so a value
+// identity on the fields that pin a unique edge row backs the pointer test
+// up. Without the value fallback, the chunked ResolveAll apply-loop dropped
+// EVERY computed resolution on a sqlite-backed daemon (`reindex_batch: 0` on
+// every pass) — the whole master resolve silently no-opped.
 func edgeStillLive(g graph.Store, e *graph.Edge) bool {
 	if e == nil {
 		return false
 	}
 	for _, oe := range g.GetOutEdges(e.From) {
 		if oe == e {
+			return true
+		}
+		if oe != nil && oe.Kind == e.Kind && oe.To == e.To &&
+			oe.Line == e.Line && oe.FilePath == e.FilePath {
 			return true
 		}
 	}
