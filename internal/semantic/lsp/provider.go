@@ -1268,7 +1268,14 @@ func (p *Provider) dialOrSpawn(workspaceRoot string) (*Client, error) {
 	if p.command == "" {
 		return nil, fmt.Errorf("lsp: no command configured and no passive attach available")
 	}
-	return NewClient(p.command, p.args, p.env, workspaceRoot, p.logger)
+	args := p.args
+	// jdtls with no -data lets the launcher default its Eclipse workspace to
+	// ~/Library/Caches/jdtls/<hash>, outside Gortex's cache isolation. Pin it
+	// under the resolved cache home per repo instead.
+	if isJdtlsCommand(p.command) {
+		args = jdtlsDataArgs(args, workspaceRoot)
+	}
+	return NewClient(p.command, args, p.env, workspaceRoot, p.logger)
 }
 
 // defaultLSPCallTimeout bounds a single post-initialize LSP request.
