@@ -137,6 +137,76 @@ func TestRunCodexPostToolUseBashReadSourceAdditionalContext(t *testing.T) {
 	}
 }
 
+func TestRunCodexPostToolUseBashFindNameFileListAdditionalContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		response string
+		indexed  map[string]int
+		want     []string
+	}{
+		{
+			name:     "find name",
+			command:  `find . -name "*.go"`,
+			response: "internal/hooks/codex.go\ninternal/hooks/codex_test.go\nREADME.md\n",
+			indexed: map[string]int{
+				"internal/hooks/codex.go":      4,
+				"internal/hooks/codex_test.go": 9,
+			},
+			want: []string{
+				"Indexed 2/3 Glob match(es)",
+				"internal/hooks/codex_test.go",
+				"9 symbol(s)",
+				"internal/hooks/codex.go",
+				"4 symbol(s)",
+			},
+		},
+		{
+			name:     "find iname",
+			command:  `find internal -iname "*hook*.go"`,
+			response: "internal/hooks/codex.go\ninternal/hooks/posttooluse.go\n",
+			indexed: map[string]int{
+				"internal/hooks/codex.go":       4,
+				"internal/hooks/posttooluse.go": 7,
+			},
+			want: []string{
+				"Indexed 2/2 Glob match(es)",
+				"internal/hooks/posttooluse.go",
+				"7 symbol(s)",
+				"internal/hooks/codex.go",
+				"4 symbol(s)",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			port := stubBridge(t, tt.indexed, nil, nil)
+
+			data := codexPostBashPayload(tt.command, tt.response)
+			out := captureStdout(t, func() { runCodex(data, port) })
+			if out == "" {
+				t.Fatal("expected Codex Bash PostToolUse Glob graph context, got empty output")
+			}
+			hso := decodeHookOutput(t, out).HookSpecificOutput
+			if hso == nil {
+				t.Fatalf("missing hookSpecificOutput: %s", out)
+			}
+			if hso.HookEventName != "PostToolUse" {
+				t.Fatalf("hookEventName=%q want PostToolUse", hso.HookEventName)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(hso.AdditionalContext, want) {
+					t.Fatalf("additionalContext missing %q: %q", want, hso.AdditionalContext)
+				}
+			}
+			if hso.PermissionDecision != "" || hso.PermissionDecisionReason != "" {
+				t.Fatalf("Codex PostToolUse enrichment must not deny: %#v", hso)
+			}
+		})
+	}
+}
+
 func TestRunCodexPostToolUseBashCommandShapes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -154,9 +224,9 @@ func TestRunCodexPostToolUseBashCommandShapes(t *testing.T) {
 			response: "pkg/x_test.go:12: FAIL\n",
 		},
 		{
-			name:     "find name is left to PreToolUse only",
+			name:     "unindexed find name list stays quiet",
 			command:  `find . -name "Handler*"`,
-			response: "internal/handler.go\n",
+			response: "unindexed/handler.go\n",
 		},
 		{
 			name:     "unindexed cat source output stays quiet",
@@ -169,20 +239,45 @@ func TestRunCodexPostToolUseBashCommandShapes(t *testing.T) {
 			response: "internal/a.go:7:type MyType struct{}\n",
 		},
 		{
+			name:     "sed source read stays quiet",
+			command:  `sed -n '1,20p' internal/a.go`,
+			response: "package hooks\n",
+		},
+		{
 			name:     "unsupported awk source scan stays quiet",
 			command:  `awk 'NR>=1 && NR<=80 {print}' /repo/handler.go`,
 			response: "internal/a.go:7:type MyType struct{}\n",
+		},
+		{
+			name:     "awk source read stays quiet",
+			command:  `awk '{print}' internal/a.go`,
+			response: "package hooks\n",
 		},
 		{
 			name:     "ls stays quiet",
 			command:  "ls /repo",
 			response: "internal/a.go\n",
 		},
+		{
+			name:     "fd stays quiet",
+			command:  `fd '\.go$' internal`,
+			response: "internal/a.go\n",
+		},
+		{
+			name:     "tree stays quiet",
+			command:  "tree internal",
+			response: "internal/a.go\n",
+		},
+		{
+			name:     "git ls-files stays quiet",
+			command:  "git ls-files '*.go'",
+			response: "internal/a.go\n",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			port := stubBridge(t, nil,
+			port := stubBridge(t, map[string]int{"internal/a.go": 3},
 				map[string]struct{ ID, Name, Kind string }{
 					"internal/a.go:7": {ID: "internal/a.go::MyType", Name: "MyType", Kind: "type"},
 				}, nil)

@@ -51,6 +51,8 @@ func runCodexPostToolUse(data []byte, port int) {
 		// the existing PostToolUse enrichment can parse path:line output and do
 		// the graph lookup without changing Claude Code behavior.
 		input.ToolName = "Grep"
+	case BashActionFindName:
+		input.ToolName = "Glob"
 	case BashActionReadSource:
 		if classification.Path == "" {
 			return
