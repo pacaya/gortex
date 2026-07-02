@@ -544,6 +544,14 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	// dep-module bridge has had its chance.
 	r.attributeNonGoModuleImports()
 
+	// Java override-dispatch fan-out. An ambiguous member call on a
+	// supertype-typed receiver (`x.toString()` with two candidate
+	// overrides) stays unresolved after the cross-package guard reverts
+	// the name-only guess; this pass fans it out to every override in the
+	// hierarchy, the call-hierarchy semantics the language server presents.
+	// Runs after the guard so its ast_inferred edges are never reverted.
+	r.resolveJavaOverrideDispatch()
+
 	total := &ResolveStats{}
 	for i := range allStats {
 		total.Resolved += allStats[i].Resolved
