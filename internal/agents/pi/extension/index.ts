@@ -194,6 +194,7 @@ function normalizeToolCall(
 interface ToolDescriptor {
   name: string;
   summary?: string;
+  description?: string;
 }
 
 // presetListArgs maps the configured preset to `gortex tools list` flags.
@@ -249,9 +250,7 @@ function registerOneTool(pi: any, desc: ToolDescriptor): void {
   safeRegister(pi, {
     name,
     label: name,
-    description:
-      (desc.summary ? desc.summary + " " : "") +
-      "(Gortex graph tool — prefer over raw file reads.)",
+    description: (desc.description || desc.summary || name).trim(),
     // Pass-through arguments: the model supplies whatever the underlying
     // Gortex tool accepts; `gortex call` validates names + args server
     // side and suggests near-matches on a typo.
@@ -294,27 +293,37 @@ function registerGortexTools(pi: any): void {
 
 const SEARCH_TOOL_NAME = piToolName("tools_search");
 
-// parseToolSearchText parses `gortex tools search` output — one
-// "<name>  <summary>" line per match (tool names never contain whitespace),
-// skipping the "no tools match ..." line emitted when nothing matches.
-function parseToolSearchText(raw: string): ToolDescriptor[] {
-  const out: ToolDescriptor[] = [];
-  for (const line of raw.split("\n")) {
-    const t = line.trim();
-    if (!t || t.startsWith("no tools match")) continue;
-    const sp = t.search(/\s/);
-    if (sp < 0) {
-      out.push({ name: t });
-    } else {
-      out.push({ name: t.slice(0, sp), summary: t.slice(sp).trim() });
-    }
+// firstSentence returns the leading sentence of a description, up to and
+// including the first ". " boundary.
+function firstSentence(desc: string): string {
+  const t = desc.trim();
+  if (!t) return "";
+  const i = t.indexOf(". ");
+  return i >= 0 ? t.slice(0, i + 1).trim() : t;
+}
+
+// parseToolSearchJSON parses `gortex tools search --format json` output —
+// an array of {name, description}.
+function parseToolSearchJSON(raw: string): ToolDescriptor[] {
+  let parsed: Array<{ name: string; description?: string }>;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
   }
-  return out;
+  if (!Array.isArray(parsed)) return [];
+  return parsed
+    .filter((e) => e && typeof e.name === "string" && e.name)
+    .map((e) => ({
+      name: e.name,
+      description: e.description ?? "",
+      summary: firstSentence(e.description ?? ""),
+    }));
 }
 
 function searchTools(query: string, limit: number): ToolDescriptor[] {
-  return parseToolSearchText(
-    runGortex(["tools", "search", query, "--limit", String(limit)]),
+  return parseToolSearchJSON(
+    runGortex(["tools", "search", query, "--limit", String(limit), "--format", "json"]),
   );
 }
 

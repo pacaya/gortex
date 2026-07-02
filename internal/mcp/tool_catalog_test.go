@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/zzet/gortex/internal/daemon"
@@ -65,6 +66,52 @@ func TestToolDescriptors_MutatingMatchesDaemon(t *testing.T) {
 		if want := daemon.MutatingTools[d.Name]; d.Mutating != want {
 			t.Errorf("tool %q Mutating = %v, want %v (daemon.MutatingTools)", d.Name, d.Mutating, want)
 		}
+	}
+}
+
+// TestToolDescriptors_DescriptionNonEmptyAndTrimmed asserts every descriptor
+// with a non-blank raw MCP description carries a matching, whitespace-trimmed
+// Description, and that Summary is never longer than Description (Summary is
+// derived from Description via firstSentence, so it can only truncate it).
+func TestToolDescriptors_DescriptionNonEmptyAndTrimmed(t *testing.T) {
+	srv := newFullTestServer(t)
+	for _, d := range srv.ToolDescriptors() {
+		if d.Description != strings.TrimSpace(d.Description) {
+			t.Errorf("tool %q Description is not trimmed: %q", d.Name, d.Description)
+		}
+		if d.Summary != "" && len(d.Summary) > len(d.Description) {
+			t.Errorf("tool %q Summary (%q) is longer than Description (%q)", d.Name, d.Summary, d.Description)
+		}
+		if d.Description == "" && d.Summary != "" {
+			t.Errorf("tool %q has a Summary but an empty Description", d.Name)
+		}
+	}
+}
+
+// TestFirstSentence_DivergesFromDescriptionOnMultiSentenceInput asserts the
+// Summary/Description split ToolDescriptors relies on: firstSentence
+// truncates at the first ". " boundary, but a period immediately followed by
+// a newline (no space) does not count as a boundary, so the whole
+// (multi-line) description passes through unchanged.
+func TestFirstSentence_DivergesFromDescriptionOnMultiSentenceInput(t *testing.T) {
+	tests := []struct {
+		name string
+		desc string
+		want string
+	}{
+		{"empty", "", ""},
+		{"whitespace only", "   \n\t ", ""},
+		{"single sentence", "Show who calls a function", "Show who calls a function"},
+		{"multi-sentence period-space", "Show who calls a function. Returns the caller subgraph.", "Show who calls a function."},
+		{"period-newline is not a boundary", "Show who calls a function.\nReturns the caller subgraph.", "Show who calls a function.\nReturns the caller subgraph."},
+		{"leading/trailing whitespace trimmed", "  Show who calls a function.  ", "Show who calls a function."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstSentence(tt.desc); got != tt.want {
+				t.Errorf("firstSentence(%q) = %q, want %q", tt.desc, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -16,6 +16,7 @@ var (
 	toolsListPreset   string
 	toolsListFormat   string
 	toolsSearchLimit  int
+	toolsSearchFormat string
 )
 
 // toolsDaemonTool is the daemon-tool relay seam so the tools subcommands can be
@@ -62,6 +63,7 @@ func init() {
 	toolsListCmd.Flags().StringVar(&toolsListFormat, "format", "text", "output format: text or json")
 
 	toolsSearchCmd.Flags().IntVar(&toolsSearchLimit, "limit", 10, "max number of tools to return")
+	toolsSearchCmd.Flags().StringVar(&toolsSearchFormat, "format", "text", "output format: text or json")
 
 	toolsCmd.AddCommand(toolsListCmd)
 	toolsCmd.AddCommand(toolsSearchCmd)
@@ -72,11 +74,12 @@ func init() {
 // toolDescriptorCLI mirrors mcp.ToolDescriptor's wire shape (the per-tool
 // catalog tool_profile returns in its `descriptors` array).
 type toolDescriptorCLI struct {
-	Name     string   `json:"name"`
-	Category string   `json:"category"`
-	Mutating bool     `json:"mutating"`
-	Presets  []string `json:"presets"`
-	Summary  string   `json:"summary"`
+	Name        string   `json:"name"`
+	Category    string   `json:"category"`
+	Mutating    bool     `json:"mutating"`
+	Presets     []string `json:"presets"`
+	Summary     string   `json:"summary"`
+	Description string   `json:"description"`
 }
 
 func runToolsList(cmd *cobra.Command, _ []string) error {
@@ -171,6 +174,19 @@ func runToolsSearch(cmd *cobra.Command, args []string) error {
 	}
 	entries := parseToolsSearchEntries(raw)
 	out := cmd.OutOrStdout()
+	if toolsSearchFormat == "json" {
+		type searchResultJSON struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		results := make([]searchResultJSON, 0, len(entries))
+		for _, e := range entries {
+			results = append(results, searchResultJSON{Name: e.Name, Description: strings.TrimSpace(e.Description)})
+		}
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(results)
+	}
 	if len(entries) == 0 {
 		fmt.Fprintf(out, "no tools match %q\n", query)
 		return nil

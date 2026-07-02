@@ -16,11 +16,12 @@ import (
 // (tool_presets.go), and a one-line Summary distilled from its MCP
 // Description.
 type ToolDescriptor struct {
-	Name     string   `json:"name"`
-	Category string   `json:"category"`
-	Mutating bool     `json:"mutating"`
-	Presets  []string `json:"presets"`
-	Summary  string   `json:"summary"`
+	Name        string   `json:"name"`
+	Category    string   `json:"category"`
+	Mutating    bool     `json:"mutating"`
+	Presets     []string `json:"presets"`
+	Summary     string   `json:"summary"`
+	Description string   `json:"description"`
 }
 
 // ToolDescriptors enumerates EVERY registered tool — both live (in the
@@ -63,11 +64,12 @@ func (s *Server) ToolDescriptors() []ToolDescriptor {
 	out := make([]ToolDescriptor, 0, len(names))
 	for name, e := range names {
 		out = append(out, ToolDescriptor{
-			Name:     name,
-			Category: toolCategory(name),
-			Mutating: daemon.IsMutating(name),
-			Presets:  presetsContaining(name),
-			Summary:  firstSentence(e.desc),
+			Name:        name,
+			Category:    toolCategory(name),
+			Mutating:    daemon.IsMutating(name),
+			Presets:     presetsContaining(name),
+			Summary:     firstSentence(e.desc),
+			Description: strings.TrimSpace(e.desc),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

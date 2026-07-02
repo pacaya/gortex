@@ -19,6 +19,7 @@ func newToolsTestCmd(t *testing.T, run func(*cobra.Command, []string) error) (*c
 	toolsListPreset = ""
 	toolsListFormat = "text"
 	toolsSearchLimit = 10
+	toolsSearchFormat = "text"
 
 	buf := &bytes.Buffer{}
 	cmd := &cobra.Command{Use: "tools", RunE: run}
@@ -121,6 +122,19 @@ func TestToolsList_JSON(t *testing.T) {
 	require.Equal(t, "edit_file", descs[0].Name) // sorted by name
 }
 
+// TestToolDescriptorCLI_JSONIncludesDescription asserts the CLI-side mirror
+// of mcp.ToolDescriptor serializes the new Description field.
+func TestToolDescriptorCLI_JSONIncludesDescription(t *testing.T) {
+	d := toolDescriptorCLI{Name: "get_callers", Summary: "Show who calls a function.", Description: "Show who calls a function.\nReturns the caller subgraph."}
+	b, err := json.Marshal(d)
+	require.NoError(t, err)
+	require.Contains(t, string(b), `"description":"Show who calls a function.\nReturns the caller subgraph."`)
+
+	var round toolDescriptorCLI
+	require.NoError(t, json.Unmarshal(b, &round))
+	require.Equal(t, d, round)
+}
+
 // cannedToolsSearchStructured is the structured tools_search payload shape (a
 // `tools` array with name / description / input_schema).
 const cannedToolsSearchStructured = `{
@@ -180,6 +194,32 @@ func TestToolsSearch_FunctionsBlock(t *testing.T) {
 	out := buf.String()
 	require.Contains(t, out, "edit_file")
 	require.Contains(t, out, "Edit a file at a path")
+}
+
+// TestToolsSearch_JSON asserts `tools search --format json` emits the full
+// (untruncated) trimmed description per match, not just the first line.
+func TestToolsSearch_JSON(t *testing.T) {
+	orig := toolsDaemonTool
+	t.Cleanup(func() { toolsDaemonTool = orig })
+	toolsDaemonTool = func(string, string, map[string]any) (json.RawMessage, error) {
+		return json.RawMessage(cannedToolsSearchStructured), nil
+	}
+
+	cmd, buf := newToolsTestCmd(t, runToolsSearch)
+	toolsSearchFormat = "json"
+	t.Cleanup(func() { toolsSearchFormat = "text" })
+	require.NoError(t, runToolsSearch(cmd, []string{"callers"}))
+
+	type searchResultJSON struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	var results []searchResultJSON
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &results))
+	require.Len(t, results, 2)
+	require.Equal(t, "get_callers", results[0].Name)
+	require.Equal(t, "Show who calls a function across the graph.\nReturns the caller subgraph.", results[0].Description)
+	require.Equal(t, "get_call_chain", results[1].Name)
 }
 
 // TestToolsDescribe asserts `tools describe` issues a select:<name> query and
