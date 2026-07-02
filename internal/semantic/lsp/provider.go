@@ -736,6 +736,11 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	var aborted atomic.Bool
 	var abortErr error
 	var abortOnce sync.Once
+	// reconnectCycles counts distinct reconnect cycles this pass — a server
+	// that connects fine but keeps exiting mid-request (e.g. clangd crashing in
+	// a lint matcher) would otherwise reconnect endlessly, repeating work and
+	// pinning the process at high CPU. The crash-loop guard caps it.
+	var reconnectCycles atomic.Int64
 
 	// reconnect serialises mid-flight recovery so that when a burst of
 	// goroutines observe the same dead client only the first rebuilds it;
@@ -748,6 +753,25 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		}
 		if cur := activeClient.Load(); cur != stale {
 			return cur, nil // someone else already reconnected
+		}
+		// Crash-loop guard: past the per-pass cap, abandon this provider's
+		// enrichment for the repo rather than reconnect again. Whatever already
+		// flushed stays in the graph; the caller sees the failure and the log
+		// names the provider, repo, and reconnect count.
+		if cycles := reconnectCycles.Add(1); cycles > maxEnrichReconnectCycles {
+			err := fmt.Errorf("LSP provider %q exited %d times during enrichment of repo %q; abandoning pass",
+				p.Name(), cycles, repoPrefix)
+			abortOnce.Do(func() {
+				abortErr = err
+				aborted.Store(true)
+			})
+			p.logger.Warn("LSP enrich: crash-loop guard tripped, abandoning provider",
+				zap.String("provider", p.Name()),
+				zap.String("repo_prefix", repoPrefix),
+				zap.Int64("reconnect_cycles", cycles),
+				zap.Int64("reconnect_attempts", p.reconnectAttempts.Load()),
+			)
+			return nil, err
 		}
 		newC, err := p.reconnectWithBackoff(absRoot)
 		if err != nil {
@@ -1983,6 +2007,13 @@ func isServerExitError(err error) bool {
 // at a time; backoff prevents a tight retry loop against a persistently
 // dead server.
 // KEYWORDS — lsp, reconnect, backoff, recovery
+// maxEnrichReconnectCycles caps how many times a single enrichment pass will
+// reconnect to a provider that keeps exiting mid-request. reconnectWithBackoff
+// (below) caps the connection retries within ONE cycle; this caps the number of
+// cycles, so a server that reconnects cleanly but crashes again on the next
+// request can't pin the pass in an endless crash -> reconnect -> crash loop.
+const maxEnrichReconnectCycles = 5
+
 func (p *Provider) reconnectWithBackoff(absRoot string) (*Client, error) {
 	const maxReconnectAttempts = 5
 	backoff := p.dialBackoffStart
