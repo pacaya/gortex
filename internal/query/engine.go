@@ -392,6 +392,17 @@ func (e *Engine) FindUsagesScoped(nodeID string, opts QueryOptions) *SubGraph {
 	fromIDs = append(fromIDs, nodeID)
 	fromByID := e.g.GetNodesByIDs(fromIDs)
 
+	// Framework-contract edges (a @Configuration class "provides" a @Bean
+	// factory method, a handler "handles" a route, an emitter "produces" a
+	// topic) are the plumbing graph that analyze kind=routes / contracts
+	// consume — not usages of the code symbol they land on. When the queried
+	// symbol is a callable code symbol, drop these incoming edges from its
+	// usage set; they stay in the graph for the contract analyzers. On a
+	// DI-token / infra / contract target the same kinds ARE the meaningful
+	// relationship (find_usages on a token returns its providers), so they
+	// still pass.
+	dropContractOnCode := isCodeSymbolKind(fromByID[nodeID])
+
 	for _, edge := range edges {
 		// EdgeProvides + EdgeConsumes carry DI token relationships —
 		// `@Inject(TOKEN)` and `{ provide: TOKEN, useValue: ... }`
@@ -408,6 +419,9 @@ func (e *Engine) FindUsagesScoped(nodeID string, opts QueryOptions) *SubGraph {
 		// Service returns Ingresses routing to it (EdgeDependsOn);
 		// find_usages on an Image returns workloads pulling it.
 		if isUsageEdgeKind(edge.Kind) {
+			if dropContractOnCode && isFrameworkContractEdgeKind(edge.Kind) {
+				continue
+			}
 			from := fromByID[edge.From]
 			if opts.hasScopeFilter() && (from == nil || !opts.ScopeAllows(from)) {
 				continue
@@ -1541,6 +1555,29 @@ func isUsageEdgeKind(k graph.EdgeKind) bool {
 		return true
 	}
 	return false
+}
+
+// isFrameworkContractEdgeKind reports whether an edge kind is framework
+// plumbing — the contract graph analyze kind=routes / contracts / models
+// consume — rather than a genuine code usage. find_usages suppresses these
+// when the queried symbol is a callable code symbol (a @Bean factory method's
+// only "usage" was the provides contract edge from its @Configuration class),
+// while keeping them for DI-token / topic / table / route contract targets.
+func isFrameworkContractEdgeKind(k graph.EdgeKind) bool {
+	switch k {
+	case graph.EdgeProvides, graph.EdgeConsumes,
+		graph.EdgeHandlesRoute, graph.EdgeProducesTopic, graph.EdgeConsumesTopic,
+		graph.EdgeModelsTable, graph.EdgeRendersChild:
+		return true
+	}
+	return false
+}
+
+// isCodeSymbolKind reports whether a node is a callable code symbol —
+// a function or method (constructors are methods). find_usages drops
+// framework-contract incoming edges only for these targets.
+func isCodeSymbolKind(n *graph.Node) bool {
+	return n != nil && (n.Kind == graph.KindFunction || n.Kind == graph.KindMethod)
 }
 
 // isTestSource reports whether a node was flagged as a test by the
