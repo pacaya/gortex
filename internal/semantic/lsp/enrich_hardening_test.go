@@ -36,8 +36,9 @@ type instrumentedServer struct {
 	handlers map[string]func(params json.RawMessage) (any, *jsonRPCError)
 
 	mu          sync.Mutex
-	openDocs    map[string]int // uri → currently-open count
-	maxOpen     int            // peak simultaneous open docs
+	openDocs    map[string]int  // uri → currently-open count
+	everOpened  map[string]bool // uri → ever received a didOpen
+	maxOpen     int             // peak simultaneous open docs
 	totalOpen   int
 	totalClose  int
 	notifLog    []string
@@ -46,9 +47,17 @@ type instrumentedServer struct {
 
 func newInstrumentedServer() *instrumentedServer {
 	return &instrumentedServer{
-		handlers: make(map[string]func(json.RawMessage) (any, *jsonRPCError)),
-		openDocs: make(map[string]int),
+		handlers:   make(map[string]func(json.RawMessage) (any, *jsonRPCError)),
+		openDocs:   make(map[string]int),
+		everOpened: make(map[string]bool),
 	}
+}
+
+// wasOpened reports whether the server ever received a didOpen for uri.
+func (s *instrumentedServer) wasOpened(uri string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.everOpened[uri]
 }
 
 func (s *instrumentedServer) handle(method string, fn func(params json.RawMessage) (any, *jsonRPCError)) {
@@ -65,6 +74,7 @@ func (s *instrumentedServer) recordOpen(uri string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.openDocs[uri]++
+	s.everOpened[uri] = true
 	s.totalOpen++
 	cur := 0
 	for _, n := range s.openDocs {

@@ -36,7 +36,7 @@ type confirmGroup struct {
 // where a confirmation resolves the most tiers — have already run. Ordering is
 // deterministic (count desc, then path) so a resumed / replayed index is
 // stable.
-func groupConfirmTargets(g graph.Store, targets []enrichTarget) []*confirmGroup {
+func (p *Provider) groupConfirmTargets(g graph.Store, targets []enrichTarget) []*confirmGroup {
 	byFile := map[string]*confirmGroup{}
 	var order []*confirmGroup
 	for _, t := range targets {
@@ -50,6 +50,9 @@ func groupConfirmTargets(g graph.Store, targets []enrichTarget) []*confirmGroup 
 		rel := nodeRelPath(toNode)
 		if rel == "" {
 			continue
+		}
+		if !p.servesFile(rel) {
+			continue // never open a referent file this server can't compile
 		}
 		grp := byFile[rel]
 		if grp == nil {

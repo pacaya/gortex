@@ -515,6 +515,9 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		}
 
 		rel := nodeRelPath(n)
+		if !p.servesFile(rel) {
+			continue // never open a file this server can't compile
+		}
 		// Per-item doc lifecycle (no bulk pre-open): open this interface's
 		// file, query, close immediately so memory stays bounded.
 		if err := p.openDocument(absRoot, rel); err != nil {
@@ -572,7 +575,7 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	// fallback opens arbitrary call-site files, so it runs serially afterward
 	// over the targets the sweep left unconfirmed, keeping document open/close
 	// from overlapping across goroutines.
-	confirmGroups := groupConfirmTargets(g, targets)
+	confirmGroups := p.groupConfirmTargets(g, targets)
 	var confirmMu sync.Mutex
 	var fallback []enrichTarget
 	{
@@ -662,6 +665,9 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		}
 		callerRel := nodeRelPath(t.node)
 		siteRel := edgeSiteRelPath(t.edge, repoPrefix, callerRel)
+		if !p.servesFile(siteRel) {
+			continue // never open a call-site file this server can't compile
+		}
 		siteLine := t.edge.Line
 		cand, ok := p.definitionNodeAtSite(g, repoPrefix, absRoot, siteRel, siteLine, toNode.Name, defSiteCache)
 		switch {
@@ -765,9 +771,13 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	var fileList []*fileTargets
 	fileIndex := map[string]*fileTargets{}
 	for _, n := range langNodes {
+		rel := nodeRelPath(n)
+		if !p.servesFile(rel) {
+			continue // never open a file this server can't compile
+		}
 		ft := fileIndex[n.FilePath]
 		if ft == nil {
-			ft = &fileTargets{rel: nodeRelPath(n)}
+			ft = &fileTargets{rel: rel}
 			fileIndex[n.FilePath] = ft
 			fileList = append(fileList, ft)
 		}
@@ -2431,6 +2441,30 @@ func addOverrideEdges(g graph.Store, child, parent *graph.Node, provider, origin
 func (p *Provider) languageMatches(lang string) bool {
 	for _, l := range p.languages {
 		if l == lang {
+			return true
+		}
+	}
+	return false
+}
+
+// servesFile reports whether relPath's extension is one this provider's server
+// can actually compile — the guard that stops enrichment from ever sending a
+// language server a file outside its coverage. Without it, an ambiguous edge
+// or interface whose file is an asset (.png/.svg) or an unrelated script (.sh)
+// would be opened on, say, clangd, which then tries to build an AST with an
+// inferred C++ compile command and logs invalid-AST churn for zero signal.
+// With no ServerSpec (unit-test providers) it defaults to true so fakes that
+// drive arbitrary extensions are unaffected.
+func (p *Provider) servesFile(relPath string) bool {
+	if p.spec == nil || len(p.spec.Extensions) == 0 {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(relPath))
+	if ext == "" {
+		return false
+	}
+	for _, e := range p.spec.Extensions {
+		if strings.ToLower(e) == ext {
 			return true
 		}
 	}
