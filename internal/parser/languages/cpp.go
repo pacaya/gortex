@@ -40,6 +40,22 @@ const qCppAll = `
     declarator: (function_declarator
       declarator: (identifier) @func.name)) @func.def
 
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @func.name))) @func.def
+
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @func.name)))) @func.def
+
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: (identifier) @func.name))) @func.def
+
   (preproc_include
     path: (_) @include.path) @include.def
 
@@ -488,23 +504,64 @@ func (e *CppExtractor) emitInclude(m parser.QueryResult, filePath, fileID string
 // --- Helpers --------------------------------------------------------
 
 // extractFuncName walks a function_definition node to find the function name.
-// It handles both `identifier` (free functions) and `field_identifier` (methods).
+// It handles both `identifier` (free functions) and `field_identifier` (methods),
+// and peels pointer / reference / parenthesized declarator wrappers so a
+// pointer-return method (`robj *Cls::bar() {…}`, `Widget &make() {…}`) is not
+// dropped — the function_declarator nests one or two levels below the outer
+// declarator in those signatures.
 func extractFuncName(funcNode *sitter.Node, src []byte) string {
-	for i, _nc := 0, int(funcNode.NamedChildCount()); i < _nc; i++ {
-		child := funcNode.NamedChild(i)
-		if child.Type() == "function_declarator" {
-			for j, _nc := 0, int(child.NamedChildCount()); j < _nc; j++ {
-				gc := child.NamedChild(j)
-				switch gc.Type() {
-				case "identifier", "field_identifier", "destructor_name":
-					return gc.Content(src)
-				case "qualified_identifier":
-					return lastIdentifier(gc, src)
-				}
-			}
+	fd := cppFunctionDeclarator(funcNode.ChildByFieldName("declarator"))
+	if fd == nil {
+		return ""
+	}
+	for j, _nc := 0, int(fd.NamedChildCount()); j < _nc; j++ {
+		gc := fd.NamedChild(j)
+		switch gc.Type() {
+		case "identifier", "field_identifier", "destructor_name", "operator_name":
+			return gc.Content(src)
+		case "qualified_identifier":
+			return lastIdentifier(gc, src)
 		}
 	}
 	return ""
+}
+
+// cppFunctionDeclarator descends a declarator through pointer / reference /
+// parenthesized wrappers to the function_declarator that carries the name, or
+// nil when the declarator does not resolve to a function. Bounds the walk so a
+// pathological tree cannot loop.
+func cppFunctionDeclarator(decl *sitter.Node) *sitter.Node {
+	for i := 0; decl != nil && i < 8; i++ {
+		switch decl.Type() {
+		case "function_declarator":
+			return decl
+		case "pointer_declarator", "reference_declarator", "parenthesized_declarator":
+			decl = cppInnerDeclarator(decl)
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// cppInnerDeclarator returns the declarator nested inside a wrapper declarator:
+// the `declarator` field when the grammar names it (pointer_declarator), else
+// the first declarator-shaped named child (reference_declarator and
+// parenthesized_declarator carry it positionally).
+func cppInnerDeclarator(decl *sitter.Node) *sitter.Node {
+	if inner := decl.ChildByFieldName("declarator"); inner != nil {
+		return inner
+	}
+	for i, _nc := 0, int(decl.NamedChildCount()); i < _nc; i++ {
+		c := decl.NamedChild(i)
+		switch c.Type() {
+		case "function_declarator", "pointer_declarator", "reference_declarator",
+			"parenthesized_declarator", "identifier", "field_identifier",
+			"qualified_identifier", "destructor_name", "operator_name":
+			return c
+		}
+	}
+	return nil
 }
 
 // lastIdentifier extracts the last identifier from a qualified_identifier.

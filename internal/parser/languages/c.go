@@ -17,13 +17,22 @@ import (
 // Extract can branch on which name is set.
 const qCAll = `
 [
-  (function_definition
-    declarator: (function_declarator
-      declarator: (identifier) @func.name)) @func.def
+  (function_definition) @func.def
 
   (declaration
     declarator: (function_declarator
       declarator: (identifier) @proto.name)) @proto.def
+
+  (declaration
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: (identifier) @proto.name))) @proto.def
+
+  (declaration
+    declarator: (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: (identifier) @proto.name)))) @proto.def
 
   (struct_specifier
     name: (type_identifier) @struct.name) @struct.def
@@ -217,8 +226,17 @@ func (e *CExtractor) Extract(filePath string, src []byte) (*parser.ExtractionRes
 // --- Per-match emit helpers -----------------------------------------
 
 func (e *CExtractor) emitFunction(m parser.QueryResult, filePath, fileID string, src []byte, result *parser.ExtractionResult, seen map[string]bool) {
-	name := m.Captures["func.name"].Text
 	def := m.Captures["func.def"]
+	// The name lives at the bottom of the declarator chain. A plain
+	// `int f()` nests function_declarator directly, but a pointer-return
+	// `robj *f()` / `robj **f()` wraps it in one or two pointer_declarators
+	// (and a fn-pointer-returning signature adds a parenthesized_declarator).
+	// cDeclName peels every wrapper down to the identifier, so the extractor
+	// no longer drops pointer-return definitions on the floor.
+	name := cDeclName(def.Node.ChildByFieldName("declarator"), src)
+	if name == "" {
+		return
+	}
 	id := filePath + "::" + name
 	if seen[id] {
 		return
