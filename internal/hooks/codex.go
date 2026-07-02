@@ -29,9 +29,41 @@ func runCodex(data []byte, port int) {
 	switch {
 	case peek.HookEventName == "PreToolUse" && peek.ToolName == "Bash":
 		runPreToolUse(data, port, ModeEnrich)
+	case peek.HookEventName == "PreToolUse" && codexMCPReadPreToolUseTool(peek.ToolName):
+		runCodexMCPReadPreToolUse(data)
 	case peek.HookEventName == "PostToolUse" && peek.ToolName == "Bash":
 		runCodexPostToolUse(data, port)
 	}
+}
+
+func codexMCPReadPreToolUseTool(toolName string) bool {
+	switch toolName {
+	case gortexReadFileTool, gortexEditingContextTool:
+		return true
+	default:
+		return false
+	}
+}
+
+func runCodexMCPReadPreToolUse(data []byte) {
+	var input HookInput
+	if err := json.Unmarshal(data, &input); err != nil {
+		return
+	}
+	if input.HookEventName != "PreToolUse" || !codexMCPReadPreToolUseTool(input.ToolName) {
+		return
+	}
+
+	ctx := gortexReadNudge(input.ToolName, input.ToolInput)
+	if ctx == "" {
+		return
+	}
+	emitPreToolUse(HookOutput{
+		HookSpecificOutput: &HookSpecificOutput{
+			HookEventName:     "PreToolUse",
+			AdditionalContext: ctx,
+		},
+	})
 }
 
 func runCodexPostToolUse(data []byte, port int) {

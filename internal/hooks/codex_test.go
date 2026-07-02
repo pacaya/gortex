@@ -60,6 +60,140 @@ func TestRunCodexPreToolUseBashSoftAdditionalContext(t *testing.T) {
 	}
 }
 
+func TestRunCodexPreToolUseGortexMCPReadSoftAdditionalContext(t *testing.T) {
+	withForceCompress(t, false)
+	tests := []struct {
+		name string
+		tool string
+	}{
+		{
+			name: "read file",
+			tool: gortexReadFileTool,
+		},
+		{
+			name: "editing context",
+			tool: gortexEditingContextTool,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := codexPreToolPayload(tt.tool, `{"path":"internal/a.go"}`)
+			out := captureStdout(t, func() { runCodex(data, 0) })
+			if out == "" {
+				t.Fatal("expected Codex MCP read PreToolUse guidance, got empty output")
+			}
+			hso := decodeHookOutput(t, out).HookSpecificOutput
+			if hso == nil {
+				t.Fatalf("missing hookSpecificOutput: %s", out)
+			}
+			if hso.HookEventName != "PreToolUse" {
+				t.Fatalf("hookEventName=%q want PreToolUse", hso.HookEventName)
+			}
+			for _, want := range []string{"compress_bodies", "search_text", "keep"} {
+				if !strings.Contains(hso.AdditionalContext, want) {
+					t.Fatalf("additionalContext missing %q: %q", want, hso.AdditionalContext)
+				}
+			}
+			if hso.PermissionDecision != "" || hso.PermissionDecisionReason != "" {
+				t.Fatalf("Codex MCP read nudge must not deny: %#v", hso)
+			}
+		})
+	}
+}
+
+func TestRunCodexPreToolUseGortexMCPReadPermissiveModeStaysAdditionalContext(t *testing.T) {
+	withForceCompress(t, true)
+	tests := []struct {
+		name           string
+		permissionMode string
+	}{
+		{
+			name:           "auto",
+			permissionMode: "auto",
+		},
+		{
+			name:           "accept edits",
+			permissionMode: "acceptEdits",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := codexPreToolPayloadWithPermission(gortexReadFileTool, `{"path":"internal/a.go"}`, tt.permissionMode)
+			out := captureStdout(t, func() { runCodex(data, 0) })
+			if out == "" {
+				t.Fatal("expected Codex MCP read PreToolUse guidance, got empty output")
+			}
+			hso := decodeHookOutput(t, out).HookSpecificOutput
+			if hso == nil {
+				t.Fatalf("missing hookSpecificOutput: %s", out)
+			}
+			if !strings.Contains(hso.AdditionalContext, "compress_bodies") {
+				t.Fatalf("additionalContext missing compress_bodies guidance: %q", hso.AdditionalContext)
+			}
+			if hso.PermissionDecision != "" || hso.PermissionDecisionReason != "" {
+				t.Fatalf("Codex MCP read nudge must not emit permission decisions: %#v", hso)
+			}
+		})
+	}
+}
+
+func TestRunCodexPreToolUseGortexMCPReadSilentShapes(t *testing.T) {
+	withForceCompress(t, false)
+	tests := []struct {
+		name  string
+		tool  string
+		input string
+	}{
+		{
+			name:  "read_file compressed",
+			tool:  gortexReadFileTool,
+			input: `{"path":"internal/a.go","compress_bodies":true}`,
+		},
+		{
+			name:  "get_editing_context compressed",
+			tool:  gortexEditingContextTool,
+			input: `{"path":"internal/a.go","compress_bodies":true}`,
+		},
+		{
+			name:  "read_file max lines",
+			tool:  gortexReadFileTool,
+			input: `{"path":"internal/a.go","max_lines":80}`,
+		},
+		{
+			name:  "read_file max bytes",
+			tool:  gortexReadFileTool,
+			input: `{"path":"internal/a.go","max_bytes":4000}`,
+		},
+		{
+			name:  "get_editing_context max tokens",
+			tool:  gortexEditingContextTool,
+			input: `{"path":"internal/a.go","max_tokens":2000}`,
+		},
+		{
+			name:  "non-source file",
+			tool:  gortexReadFileTool,
+			input: `{"path":"README.md"}`,
+		},
+		{
+			name:  "other Gortex MCP tool",
+			tool:  gortexMCPToolPrefix + "search_symbols",
+			input: `{"path":"internal/a.go"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := codexPreToolPayload(tt.tool, tt.input)
+			out := captureStdout(t, func() { runCodex(data, 0) })
+			if out != "" {
+				t.Fatalf("expected silent no-op, got %q", out)
+			}
+		})
+	}
+}
+
 func TestRunCodexPostToolUseBashGrepOutputAdditionalContext(t *testing.T) {
 	port := stubBridge(t, nil,
 		map[string]struct{ ID, Name, Kind string }{
@@ -308,6 +442,14 @@ func TestRunCodexPostToolUseMalformedJSONNoop(t *testing.T) {
 
 func codexBashPayload(command string) []byte {
 	return []byte(`{"hook_event_name":"PreToolUse","tool_name":"Bash","session_id":"codex-shape","tool_input":{"command":` + strconv.Quote(command) + `}}`)
+}
+
+func codexPreToolPayload(toolName string, input string) []byte {
+	return []byte(`{"hook_event_name":"PreToolUse","tool_name":` + strconv.Quote(toolName) + `,"session_id":"codex-shape","tool_input":` + input + `}`)
+}
+
+func codexPreToolPayloadWithPermission(toolName string, input string, permissionMode string) []byte {
+	return []byte(`{"hook_event_name":"PreToolUse","tool_name":` + strconv.Quote(toolName) + `,"session_id":"codex-shape","permission_mode":` + strconv.Quote(permissionMode) + `,"tool_input":` + input + `}`)
 }
 
 func codexPostBashPayload(command string, response string) []byte {

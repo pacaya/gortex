@@ -12,6 +12,8 @@ import (
 	"github.com/zzet/gortex/internal/agents/agentstest"
 )
 
+const testCodexHookCommand = "/tmp/test-gortex hook --agent=codex --mode=enrich"
+
 // TestCodexWritesMcpServersTOMLTable verifies we produce the
 // documented [mcp_servers.gortex] table — not a legacy
 // [mcp.gortex] or [mcpServers.gortex].
@@ -47,9 +49,7 @@ func TestCodexWritesMcpServersTOMLTable(t *testing.T) {
 	if count := gortexSessionStartHookCount(t, cfg); count != 1 {
 		t.Fatalf("expected one Gortex SessionStart hook, got %d: %#v", count, cfg["hooks"])
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("expected one Gortex PreToolUse hook, got %d: %#v", count, cfg["hooks"])
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
 		t.Fatalf("expected one Gortex PostToolUse hook, got %d: %#v", count, cfg["hooks"])
 	}
@@ -114,27 +114,26 @@ func TestCodexInstallsPreToolUseHook(t *testing.T) {
 
 	cfg := readCodexConfig(t, env)
 	entries := preToolUseEntries(t, cfg)
-	if len(entries) != 1 {
-		t.Fatalf("PreToolUse entries=%d want 1: %#v", len(entries), entries)
+	if len(entries) != 2 {
+		t.Fatalf("PreToolUse entries=%d want Bash+MCP read entries: %#v", len(entries), entries)
 	}
-	entry := entries[0].(map[string]any)
-	if entry["matcher"] != codexPreToolUseMatcher {
-		t.Fatalf("matcher=%v want %q", entry["matcher"], codexPreToolUseMatcher)
+	assertGortexPreToolUseHooks(t, cfg)
+
+	bashHandler := requireHookEntry(t, cfg, "PreToolUse", codexPreToolUseMatcher, testCodexHookCommand)
+	mcpHandler := requireHookEntry(t, cfg, "PreToolUse", codexMCPReadPreToolUseMatcher, testCodexHookCommand)
+	for name, handler := range map[string]map[string]any{"Bash": bashHandler, "MCP read": mcpHandler} {
+		if handler["type"] != "command" {
+			t.Errorf("%s hook type=%v want command", name, handler["type"])
+		}
+		if handler["timeout"] != int64(codexHookTimeoutSeconds) {
+			t.Errorf("%s timeout=%v want %d", name, handler["timeout"], codexHookTimeoutSeconds)
+		}
 	}
-	handlers, ok := codexHookList(entry["hooks"])
-	if !ok || len(handlers) != 1 {
-		t.Fatalf("handlers=%#v", entry["hooks"])
+	if bashHandler["statusMessage"] != "Loading Gortex Bash guidance..." {
+		t.Errorf("Bash statusMessage=%v", bashHandler["statusMessage"])
 	}
-	handler := handlers[0].(map[string]any)
-	if handler["type"] != "command" {
-		t.Errorf("hook type=%v want command", handler["type"])
-	}
-	command := handler["command"].(string)
-	if command != "/tmp/test-gortex hook --agent=codex --mode=enrich" {
-		t.Errorf("command=%v want test hook command with --agent=codex --mode=enrich", command)
-	}
-	if handler["timeout"] != int64(codexHookTimeoutSeconds) {
-		t.Errorf("timeout=%v want %d", handler["timeout"], codexHookTimeoutSeconds)
+	if mcpHandler["statusMessage"] != "Loading Gortex read guidance..." {
+		t.Errorf("MCP read statusMessage=%v", mcpHandler["statusMessage"])
 	}
 }
 
@@ -166,7 +165,7 @@ func TestCodexInstallsPostToolUseHook(t *testing.T) {
 		t.Errorf("hook type=%v want command", handler["type"])
 	}
 	command := handler["command"].(string)
-	if command != "/tmp/test-gortex hook --agent=codex --mode=enrich" {
+	if command != testCodexHookCommand {
 		t.Errorf("command=%v want test hook command with --agent=codex --mode=enrich", command)
 	}
 	if handler["timeout"] != int64(codexHookTimeoutSeconds) {
@@ -199,9 +198,7 @@ func TestCodexInstallHooksOnlyCreatesOnlyHooks(t *testing.T) {
 	if count := gortexSessionStartHookCount(t, cfg); count != 1 {
 		t.Fatalf("SessionStart hooks=%d want 1", count)
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("PreToolUse hooks=%d want 1", count)
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
 		t.Fatalf("PostToolUse hooks=%d want 1", count)
 	}
@@ -279,9 +276,7 @@ statusMessage = "User PostToolUse"
 	if count := gortexSessionStartHookCount(t, cfg); count != 1 {
 		t.Fatalf("SessionStart hooks=%d want 1", count)
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("PreToolUse hooks=%d want 1", count)
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
 		t.Fatalf("PostToolUse hooks=%d want 1", count)
 	}
@@ -305,6 +300,14 @@ matcher = "^Bash$"
 type = "command"
 command = "/tmp/old-gortex hook --agent=codex --mode=enrich"
 statusMessage = "Old Gortex PreToolUse"
+
+[[hooks.PreToolUse]]
+matcher = "^mcp__gortex__(read_file|get_editing_context)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/tmp/old-gortex hook --agent=codex --mode=enrich"
+statusMessage = "Old Gortex MCP Read PreToolUse"
 
 [[hooks.PostToolUse]]
 matcher = "^Bash$"
@@ -343,15 +346,13 @@ statusMessage = "Old Gortex PostToolUse"
 	if hasHookCommand(t, cfg, "PostToolUse", "/tmp/old-gortex hook --agent=codex --mode=enrich") {
 		t.Fatalf("Force kept stale Gortex PostToolUse hook: %#v", postToolUseEntries(t, cfg))
 	}
-	if !hasHookCommand(t, cfg, "PreToolUse", "/tmp/test-gortex hook --agent=codex --mode=enrich") {
+	if !hasHookCommand(t, cfg, "PreToolUse", testCodexHookCommand) {
 		t.Fatalf("Force did not install current Gortex PreToolUse hook: %#v", preToolUseEntries(t, cfg))
 	}
-	if !hasHookCommand(t, cfg, "PostToolUse", "/tmp/test-gortex hook --agent=codex --mode=enrich") {
+	if !hasHookCommand(t, cfg, "PostToolUse", testCodexHookCommand) {
 		t.Fatalf("Force did not install current Gortex PostToolUse hook: %#v", postToolUseEntries(t, cfg))
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("Gortex PreToolUse hooks=%d want 1", count)
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
 		t.Fatalf("Gortex PostToolUse hooks=%d want 1", count)
 	}
@@ -400,9 +401,7 @@ func TestCodexSessionStartHookIdempotent(t *testing.T) {
 	if count := gortexSessionStartHookCount(t, cfg); count != 1 {
 		t.Fatalf("re-run duplicated Gortex SessionStart hook: got %d", count)
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("re-run duplicated Gortex PreToolUse hook: got %d", count)
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 	if count := gortexPostToolUseHookCount(t, cfg); count != 1 {
 		t.Fatalf("re-run duplicated Gortex PostToolUse hook: got %d", count)
 	}
@@ -473,15 +472,13 @@ statusMessage = "User PostToolUse"
 		t.Fatalf("Gortex SessionStart hooks=%d want 1", count)
 	}
 	preEntries := preToolUseEntries(t, cfg)
-	if len(preEntries) != 2 {
-		t.Fatalf("PreToolUse entries=%d want user+gortex entries: %#v", len(preEntries), preEntries)
+	if len(preEntries) != 3 {
+		t.Fatalf("PreToolUse entries=%d want user+Bash+MCP read entries: %#v", len(preEntries), preEntries)
 	}
 	if !hasHookCommand(t, cfg, "PreToolUse", "echo user-pretooluse") {
 		t.Fatalf("user PreToolUse hook was not preserved: %#v", preEntries)
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("Gortex PreToolUse hooks=%d want 1", count)
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 	postEntries := postToolUseEntries(t, cfg)
 	if len(postEntries) != 2 {
 		t.Fatalf("PostToolUse entries=%d want user+gortex entries: %#v", len(postEntries), postEntries)
@@ -512,6 +509,14 @@ matcher = "^Bash$"
 type = "command"
 command = "/tmp/old-gortex hook --agent=codex --mode=enrich"
 statusMessage = "Old Gortex PreToolUse"
+
+[[hooks.PreToolUse]]
+matcher = "^mcp__gortex__(read_file|get_editing_context)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/tmp/old-gortex hook --agent=codex --mode=enrich"
+statusMessage = "Old Gortex MCP Read PreToolUse"
 `
 	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
 		t.Fatalf("seed config: %v", err)
@@ -526,8 +531,8 @@ statusMessage = "Old Gortex PreToolUse"
 
 	cfg := readCodexConfig(t, env)
 	preEntries := preToolUseEntries(t, cfg)
-	if len(preEntries) != 2 {
-		t.Fatalf("PreToolUse entries=%d want user+gortex entries: %#v", len(preEntries), preEntries)
+	if len(preEntries) != 3 {
+		t.Fatalf("PreToolUse entries=%d want user+Bash+MCP read entries: %#v", len(preEntries), preEntries)
 	}
 	if !hasHookCommand(t, cfg, "PreToolUse", "echo user-pretooluse") {
 		t.Fatalf("Force removed user PreToolUse hook: %#v", preEntries)
@@ -535,12 +540,10 @@ statusMessage = "Old Gortex PreToolUse"
 	if hasHookCommand(t, cfg, "PreToolUse", "/tmp/old-gortex hook --agent=codex --mode=enrich") {
 		t.Fatalf("Force kept stale Gortex PreToolUse hook: %#v", preEntries)
 	}
-	if !hasHookCommand(t, cfg, "PreToolUse", "/tmp/test-gortex hook --agent=codex --mode=enrich") {
+	if !hasHookCommand(t, cfg, "PreToolUse", testCodexHookCommand) {
 		t.Fatalf("Force did not install current Gortex PreToolUse hook: %#v", preEntries)
 	}
-	if count := gortexPreToolUseHookCount(t, cfg); count != 1 {
-		t.Fatalf("Gortex PreToolUse hooks=%d want 1", count)
-	}
+	assertGortexPreToolUseHooks(t, cfg)
 }
 
 func TestCodexNoHooksSkipsSessionStartHook(t *testing.T) {
@@ -650,12 +653,83 @@ func gortexPreToolUseHookCount(t *testing.T, cfg map[string]any) int {
 	return count
 }
 
+func assertGortexPreToolUseHooks(t *testing.T, cfg map[string]any) {
+	t.Helper()
+	if count := gortexPreToolUseHookCount(t, cfg); count != 2 {
+		t.Fatalf("Gortex PreToolUse hooks=%d want Bash+MCP read hooks: %#v", count, preToolUseEntries(t, cfg))
+	}
+	if count := hookMatcherCommandCount(t, cfg, "PreToolUse", codexPreToolUseMatcher, testCodexHookCommand); count != 1 {
+		t.Fatalf("Bash PreToolUse hook count=%d want 1: %#v", count, preToolUseEntries(t, cfg))
+	}
+	if count := hookMatcherCommandCount(t, cfg, "PreToolUse", codexMCPReadPreToolUseMatcher, testCodexHookCommand); count != 1 {
+		t.Fatalf("MCP read PreToolUse hook count=%d want 1: %#v", count, preToolUseEntries(t, cfg))
+	}
+}
+
 func gortexPostToolUseHookCount(t *testing.T, cfg map[string]any) int {
 	t.Helper()
 	count := 0
 	for _, entry := range postToolUseEntries(t, cfg) {
 		if codexHookEntryIsGortexPostToolUse(entry) {
 			count++
+		}
+	}
+	return count
+}
+
+func requireHookEntry(t *testing.T, cfg map[string]any, event, matcher, command string) map[string]any {
+	t.Helper()
+	for _, entry := range hookEntries(t, cfg, event) {
+		group, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		gotMatcher, _ := group["matcher"].(string)
+		if gotMatcher != matcher {
+			continue
+		}
+		handlers, ok := codexHookList(group["hooks"])
+		if !ok {
+			continue
+		}
+		for _, handler := range handlers {
+			hm, ok := handler.(map[string]any)
+			if !ok {
+				continue
+			}
+			if got, _ := hm["command"].(string); got == command {
+				return hm
+			}
+		}
+	}
+	t.Fatalf("missing %s hook matcher=%q command=%q in %#v", event, matcher, command, hookEntries(t, cfg, event))
+	return nil
+}
+
+func hookMatcherCommandCount(t *testing.T, cfg map[string]any, event, matcher, command string) int {
+	t.Helper()
+	count := 0
+	for _, entry := range hookEntries(t, cfg, event) {
+		group, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		gotMatcher, _ := group["matcher"].(string)
+		if gotMatcher != matcher {
+			continue
+		}
+		handlers, ok := codexHookList(group["hooks"])
+		if !ok {
+			continue
+		}
+		for _, handler := range handlers {
+			hm, ok := handler.(map[string]any)
+			if !ok {
+				continue
+			}
+			if got, _ := hm["command"].(string); got == command {
+				count++
+			}
 		}
 	}
 	return count

@@ -32,6 +32,7 @@ const codexSessionStartMessage = "IMPORTANT: Prefer Gortex MCP tools (search_sym
 const codexSessionStartCommand = "printf '%s\\n' '" + codexSessionStartMessage + "'"
 const codexSessionStartWindowsCommand = "powershell -NoProfile -Command \"Write-Output '" + codexSessionStartMessage + "'\""
 const codexPreToolUseMatcher = "^Bash$"
+const codexMCPReadPreToolUseMatcher = "^mcp__gortex__(read_file|get_editing_context)$"
 const codexPostToolUseMatcher = "^Bash$"
 const codexHookTimeoutSeconds = 5
 
@@ -144,7 +145,11 @@ func upsertSessionStartHook(root map[string]any, opts agents.ApplyOpts) bool {
 }
 
 func upsertPreToolUseHook(root map[string]any, env agents.Env, opts agents.ApplyOpts) bool {
-	return upsertCodexHook(root, "PreToolUse", codexHookEntryIsGortexPreToolUse, codexPreToolUseHookEntry(env), opts)
+	desired := []map[string]any{
+		codexPreToolUseHookEntry(env),
+		codexMCPReadPreToolUseHookEntry(env),
+	}
+	return upsertCodexHookSet(root, "PreToolUse", codexHookEntryIsGortexPreToolUse, desired, opts)
 }
 
 func upsertPostToolUseHook(root map[string]any, env agents.Env, opts agents.ApplyOpts) bool {
@@ -205,6 +210,67 @@ func upsertCodexHook(root map[string]any, event string, isGortex func(any) bool,
 	hooks[event] = append(kept, desired)
 	root["hooks"] = hooks
 	return true
+}
+
+func upsertCodexHookSet(root map[string]any, event string, isGortex func(any) bool, desired []map[string]any, opts agents.ApplyOpts) bool {
+	hooks, ok := root["hooks"].(map[string]any)
+	if !ok {
+		if _, exists := root["hooks"]; exists {
+			return false
+		}
+		hooks = make(map[string]any)
+	}
+
+	entries, ok := codexHookList(hooks[event])
+	if !ok {
+		return false
+	}
+
+	found := make([]bool, len(desired))
+	kept := make([]any, 0, len(entries)+len(desired))
+	for _, entry := range entries {
+		if isGortex(entry) {
+			if opts.Force {
+				continue
+			}
+			for i, want := range desired {
+				if !found[i] && codexHookEntryMatchesDesired(entry, want) {
+					found[i] = true
+					break
+				}
+			}
+		}
+		kept = append(kept, entry)
+	}
+
+	changed := false
+	for i, want := range desired {
+		if opts.Force || !found[i] {
+			kept = append(kept, want)
+			changed = true
+		}
+	}
+	if !changed {
+		return false
+	}
+
+	hooks[event] = kept
+	root["hooks"] = hooks
+	return true
+}
+
+func codexHookEntryMatchesDesired(entry any, desired map[string]any) bool {
+	matcher, _ := desired["matcher"].(string)
+	return codexHookEntryHasMatcher(entry, matcher) && codexHookEntryInvokesCodexHook(entry)
+}
+
+func codexHookEntryHasMatcher(entry any, matcher string) bool {
+	group, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	got, _ := group["matcher"].(string)
+	return got == matcher
 }
 
 func codexHookList(v any) ([]any, bool) {
@@ -314,6 +380,20 @@ func codexPreToolUseHookEntry(env agents.Env) map[string]any {
 				"command":       codexPreToolUseCommand(env),
 				"timeout":       codexHookTimeoutSeconds,
 				"statusMessage": "Loading Gortex Bash guidance...",
+			},
+		},
+	}
+}
+
+func codexMCPReadPreToolUseHookEntry(env agents.Env) map[string]any {
+	return map[string]any{
+		"matcher": codexMCPReadPreToolUseMatcher,
+		"hooks": []any{
+			map[string]any{
+				"type":          "command",
+				"command":       codexPreToolUseCommand(env),
+				"timeout":       codexHookTimeoutSeconds,
+				"statusMessage": "Loading Gortex read guidance...",
 			},
 		},
 	}
