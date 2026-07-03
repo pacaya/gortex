@@ -125,6 +125,23 @@ CREATE TABLE IF NOT EXISTS repo_index_state (
     extractor_versions TEXT NOT NULL DEFAULT ''
 ) WITHOUT ROWID;
 
+-- enrichment_state records, per (repo, semantic provider), the git revision
+-- the graph was enriched at plus the coverage that pass reached. Enrichment
+-- completion otherwise lives only in an in-memory map, so a restart forgets it
+-- and re-runs full LSP hover passes for a repo whose persisted graph already
+-- carries the edges. The deferred-enrichment gate reads this row and skips a
+-- provider whose IndexedSHA still matches HEAD on a clean tree. One row per
+-- (repo_prefix, provider); WITHOUT ROWID — the PK index IS the table, like
+-- file_mtimes / repo_index_state.
+CREATE TABLE IF NOT EXISTS enrichment_state (
+    repo_prefix  TEXT NOT NULL,
+    provider     TEXT NOT NULL,
+    indexed_sha  TEXT NOT NULL DEFAULT '',
+    completed_at INTEGER NOT NULL DEFAULT 0,
+    coverage     REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_prefix, provider)
+) WITHOUT ROWID;
+
 -- clone_shingles is the per-symbol MinHash shingle-set sidecar. Each
 -- function/method node's []uint64 shingle set is stored as a little-
 -- endian BLOB (8 bytes/elem) keyed by node_id so the maintained clone-

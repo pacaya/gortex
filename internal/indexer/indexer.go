@@ -995,7 +995,17 @@ func (idx *Indexer) runDeferredEnrich() {
 	// Key by the repo prefix so a repo-scoped provider can scope file
 	// selection to this repo (empty in single-repo mode).
 	roots := map[string]string{idx.repoPrefix: idx.rootPath}
-	results, partialRepos, err := idx.semanticMgr.EnrichAll(idx.graph, roots)
+	// Compute the repo's git freshness ONCE and thread it in so the manager's
+	// per-provider skip gate and the completion-marker write agree on the
+	// identical (sha, dirty): a provider whose persisted marker still matches
+	// HEAD on a clean tree is skipped instead of re-running its hover pass.
+	sha, dirty := repoHeadAndDirty(idx.rootPath)
+	opts := semantic.EnrichOptions{
+		RepoState: map[string]semantic.RepoEnrichState{
+			idx.repoPrefix: {SHA: sha, Dirty: dirty},
+		},
+	}
+	results, partialRepos, err := idx.semanticMgr.EnrichAll(idx.graph, roots, opts)
 	if err != nil {
 		idx.logger.Warn("semantic enrichment failed", zap.Error(err))
 		return
@@ -2905,7 +2915,10 @@ func (idx *Indexer) IndexCtx(ctx context.Context, root string) (result *IndexRes
 			// Key by the repo prefix so a repo-scoped provider can scope
 			// file selection to this repo (empty in single-repo mode).
 			roots := map[string]string{idx.repoPrefix: absRoot}
-			results, _, err := idx.semanticMgr.EnrichAll(idx.graph, roots)
+			// The inline full-index path does not gate or persist enrichment
+			// markers (a zero EnrichOptions): the deferred warmup path owns the
+			// skip-on-restart optimisation.
+			results, _, err := idx.semanticMgr.EnrichAll(idx.graph, roots, semantic.EnrichOptions{})
 			if err != nil {
 				idx.logger.Warn("semantic enrichment failed", zap.Error(err))
 			} else if len(results) > 0 {

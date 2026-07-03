@@ -61,7 +61,7 @@ func TestManager_EnrichAll(t *testing.T) {
 	g.AddNode(&graph.Node{ID: "main.go::main", Kind: graph.KindFunction, Name: "main", FilePath: "main.go", Language: "go"})
 
 	roots := map[string]string{"default": "/tmp/test"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
 	assert.Equal(t, "test-go", results[0].Provider)
@@ -104,7 +104,7 @@ func TestManager_PrioritySelection(t *testing.T) {
 
 	g := graph.New()
 	roots := map[string]string{"default": "/tmp/test"}
-	_, _, err := mgr.EnrichAll(g, roots)
+	_, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 
 	assert.True(t, highCalled, "high-priority provider should run")
@@ -129,7 +129,7 @@ func TestManager_UnavailableProvider(t *testing.T) {
 
 	g := graph.New()
 	roots := map[string]string{"default": "/tmp/test"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 	assert.Len(t, results, 0)
 }
@@ -147,7 +147,7 @@ func TestManager_Disabled(t *testing.T) {
 
 	g := graph.New()
 	roots := map[string]string{"default": "/tmp/test"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 	assert.Nil(t, results)
 }
@@ -283,7 +283,7 @@ func TestManager_EnrichAll_RoutesThroughLSPRouter(t *testing.T) {
 
 	g := graph.New()
 	roots := map[string]string{"repo-a": "/tmp/a", "repo-b": "/tmp/b"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 	// Two repos × one router-backed spec = two enrichment results.
 	assert.Len(t, results, 2)
@@ -315,7 +315,7 @@ func TestManager_EnrichAll_SkipsCoveredLanguages(t *testing.T) {
 
 	g := graph.New()
 	roots := map[string]string{"default": "/tmp/test"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 	// Eager provider runs (1 repo), router-backed gopls is skipped
 	// because go is already covered.
@@ -353,7 +353,7 @@ func TestManager_EnrichAll_GatesAbsentLanguages(t *testing.T) {
 	g.AddNode(&graph.Node{ID: "myrepo/main.go::main", Kind: graph.KindFunction, Name: "main", FilePath: "myrepo/main.go", Language: "go", RepoPrefix: "myrepo"})
 
 	roots := map[string]string{"myrepo": "/tmp/r"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 
 	// The eager Go provider runs; the Rust spec is gated out before any spawn.
@@ -429,7 +429,7 @@ func TestManager_EnrichAll_ArbitratesRouterDupes(t *testing.T) {
 
 	g := graph.New()
 	roots := map[string]string{"default": "/tmp/test"}
-	results, _, err := mgr.EnrichAll(g, roots)
+	results, _, err := mgr.EnrichAll(g, roots, EnrichOptions{})
 	require.NoError(t, err)
 	require.Len(t, results, 1, "exactly one provider should run for python")
 	assert.Equal(t, "lsp-pyright", results[0].Provider, "pyright wins the lower-priority arbitration")
@@ -457,7 +457,7 @@ func TestManager_EnrichAll_RouterTieBreakerByName(t *testing.T) {
 	}
 	mgr.SetLSPRouter(r)
 
-	results, _, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"})
+	results, _, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"}, EnrichOptions{})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "lsp-aaa", results[0].Provider)
@@ -481,7 +481,7 @@ func TestManager_EnrichAll_RouterDedupAcrossLanguages(t *testing.T) {
 	}
 	mgr.SetLSPRouter(r)
 
-	results, _, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"})
+	results, _, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"}, EnrichOptions{})
 	require.NoError(t, err)
 	assert.Len(t, results, 1, "spec serving 2 languages should still run Enrich once")
 }
@@ -547,7 +547,7 @@ func TestManager_ConfigPriority_Override(t *testing.T) {
 	}
 	mgr.SetLSPRouter(r)
 
-	results, _, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"})
+	results, _, err := mgr.EnrichAll(graph.New(), map[string]string{"default": "/tmp/x"}, EnrichOptions{})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "lsp-jedi", results[0].Provider, "config priority should beat spec default")

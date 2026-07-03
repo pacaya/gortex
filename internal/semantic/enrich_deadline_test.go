@@ -48,7 +48,7 @@ func TestManager_EnrichOne_AbandonsOnDeadline(t *testing.T) {
 
 	resultCh := make(chan []*EnrichResult, 1)
 	go func() {
-		res, _, _ := mgr.EnrichAll(g, roots)
+		res, _, _ := mgr.EnrichAll(g, roots, EnrichOptions{})
 		resultCh <- res
 	}()
 
@@ -93,7 +93,7 @@ func TestManager_EnrichOne_DisabledDeadline(t *testing.T) {
 	g := graph.New()
 	g.AddNode(&graph.Node{ID: "main.go::main", Kind: graph.KindFunction, Name: "main", FilePath: "main.go", Language: "go"})
 
-	results, _, err := mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"})
+	results, _, err := mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"}, EnrichOptions{})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, 7, results[0].EdgesConfirmed)
@@ -154,7 +154,7 @@ func TestManager_EnrichOne_ContextProviderPartialIsCounted(t *testing.T) {
 
 	done := make(chan []*EnrichResult, 1)
 	go func() {
-		res, _, _ := mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"})
+		res, _, _ := mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"}, EnrichOptions{})
 		done <- res
 	}()
 
@@ -217,7 +217,7 @@ func TestManager_EnrichOne_ContextProviderWedgedPastGraceIsAbandoned(t *testing.
 
 	done := make(chan []*EnrichResult, 1)
 	go func() {
-		res, _, _ := mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"})
+		res, _, _ := mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"}, EnrichOptions{})
 		done <- res
 	}()
 
@@ -275,7 +275,7 @@ func TestManager_EnrichmentStatuses_AbandonedAndCompleted(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _, _ = mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"})
+		_, _, _ = mgr.EnrichAll(g, map[string]string{"default": "/tmp/test"}, EnrichOptions{})
 	}()
 	select {
 	case <-done:

@@ -82,7 +82,7 @@ func TestManager_SupplementalProvidersEnrichWithoutLSP(t *testing.T) {
 		t.Fatal("manager reports no available providers")
 	}
 
-	results, _, err := mgr.EnrichAll(g, map[string]string{"": dir})
+	results, _, err := mgr.EnrichAll(g, map[string]string{"": dir}, semantic.EnrichOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestManager_ConfigDisablesOneProvider(t *testing.T) {
 	for _, p := range DefaultProviders(zap.NewNop()) {
 		mgr.RegisterProvider(p)
 	}
-	results, _, err := mgr.EnrichAll(g, map[string]string{"": dir})
+	results, _, err := mgr.EnrichAll(g, map[string]string{"": dir}, semantic.EnrichOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

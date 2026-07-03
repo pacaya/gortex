@@ -55,7 +55,7 @@ func TestIndexHealth_SurfacesSemanticEnrichmentState(t *testing.T) {
 			AbortReason:    "context deadline exceeded",
 		},
 	})
-	_, _, err := mgr.EnrichAll(srv.graph, map[string]string{"repo-a": t.TempDir()})
+	_, _, err := mgr.EnrichAll(srv.graph, map[string]string{"repo-a": t.TempDir()}, semantic.EnrichOptions{})
 	require.NoError(t, err)
 	srv.SetSemanticManager(mgr)
 
@@ -95,7 +95,7 @@ func TestIndexHealth_SemanticEnrichmentCompletedIsGreen(t *testing.T) {
 		name:   "lsp-fake",
 		result: &semantic.EnrichResult{Provider: "lsp-fake", Language: "go", EdgesConfirmed: 2},
 	})
-	_, _, err := mgr.EnrichAll(srv.graph, map[string]string{"repo-a": t.TempDir()})
+	_, _, err := mgr.EnrichAll(srv.graph, map[string]string{"repo-a": t.TempDir()}, semantic.EnrichOptions{})
 	require.NoError(t, err)
 	srv.SetSemanticManager(mgr)
 
@@ -132,7 +132,7 @@ func TestIndexHealth_SurfacesDegradedEnrichment(t *testing.T) {
 			DegradedReason: "no compilation database found; enrichment limited to reference confirmation",
 		},
 	})
-	_, _, err := mgr.EnrichAll(srv.graph, map[string]string{"repo-a": t.TempDir()})
+	_, _, err := mgr.EnrichAll(srv.graph, map[string]string{"repo-a": t.TempDir()}, semantic.EnrichOptions{})
 	require.NoError(t, err)
 	srv.SetSemanticManager(mgr)
 
