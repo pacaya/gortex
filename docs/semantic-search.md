@@ -76,6 +76,8 @@ go build -tags embeddings_onnx ./cmd/gortex/   # needs: brew install onnxruntime
 go build -tags embeddings_gomlx ./cmd/gortex/  # auto-downloads XLA plugin
 ```
 
+The `embeddings_onnx` backend (GTE-small) **never auto-downloads**: place `model.onnx` and `vocab.txt` in `~/.gortex/models/gte-small/` yourself and install the ONNX Runtime native library (`brew install onnxruntime`, or the distro equivalent). Without both, the backend reports "ONNX model not found" and the local chain falls through to the pure-Go Hugot backend.
+
 The legacy `--embeddings` / `--embeddings-url` / `--embeddings-model` CLI flags and the `GORTEX_EMBEDDINGS*` env vars still take precedence over the config block — useful for one-shot overrides without editing `.gortex.yaml`.
 
 ## `search_symbols` `assist:` modes

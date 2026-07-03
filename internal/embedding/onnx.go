@@ -46,7 +46,7 @@ type ONNXProvider struct {
 func newONNXProvider() (Provider, error) {
 	modelDir := findONNXModelDir()
 	if modelDir == "" {
-		return nil, fmt.Errorf("ONNX model not found; place model.onnx + vocab.txt in ~/.gortex/models/gte-small/")
+		return nil, fmt.Errorf("ONNX model not found; this backend never auto-downloads — manually place model.onnx + vocab.txt in ~/.gortex/models/gte-small/ (plus `brew install onnxruntime` or the distro equivalent); see docs/semantic-search.md")
 	}
 
 	modelPath := filepath.Join(modelDir, "model.onnx")
