@@ -1006,6 +1006,7 @@ func (w *Watcher) patchGraph(path string, kind ChangeKind) {
 		priorNodes := w.indexer.graph.GetFileNodes(relPath)
 		fileEdgesBefore := w.countFileEdges(priorNodes)
 		resolvedBefore := w.countResolvedFileEdges(priorNodes)
+		incomingBeforeByID := w.resolvedIncomingByNode(priorNodes)
 		if err := w.indexer.IndexFile(path); err != nil {
 			w.logger.Warn("reindex file failed", zap.String("path", path), zap.Error(err))
 			return
@@ -1027,7 +1028,8 @@ func (w *Watcher) patchGraph(path string, kind ChangeKind) {
 		// most of its resolved edges is a transient resolution failure, not a
 		// real deletion — flag it and enqueue a forced scoped re-resolve so it
 		// self-heals instead of persisting the degraded shape.
-		w.guardResolvedEdgeRegression(path, len(priorNodes), len(newSymbols), resolvedBefore, w.countResolvedFileEdges(newSymbols))
+		incomingBefore, incomingAfter := w.incomingRegressionForSurvivors(incomingBeforeByID, newSymbols)
+		w.guardResolvedEdgeRegression(path, len(priorNodes), len(newSymbols), resolvedBefore, w.countResolvedFileEdges(newSymbols), incomingBefore, incomingAfter)
 
 		// Notify callback with old and new symbols.
 		w.symbolChangeCbMu.RLock()
@@ -1161,21 +1163,34 @@ func (w *Watcher) countResolvedFileEdges(nodes []*graph.Node) int {
 	return total
 }
 
-// guardResolvedEdgeRegression fires when a modify patch KEPT (or grew) its
-// symbols but lost more than half its resolved out-edges — a transient
-// resolution failure (a dependency mid-write, an LSP provider not yet warm),
-// not a real deletion. It logs loudly, bumps the process-global regression
-// counter, and enqueues the file for a forced scoped re-resolve so the graph
-// self-heals instead of persisting the degraded shape.
-func (w *Watcher) guardResolvedEdgeRegression(path string, nodesBefore, nodesAfter, resolvedBefore, resolvedAfter int) {
-	if resolvedBefore < resolvedEdgeRegressionFloor {
+// guardResolvedEdgeRegression fires when a modify patch lost most of its
+// resolved edges on either side of the graph: the file's own out-edges dropped
+// while it kept its symbols, OR a surviving definition lost most of the callers
+// bound into it. Both are transient resolution failures (a dependency mid-write,
+// an LSP provider not yet warm, an external revert re-parsing a definition
+// file), not real deletions. It logs loudly, bumps the process-global
+// regression counter, and enqueues the file for a forced scoped re-resolve so
+// the graph self-heals instead of persisting the degraded shape.
+func (w *Watcher) guardResolvedEdgeRegression(path string, nodesBefore, nodesAfter, resolvedBefore, resolvedAfter, incomingBefore, incomingAfter int) {
+	// Out-edge regression: this file's own references lost their resolutions
+	// while it kept (or grew) its symbols. Gated on nodesAfter >= nodesBefore —
+	// a symbol removal legitimately drops out-edges.
+	outRegressed := resolvedBefore >= resolvedEdgeRegressionFloor &&
+		nodesAfter >= nodesBefore &&
+		resolvedAfter*2 < resolvedBefore
+	// Incoming-edge regression: a definition that SURVIVED the re-parse lost
+	// most of the callers bound INTO it. The caller restricts the counts to
+	// surviving definitions, so a genuinely deleted symbol's lost callers do
+	// not read as a loss — which is why this arm is deliberately NOT gated on
+	// nodesAfter >= nodesBefore. An external revert removes the appended probe
+	// symbol (node count drops) yet the definition it leaves behind must keep
+	// its incoming resolved edges; their loss is a resolution failure, not a
+	// deletion, and without this arm the revert never self-heals the way the
+	// symmetric add does.
+	inRegressed := incomingBefore >= resolvedEdgeRegressionFloor &&
+		incomingAfter*2 < incomingBefore
+	if !outRegressed && !inRegressed {
 		return
-	}
-	if nodesAfter < nodesBefore {
-		return // symbols were removed — a real deletion, not a resolution loss
-	}
-	if resolvedAfter*2 >= resolvedBefore {
-		return // dropped <= 50%
 	}
 	RecordResolutionRegression()
 	if w.logger != nil {
@@ -1184,9 +1199,71 @@ func (w *Watcher) guardResolvedEdgeRegression(path string, nodesBefore, nodesAft
 			zap.Int("nodes_before", nodesBefore),
 			zap.Int("nodes_after", nodesAfter),
 			zap.Int("resolved_edges_before", resolvedBefore),
-			zap.Int("resolved_edges_after", resolvedAfter))
+			zap.Int("resolved_edges_after", resolvedAfter),
+			zap.Int("incoming_resolved_before", incomingBefore),
+			zap.Int("incoming_resolved_after", incomingAfter))
 	}
 	w.enqueueReresolve(path)
+}
+
+// resolvedIncomingByNode returns, per referenceable definition node in `nodes`,
+// the count of resolvable reference edges currently bound INTO it (callers,
+// type/field references, …). countResolvedFileEdges is out-edge-only and so is
+// structurally blind to a definition losing its incoming callers on a re-parse
+// — this is the signal that catches an external revert zeroing a surviving
+// symbol's usages.
+func (w *Watcher) resolvedIncomingByNode(nodes []*graph.Node) map[string]int {
+	if len(nodes) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		if n != nil && graph.IsReferenceableSymbol(n.Kind) {
+			ids = append(ids, n.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	byNode := make(map[string]int, len(ids))
+	for id, edges := range w.indexer.graph.GetInEdgesByNodeIDs(ids) {
+		c := 0
+		for _, e := range edges {
+			if e != nil && graph.IsResolvableRefEdge(e.Kind) {
+				c++
+			}
+		}
+		if c > 0 {
+			byNode[id] = c
+		}
+	}
+	return byNode
+}
+
+// incomingRegressionForSurvivors sums the incoming resolved-edge counts, before
+// and after the re-parse, over only the definitions that SURVIVED it (present
+// in both snapshots by node ID). Restricting to survivors keeps a genuinely
+// deleted symbol's lost callers from reading as a regression, so the guard's
+// incoming arm fires only when a symbol that is still defined lost the callers
+// bound into it. `before` is the resolvedIncomingByNode snapshot captured on
+// the pre-re-parse nodes; `after` is the file's fresh node set.
+func (w *Watcher) incomingRegressionForSurvivors(before map[string]int, after []*graph.Node) (sumBefore, sumAfter int) {
+	if len(before) == 0 || len(after) == 0 {
+		return 0, 0
+	}
+	afterByID := w.resolvedIncomingByNode(after)
+	for _, n := range after {
+		if n == nil {
+			continue
+		}
+		b, ok := before[n.ID]
+		if !ok {
+			continue
+		}
+		sumBefore += b
+		sumAfter += afterByID[n.ID]
+	}
+	return sumBefore, sumAfter
 }
 
 // enqueueReresolve batches shape-degraded files for a forced scoped re-resolve.

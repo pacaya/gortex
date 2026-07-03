@@ -1210,8 +1210,9 @@ func (r *Resolver) resolveIncomingLocked(filePath string, stats *ResolveStats) {
 			// so a rebind elsewhere / a still-unresolved stub carries only the
 			// honest tier the resolver just assigned. Runs before the job is
 			// captured so the cross-package guard below sees the real origin.
-			graph.RestoreRestubProvenance(e)
-			if changed {
+			restored := graph.RestoreRestubProvenance(e)
+			switch {
+			case changed:
 				reindexBatch = append(reindexBatch, graph.EdgeReindex{Edge: e, OldTo: oldTo})
 				jobs = append(jobs, reindexJob{
 					edge:       e,
@@ -1221,6 +1222,17 @@ func (r *Resolver) resolveIncomingLocked(filePath string, stats *ResolveStats) {
 					confidence: e.Confidence,
 					origin:     e.Origin,
 				})
+			case restored:
+				// The stub rebound to the SAME concrete target it already
+				// carried, so resolveEdge reported no To-change — but the
+				// restore mutated Origin/Tier/Confidence/Meta in place. A disk
+				// backend's GetInEdges handed us a freshly-decoded edge pointer,
+				// so that in-place mutation is lost unless it is written back.
+				// Re-index against the edge's own (unchanged) key to persist the
+				// restored provenance. Kept out of the cross-package guard's job
+				// list: its origin is the verified tier the restore re-applied,
+				// not a fresh name-only guess to second-guess.
+				reindexBatch = append(reindexBatch, graph.EdgeReindex{Edge: e, OldTo: e.To})
 			}
 		}
 	}

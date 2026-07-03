@@ -48,14 +48,19 @@ func StashRestubProvenance(e *Edge) {
 // keys (whether or not it restored). A rebind to a different target, or a stub
 // that never rebound, keeps the honest fresh tier the resolver assigned (or
 // none). No-op when there is nothing stashed.
-func RestoreRestubProvenance(e *Edge) {
+//
+// Returns true when it actually re-applied the stashed provenance — the caller
+// uses that to persist the in-place mutation, since a disk backend hands out
+// freshly-decoded edge pointers whose changes are lost unless written back.
+func RestoreRestubProvenance(e *Edge) bool {
 	if e == nil || e.Meta == nil {
-		return
+		return false
 	}
 	prevTo, ok := e.Meta[metaRestubPrevTo]
 	if !ok {
-		return
+		return false
 	}
+	restored := false
 	if to, isStr := prevTo.(string); isStr && to == e.To && !IsUnresolvedTarget(e.To) {
 		if o, ok := e.Meta[metaRestubPrevOrigin].(string); ok {
 			e.Origin = o
@@ -66,9 +71,11 @@ func RestoreRestubProvenance(e *Edge) {
 		if c, ok := e.Meta[metaRestubPrevConf].(float64); ok {
 			e.Confidence = c
 		}
+		restored = true
 	}
 	delete(e.Meta, metaRestubPrevTo)
 	delete(e.Meta, metaRestubPrevOrigin)
 	delete(e.Meta, metaRestubPrevTier)
 	delete(e.Meta, metaRestubPrevConf)
+	return restored
 }

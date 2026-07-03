@@ -50,7 +50,7 @@ func TestGuardResolvedEdgeRegression(t *testing.T) {
 
 	// Resolved edges more than halved, symbols intact, above the floor: fires.
 	before := ResolutionRegressions()
-	w.guardResolvedEdgeRegression("a.go", 5, 5, 10, 2)
+	w.guardResolvedEdgeRegression("a.go", 5, 5, 10, 2, 0, 0)
 	select {
 	case files := <-reresolved:
 		_, ok := files["a.go"]
@@ -62,9 +62,9 @@ func TestGuardResolvedEdgeRegression(t *testing.T) {
 
 	// None of the negatives may fire.
 	base := ResolutionRegressions()
-	w.guardResolvedEdgeRegression("below-floor.go", 5, 5, 3, 0) // resolvedBefore < floor
-	w.guardResolvedEdgeRegression("symbol-removed.go", 5, 3, 10, 2)
-	w.guardResolvedEdgeRegression("modest-drop.go", 5, 5, 10, 6) // dropped <= 50%
+	w.guardResolvedEdgeRegression("below-floor.go", 5, 5, 3, 0, 0, 0) // resolvedBefore < floor
+	w.guardResolvedEdgeRegression("symbol-removed.go", 5, 3, 10, 2, 0, 0)
+	w.guardResolvedEdgeRegression("modest-drop.go", 5, 5, 10, 6, 0, 0) // dropped <= 50%
 	select {
 	case f := <-reresolved:
 		t.Fatalf("a non-regression must not enqueue a re-resolve, got %v", f)
