@@ -20,12 +20,14 @@ const javaOverrideDispatchCap = 8
 // type is a base class stays unresolved (two candidate overrides, no exact
 // type match) and reports as a usage of neither override.
 //
-// The primary edge binds to the common base override; each derived override
-// gets a parallel edge. All land at the ast_inferred tier with
-// Meta["dispatch"]="override" — visible in default find_usages (recall parity
-// with the language server), not gated behind the speculative filter — and no
-// longer classify as ambiguous_multi_match. Scoped to Java so Go/TS/Python
-// dispatch presentation is unchanged.
+// Because the picked target set is a best guess over legal runtime targets that
+// no receiver type disambiguated, the edges land at the speculative tier
+// (OriginSpeculative + Meta["speculative"]): hidden from default find_usages so
+// they never inflate a code symbol's usage set, surfaced on demand with
+// include_speculative and via analyze kind=speculative, and marked
+// Meta["dispatch"]="override". Resolving the primary out of the
+// `unresolved::*` state also clears the ambiguous_multi_match classification.
+// Scoped to Java so Go/TS/Python dispatch presentation is unchanged.
 func (r *Resolver) resolveJavaOverrideDispatch() int {
 	g := r.graph
 	if g == nil {
@@ -58,22 +60,22 @@ func (r *Resolver) resolveJavaOverrideDispatch() int {
 		if len(cands) < 2 || len(cands) > javaOverrideDispatchCap {
 			continue
 		}
-		base, others := pickJavaOverrideBase(cands, ancestors)
-		if base == nil {
+		if !javaOverridesRelated(cands, ancestors) {
 			continue
 		}
-		jobs = append(jobs, fanout{edge: e, base: base, others: others})
+		jobs = append(jobs, fanout{edge: e, base: cands[0], others: cands[1:]})
 	}
 
 	n := 0
 	for _, j := range jobs {
 		oldTo := j.edge.To
 		j.edge.To = j.base.ID
-		j.edge.Origin = graph.OriginASTInferred
-		j.edge.Confidence = 0.5
+		j.edge.Origin = graph.OriginSpeculative
+		j.edge.Confidence = 0.3
 		if j.edge.Meta == nil {
 			j.edge.Meta = map[string]any{}
 		}
+		j.edge.Meta[graph.MetaSpeculative] = true
 		j.edge.Meta["dispatch"] = "override"
 		g.ReindexEdges([]graph.EdgeReindex{{Edge: j.edge, OldTo: oldTo}})
 		n++
@@ -81,8 +83,9 @@ func (r *Resolver) resolveJavaOverrideDispatch() int {
 			g.AddEdge(&graph.Edge{
 				From: j.edge.From, To: o.ID, Kind: graph.EdgeCalls,
 				FilePath: j.edge.FilePath, Line: j.edge.Line,
-				Origin: graph.OriginASTInferred, Confidence: 0.5,
-				Meta: map[string]any{"dispatch": "override"},
+				Origin:     graph.OriginSpeculative,
+				Confidence: 0.3,
+				Meta:       map[string]any{graph.MetaSpeculative: true, "dispatch": "override"},
 			})
 			n++
 		}
@@ -127,62 +130,84 @@ func javaOverrideCandidates(raw []*graph.Node) []*graph.Node {
 	return out
 }
 
-// pickJavaOverrideBase returns the candidate whose declaring type is an
-// ancestor-or-self of every other candidate's declaring type (the common base
-// the others override), plus the remaining candidates. Returns (nil, nil) when
-// the candidates are not a single override hierarchy — the precision gate that
-// keeps unrelated same-name methods from being sprayed together.
-func pickJavaOverrideBase(cands []*graph.Node, ancestors map[string]map[string]bool) (*graph.Node, []*graph.Node) {
-	for i, base := range cands {
-		rb := nodeReceiverType(base)
-		isBaseOfAll := true
-		for k, other := range cands {
-			if k == i {
-				continue
-			}
-			ro := nodeReceiverType(other)
-			if ro == rb {
-				continue
-			}
-			if anc := ancestors[ro]; anc == nil || !anc[rb] {
-				isBaseOfAll = false
-				break
+// javaOverridesRelated reports whether the candidate methods are overrides of a
+// common supertype: their declaring types share at least one common ancestor
+// (or one is an ancestor of another). This is the precision gate — same-name
+// methods on unrelated types (no shared ancestor) are never sprayed together,
+// while genuine overrides of a common base (two entities overriding
+// BaseEntity's toString) fan out to every override the way a language server's
+// call hierarchy attributes them.
+func javaOverridesRelated(cands []*graph.Node, ancestors map[string]map[string]bool) bool {
+	var common map[string]bool
+	for i, c := range cands {
+		rc := nodeReceiverType(c)
+		if rc == "" {
+			return false
+		}
+		// Ancestor-or-self set of this candidate's declaring type.
+		set := map[string]bool{rc: true}
+		for a := range ancestors[rc] {
+			set[a] = true
+		}
+		if i == 0 {
+			common = set
+			continue
+		}
+		for k := range common {
+			if !set[k] {
+				delete(common, k)
 			}
 		}
-		if isBaseOfAll {
-			others := make([]*graph.Node, 0, len(cands)-1)
-			for k, c := range cands {
-				if k != i {
-					others = append(others, c)
-				}
-			}
-			return base, others
+		if len(common) == 0 {
+			return false
 		}
 	}
-	return nil, nil
+	return len(common) > 0
 }
 
-// javaTypeAncestors builds, for each Java type/interface simple name, the
-// transitive set of its supertype simple names via extends/implements/composes
-// edges. Empty when the graph indexes no Java hierarchy.
+// javaBaseTypeName reduces a possibly package-qualified, generic type reference
+// to its simple class name (`model.Person<X>` → `Person`).
+func javaBaseTypeName(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '<'); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		s = s[i+1:]
+	}
+	return s
+}
+
+// javaTypeAncestors builds, for each Java type simple name, the transitive set
+// of its superclass simple names. The direct superclass is read from each type
+// node's scope_parent meta — the same source the scope resolver's super-method
+// walk uses — because regular Java `extends` is recorded there, not as a graph
+// EdgeExtends (only anonymous classes emit that). So a cross-package
+// inheritance chain (`owner.Owner extends model.Person extends model.BaseEntity`)
+// contributes to the hierarchy even though its supertype references never
+// resolved to a type node. Empty when the graph indexes no Java hierarchy.
 func javaTypeAncestors(g graph.Store) map[string]map[string]bool {
-	// Direct parent map by simple name.
 	direct := map[string]map[string]bool{}
-	for _, row := range structuralParentEdges(g) {
-		from := g.GetNode(row.FromID)
-		to := g.GetNode(row.ToID)
-		if from == nil || to == nil || from.Language != "java" || to.Language != "java" {
-			continue
+	add := func(childName, parentName string) {
+		if childName == "" || parentName == "" || childName == parentName {
+			return
 		}
-		if from.Name == "" || to.Name == "" || from.Name == to.Name {
-			continue
-		}
-		set := direct[from.Name]
+		set := direct[childName]
 		if set == nil {
 			set = map[string]bool{}
-			direct[from.Name] = set
+			direct[childName] = set
 		}
-		set[to.Name] = true
+		set[parentName] = true
+	}
+	for _, kind := range []graph.NodeKind{graph.KindType, graph.KindInterface} {
+		for n := range g.NodesByKind(kind) {
+			if n == nil || n.Language != "java" || n.Name == "" || n.Meta == nil {
+				continue
+			}
+			if p, ok := n.Meta[MetaScopeParentClass].(string); ok {
+				add(n.Name, javaBaseTypeName(p))
+			}
+		}
 	}
 	if len(direct) == 0 {
 		return nil

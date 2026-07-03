@@ -7,10 +7,10 @@ import (
 	"github.com/zzet/gortex/internal/graph"
 )
 
-// An ambiguous member call whose same-name candidates are overrides related
-// through the class hierarchy fans out to every override (the base and its
-// derived overrides), matching the language server's call-hierarchy semantics.
-// Unrelated same-name methods are left ambiguous.
+// An ambiguous member call whose same-name candidates are overrides sharing a
+// common supertype fans out to every override at the speculative tier, matching
+// the language server's call-hierarchy semantics. Unrelated same-name methods
+// are left ambiguous.
 func TestResolveJavaOverrideDispatch(t *testing.T) {
 	g := graph.New()
 	baseF := "src/main/java/org/example/model/NamedEntity.java"
@@ -21,14 +21,16 @@ func TestResolveJavaOverrideDispatch(t *testing.T) {
 	for _, f := range []string{baseF, ownerF, sysF, widgetF} {
 		g.AddNode(&graph.Node{ID: f, Kind: graph.KindFile, Name: f, FilePath: f, Language: "java"})
 	}
-	// Hierarchy: Owner extends NamedEntity.
-	g.AddNode(&graph.Node{ID: baseF + "::NamedEntity", Kind: graph.KindType, Name: "NamedEntity", FilePath: baseF, Language: "java"})
-	g.AddNode(&graph.Node{ID: ownerF + "::Owner", Kind: graph.KindType, Name: "Owner", FilePath: ownerF, Language: "java"})
-	g.AddEdge(&graph.Edge{From: ownerF + "::Owner", To: baseF + "::NamedEntity", Kind: graph.EdgeExtends})
+	// Hierarchy recorded via scope_parent (how the Java extractor records a
+	// superclass — regular `extends` is not a graph EdgeExtends): both Owner
+	// and NamedEntity extend BaseEntity, so they share it as a common ancestor.
+	g.AddNode(&graph.Node{ID: baseF + "::NamedEntity", Kind: graph.KindType, Name: "NamedEntity", FilePath: baseF, Language: "java", Meta: map[string]any{"scope_parent": "BaseEntity"}})
+	g.AddNode(&graph.Node{ID: ownerF + "::Owner", Kind: graph.KindType, Name: "Owner", FilePath: ownerF, Language: "java", Meta: map[string]any{"scope_parent": "Person"}})
+	g.AddNode(&graph.Node{ID: ownerF + "::Person", Kind: graph.KindType, Name: "Person", FilePath: ownerF, Language: "java", Meta: map[string]any{"scope_parent": "BaseEntity"}})
 	// Both override toString.
 	g.AddNode(&graph.Node{ID: baseF + "::NamedEntity.toString", Kind: graph.KindMethod, Name: "toString", FilePath: baseF, Language: "java", Meta: map[string]any{"receiver": "NamedEntity"}})
 	g.AddNode(&graph.Node{ID: ownerF + "::Owner.toString", Kind: graph.KindMethod, Name: "toString", FilePath: ownerF, Language: "java", Meta: map[string]any{"receiver": "Owner"}})
-	// An unrelated Widget.toString in a separate hierarchy — must NOT join.
+	// An unrelated Widget.render in a separate hierarchy — must NOT join.
 	g.AddNode(&graph.Node{ID: widgetF + "::Widget", Kind: graph.KindType, Name: "Widget", FilePath: widgetF, Language: "java"})
 	g.AddNode(&graph.Node{ID: widgetF + "::Widget.render", Kind: graph.KindMethod, Name: "render", FilePath: widgetF, Language: "java", Meta: map[string]any{"receiver": "Widget"}})
 
@@ -43,17 +45,19 @@ func TestResolveJavaOverrideDispatch(t *testing.T) {
 	r := New(g)
 	r.ResolveAll()
 
-	// Every override receives the call at both sites, at the override tier.
+	// Every override receives the call at both sites, at the speculative
+	// override tier (present in the graph, gated out of default responses).
 	for _, target := range []string{baseF + "::NamedEntity.toString", ownerF + "::Owner.toString"} {
-		lines := map[int]string{}
+		got := map[int]bool{}
 		for _, in := range g.GetInEdges(target) {
 			if in.Kind == graph.EdgeCalls && in.From == caller {
-				d, _ := in.Meta["dispatch"].(string)
-				lines[in.Line] = d
+				assert.Equal(t, "override", in.Meta["dispatch"], "fan-out edge must be marked dispatch=override")
+				assert.True(t, in.IsSpeculative(), "override fan-out edge must land at the speculative tier")
+				got[in.Line] = true
 			}
 		}
-		assert.Equal(t, "override", lines[125], "toString override %s must receive call site 125 at the override tier", target)
-		assert.Equal(t, "override", lines[127], "toString override %s must receive call site 127", target)
+		assert.True(t, got[125], "toString override %s must receive call site 125", target)
+		assert.True(t, got[127], "toString override %s must receive call site 127", target)
 	}
 
 	// No `unresolved::*.toString` edge remains — the ambiguity is resolved.
