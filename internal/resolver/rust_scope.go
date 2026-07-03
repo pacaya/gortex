@@ -231,6 +231,9 @@ func rustScopeEdgeCandidate(e *graph.Edge) bool {
 	if rt, _ := e.Meta["receiver_type"].(string); rt != "" {
 		return true
 	}
+	if ex, _ := e.Meta["rust_recv_expr"].(string); strings.HasPrefix(ex, "self.") {
+		return true
+	}
 	return false
 }
 
@@ -246,6 +249,9 @@ type rustScopeIndex struct {
 	// paramsByOwner: caller function/method ID → set of param names,
 	// for local-shadows-import precedence.
 	paramsByOwner map[string]map[string]struct{}
+	// fieldTypesByOwner: (repo, ownerType, fieldName) → declared field type
+	// (base name), for walking self.<field>.<field> receiver chains.
+	fieldTypesByOwner map[rustFieldKey]string
 
 	lastOrigin     string
 	lastConfidence float64
@@ -262,15 +268,22 @@ type rustNameKey struct {
 	name string
 }
 
+type rustFieldKey struct {
+	repo  string
+	owner string
+	field string
+}
+
 // buildRustScopeIndex walks the graph once and indexes Rust method
 // owners, free functions, and caller params. Returns nil when the graph
 // has no Rust methods or functions (the pass is a no-op for non-Rust
 // graphs).
 func buildRustScopeIndex(g graph.Store) *rustScopeIndex {
 	idx := &rustScopeIndex{
-		methodsByOwner:  map[rustOwnerKey][]*graph.Node{},
-		freeFuncsByName: map[rustNameKey][]*graph.Node{},
-		paramsByOwner:   map[string]map[string]struct{}{},
+		methodsByOwner:    map[rustOwnerKey][]*graph.Node{},
+		freeFuncsByName:   map[rustNameKey][]*graph.Node{},
+		paramsByOwner:     map[string]map[string]struct{}{},
+		fieldTypesByOwner: map[rustFieldKey]string{},
 	}
 	any := false
 	for n := range g.NodesByKind(graph.KindMethod) {
@@ -320,6 +333,23 @@ func buildRustScopeIndex(g graph.Store) *rustScopeIndex {
 		}
 		set[n.Name] = struct{}{}
 	}
+	// Struct fields carry their declared type + owner in Meta, indexed by
+	// generics-stripped base names so a self.<field> chain can be walked.
+	for n := range g.NodesByKind(graph.KindField) {
+		if n == nil || n.Language != "rust" {
+			continue
+		}
+		owner, _ := n.Meta["receiver"].(string)
+		ft, _ := n.Meta["field_type"].(string)
+		if owner == "" || ft == "" {
+			continue
+		}
+		idx.fieldTypesByOwner[rustFieldKey{
+			repo:  n.RepoPrefix,
+			owner: rustBaseTypeName(owner),
+			field: n.Name,
+		}] = rustBaseTypeName(ft)
+	}
 	return idx
 }
 
@@ -347,6 +377,21 @@ func (idx *rustScopeIndex) resolve(e *graph.Edge, caller *graph.Node) string {
 			return id
 		}
 		return ""
+	}
+
+	// Selector call on a self-rooted field-access receiver
+	// (`self.config.line_term.as_byte()`). Walk the field types from the
+	// enclosing impl type down the chain, then bind the method on the type
+	// the chain lands on.
+	if expr, _ := e.Meta["rust_recv_expr"].(string); strings.HasPrefix(expr, "self.") {
+		if name := selectorCallName(e.To); name != "" {
+			if t := idx.fieldWalk(repo, nodeReceiverType(caller), expr); t != "" {
+				if id := idx.uniqueMethod(repo, t, name); id != "" {
+					idx.set(graph.OriginASTResolved, 0.82, "field_receiver")
+					return id
+				}
+			}
+		}
 	}
 
 	// Selector call on a typed variable/param (`mat.buffer()` where
@@ -507,6 +552,30 @@ func (idx *rustScopeIndex) methodBySameCrate(repo, owner, name, callerFile strin
 		hit = m.ID
 	}
 	return hit
+}
+
+// fieldWalk resolves the type a self-rooted field-access receiver lands on.
+// Given the enclosing impl type (`Searcher`) and a receiver expression
+// (`self.config.line_term`), it walks each field via the field-type index —
+// Searcher.config -> Config, Config.line_term -> LineTerminator — and
+// returns the final type, or "" if any hop is unknown or ambiguous.
+func (idx *rustScopeIndex) fieldWalk(repo, implType, expr string) string {
+	t := rustBaseTypeName(implType)
+	if t == "" {
+		return ""
+	}
+	fields := strings.Split(strings.TrimPrefix(expr, "self."), ".")
+	for _, f := range fields {
+		if f == "" {
+			return ""
+		}
+		next := idx.fieldTypesByOwner[rustFieldKey{repo: repo, owner: t, field: f}]
+		if next == "" {
+			return ""
+		}
+		t = next
+	}
+	return t
 }
 
 // rustCrateOf returns a stable identifier for the crate a Rust source file

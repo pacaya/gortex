@@ -350,6 +350,16 @@ func (e *RustExtractor) Extract(filePath string, src []byte) (*parser.Extraction
 					edge.Meta = map[string]any{}
 				}
 				edge.Meta["rust_recv"] = c.receiver
+			} else if _, hasType := edge.Meta["receiver_type"]; !hasType &&
+				strings.HasPrefix(c.receiver, "self.") && !strings.ContainsAny(c.receiver, "()[]") {
+				// A field-access receiver rooted at self (self.config.line_term
+				// .method()). Its type can't be read from a single param/local,
+				// but the scope resolver can walk the struct field types from the
+				// enclosing impl type. Record the chain so it can.
+				if edge.Meta == nil {
+					edge.Meta = map[string]any{}
+				}
+				edge.Meta["rust_recv_expr"] = c.receiver
 			}
 			stampReturnUsage(edge, c.returnUsage)
 			result.Edges = append(result.Edges, edge)
