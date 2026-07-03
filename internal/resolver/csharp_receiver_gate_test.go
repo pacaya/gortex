@@ -162,3 +162,40 @@ func TestReceiverGate_PreservesInheritedCall(t *testing.T) {
 	assert.Equal(t, 0, n, "an inherited (related-type) call must not be demoted")
 	assert.False(t, edge.IsSpeculative())
 }
+
+// TestReceiverGate_PreservesCallThroughIncompleteHierarchy: a receiver whose
+// base/interface is defined outside the indexed set (another assembly) has an
+// unresolved supertype edge, so its hierarchy is only partially known. A call
+// that locality-binds to a same-named method on an unrelated indexed type must
+// NOT be demoted — the real target may live on the unindexed supertype. Without
+// the hierarchy-completeness guard this legitimate polymorphic call is trimmed.
+func TestReceiverGate_PreservesCallThroughIncompleteHierarchy(t *testing.T) {
+	g := buildCSharpResolverGraph(t, map[string]string{
+		"Shape.cs": `namespace App {
+    public class Shape {
+        public void Draw() {}
+    }
+}`,
+		"Widget.cs": `namespace App {
+    public class Widget : IExternalDrawable {
+        public void Render() {
+            Widget w = new Widget();
+            w.Draw();
+        }
+    }
+}`,
+	})
+	New(g).ResolveAll()
+
+	edge := findCallEdge(g, "Widget.cs::Widget.Render", "Shape.cs::Shape.Draw")
+	require.NotNil(t, edge, "w.Draw() locality-binds to the only indexed Draw")
+	require.Equal(t, "Widget", edge.Meta["receiver_type"])
+	require.False(t, edge.IsSpeculative())
+
+	n := demoteCSharpMisattributedMemberCalls(g)
+	assert.Equal(t, 0, n, "a call through an incompletely-indexed hierarchy must not be demoted")
+	edge = findCallEdge(g, "Widget.cs::Widget.Render", "Shape.cs::Shape.Draw")
+	require.NotNil(t, edge)
+	assert.False(t, edge.IsSpeculative(),
+		"a possibly-legitimate polymorphic call through an unindexed supertype stays visible")
+}

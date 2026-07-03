@@ -46,9 +46,20 @@ func demoteCSharpMisattributedMemberCalls(g graph.Store) int {
 		return 0
 	}
 	up := map[string][]string{}
+	// incompleteHier[name] marks a C# type that declares a base or interface the
+	// index could not resolve (an external assembly, a generic type parameter) —
+	// its hierarchy is only partially known, so an "unrelated to the target"
+	// verdict for a receiver of that type is unreliable.
+	incompleteHier := map[string]bool{}
 	for _, k := range []graph.EdgeKind{graph.EdgeExtends, graph.EdgeImplements} {
 		for e := range g.EdgesByKind(k) {
-			if e == nil || e.From == "" || graph.IsUnresolvedTarget(e.To) {
+			if e == nil || e.From == "" {
+				continue
+			}
+			if graph.IsUnresolvedTarget(e.To) {
+				if from := g.GetNode(e.From); from != nil && from.Language == "csharp" && from.Name != "" {
+					incompleteHier[from.Name] = true
+				}
 				continue
 			}
 			up[e.From] = append(up[e.From], e.To)
@@ -66,7 +77,7 @@ func demoteCSharpMisattributedMemberCalls(g graph.Store) int {
 	demote := map[string]bool{}
 	affected := map[string]bool{}
 	for e := range g.EdgesByKind(graph.EdgeCalls) {
-		if !csharpShouldDemote(g, e, nameToTypeIDs, up) {
+		if !csharpShouldDemote(g, e, nameToTypeIDs, up, incompleteHier) {
 			continue
 		}
 		demote[edgeKey(e)] = true
@@ -111,7 +122,7 @@ func demoteCSharpMisattributedMemberCalls(g graph.Store) int {
 
 // csharpShouldDemote reports whether a resolved C# member-call edge is a
 // same-named-unrelated-type misattribution that should be demoted.
-func csharpShouldDemote(g graph.Store, e *graph.Edge, nameToTypeIDs, up map[string][]string) bool {
+func csharpShouldDemote(g graph.Store, e *graph.Edge, nameToTypeIDs, up map[string][]string, incompleteHier map[string]bool) bool {
 	if e == nil || e.Meta == nil || e.IsSpeculative() || graph.IsUnresolvedTarget(e.To) {
 		return false
 	}
@@ -155,6 +166,14 @@ func csharpShouldDemote(g graph.Store, e *graph.Edge, nameToTypeIDs, up map[stri
 	// cannot establish that the mismatch is a genuinely unrelated-type
 	// misattribution, and keeping the edge avoids a false negative.
 	if len(nameToTypeIDs[rt]) == 0 || len(nameToTypeIDs[tr]) == 0 {
+		return false
+	}
+	// A receiver whose own hierarchy is incompletely indexed may reach the
+	// target through the unindexed base/interface, so the "unrelated" verdict is
+	// unreliable — keep rather than demote a possibly-legitimate polymorphic
+	// call. This is the same conservatism as the both-endpoints-known guard
+	// above, extended to hierarchy completeness.
+	if incompleteHier[rt] {
 		return false
 	}
 	// A related receiver (the target lives on a base type / interface the
