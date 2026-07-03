@@ -327,6 +327,10 @@ type FrameworkSynthReport struct {
 	// cross-language-family gate (coincidental PascalCase collisions across
 	// two known, different families; bridge synthesizers are exempt).
 	Gated int `json:"gated_cross_family,omitempty"`
+	// ReceiverGated counts C# member-call edges demoted to the speculative
+	// tier because they attach to a same-named member of a type unrelated to
+	// the edge's receiver_type.
+	ReceiverGated int `json:"receiver_type_gated,omitempty"`
 }
 
 // RunFrameworkSynthesizers runs every registered framework synthesizer
@@ -356,6 +360,9 @@ func RunFrameworkSynthesizers(g graph.Store) FrameworkSynthReport {
 		rep.Per = append(rep.Per, SynthCount{Name: r.Name(), Edges: n})
 		rep.Total += n
 	}
+	// Receiver-type gate runs last: it corrects (demotes) already-bound C#
+	// member calls, so it must see the settled call graph.
+	rep.ReceiverGated = demoteCSharpMisattributedMemberCalls(g)
 	return rep
 }
 
