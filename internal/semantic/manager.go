@@ -865,6 +865,16 @@ func (m *Manager) HasProviders() bool {
 	return false
 }
 
+// EnrichesOnWatch reports whether a single-file watch save re-runs semantic
+// enrichment for the saved file (EnrichFile is a no-op otherwise). When this
+// is false but providers exist, a live re-parse leaves the file's edges at
+// their pre-enrichment tier until the next full enrichment — the window the
+// indexer records so find_usages can flag suppressed usages as re-verification
+// pending.
+func (m *Manager) EnrichesOnWatch() bool {
+	return m.config.Enabled && m.config.EnrichOnWatch
+}
+
 // AllProviders returns the unfiltered list of registered providers.
 // Used by the daemon's LSP-action surface to find the right LSP
 // provider for a file (call sites need the *lsp.Provider concrete

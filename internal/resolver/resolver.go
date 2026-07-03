@@ -1760,13 +1760,34 @@ func (r *Resolver) resolveFunctionCall(e *graph.Edge, funcName string, stats *Re
 	// caller's own helper should receive — zustand's persistSync tests
 	// bound to persistAsync's `createStore` helper purely by candidate
 	// iteration order.
+	var sameFile *graph.Node
+	sameFileCount := 0
 	for _, c := range candidates {
 		if (c.Kind == graph.KindFunction || c.Kind == graph.KindMethod) &&
 			c.FilePath != "" && c.FilePath == e.FilePath {
-			e.To = c.ID
-			stats.Resolved++
-			return
+			if sameFile == nil {
+				sameFile = c
+			}
+			sameFileCount++
 		}
+	}
+	if sameFile != nil {
+		e.To = sameFile.ID
+		// A bare-name call to the sole same-file definition is structurally
+		// unambiguous — grammar-grounded, no type system needed — so stamp it
+		// ast_resolved rather than leaving it to backfill to the name-only
+		// tier that find_usages suppresses by default. This is what keeps a
+		// freshly-added same-file call site (the common edit) visible instead
+		// of silently hidden. Two same-name same-file definitions (a func and
+		// a method sharing a name) stay untagged so suppression can still drop
+		// the ambiguous pick. Only genuine call edges are promoted; bare-value
+		// reads (cobra RunE wire-ups) keep the heuristic tier.
+		if sameFileCount == 1 && e.Kind == graph.EdgeCalls && e.Origin == "" {
+			e.Origin = graph.OriginASTResolved
+			e.Confidence = 0.9
+		}
+		stats.Resolved++
+		return
 	}
 
 	// Import-evidence disambiguation (JS/TS only; see import_evidence.go
@@ -1792,15 +1813,34 @@ func (r *Resolver) resolveFunctionCall(e *graph.Edge, funcName string, stats *Re
 		return
 	}
 
-	// Prefer same-package (same directory) match.
+	// Prefer same-package (same directory) match. When exactly one
+	// same-package function/method carries this name, a bare-name call to the
+	// sole same-package definition is structurally unambiguous, so stamp it
+	// ast_resolved (same rationale as the same-file pick above). Multiple
+	// same-name same-package candidates stay untagged so redundant-text
+	// suppression can still drop them. Method-name fan-out (x.Get()) never
+	// reaches here — it resolves in resolveMethodCall and stays text_matched,
+	// preserving that precision guard.
 	callerDir := r.dirFor(e.FilePath)
+	var samePkg *graph.Node
+	samePkgCount := 0
 	for _, c := range candidates {
 		if (c.Kind == graph.KindFunction || c.Kind == graph.KindMethod) &&
 			r.dirFor(c.FilePath) == callerDir {
-			e.To = c.ID
-			stats.Resolved++
-			return
+			if samePkg == nil {
+				samePkg = c
+			}
+			samePkgCount++
 		}
+	}
+	if samePkg != nil {
+		e.To = samePkg.ID
+		if samePkgCount == 1 && e.Kind == graph.EdgeCalls && e.Origin == "" {
+			e.Origin = graph.OriginASTResolved
+			e.Confidence = 0.9
+		}
+		stats.Resolved++
+		return
 	}
 
 	// Fall back to the first same-repo function/method match.

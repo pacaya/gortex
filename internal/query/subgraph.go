@@ -22,6 +22,16 @@ type SubGraph struct {
 	// Zero — and omitted — when nothing was suppressed. Re-run with
 	// min_tier:"text_matched" to include the hidden rows.
 	TextMatchedSuppressed int `json:"text_matched_suppressed,omitempty"`
+	// SuppressionCaveat is attached by the adaptive text_matched default
+	// (find_usages / get_callers) when TextMatchedSuppressed > 0 AND the
+	// target's file was re-parsed on the live watch path without re-running
+	// semantic enrichment — so the resolver-verified edges that triggered
+	// suppression may be below the tier the enrichment pass would mint, and
+	// the hidden name-only usages could be the real ones. Empty (omitted)
+	// otherwise. Independent of Caveat, which only fires for a zero-edge
+	// result — and since suppression only runs when a stronger edge exists,
+	// the two never coexist.
+	SuppressionCaveat string `json:"suppression_caveat,omitempty"`
 	// Caveat is attached only when an edge-returning query (find_usages,
 	// get_callers) comes back with no edges, classifying whether the
 	// empty result reflects genuinely unused code or an extraction gap.

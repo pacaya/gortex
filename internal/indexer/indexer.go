@@ -3342,13 +3342,25 @@ func (idx *Indexer) indexFile(filePath string, resolve bool) error {
 			// LSP / compiler provider) instead of leaving the file's edges at
 			// their pre-enrichment tier until the next full reindex. Gated
 			// internally on Config.EnrichOnWatch; a no-op when disabled.
-			if idx.semanticMgr != nil && idx.semanticMgr.Enabled() && idx.semanticMgr.HasProviders() {
+			providersPresent := idx.semanticMgr != nil && idx.semanticMgr.Enabled() && idx.semanticMgr.HasProviders()
+			reEnriched := false
+			if providersPresent {
 				if _, err := idx.semanticMgr.EnrichFile(idx.graph, idx.rootPath, graphPath); err != nil {
 					idx.logger.Debug("indexer: incremental semantic enrichment failed",
 						zap.String("file", graphPath),
 						zap.Error(err))
+				} else {
+					reEnriched = idx.semanticMgr.EnrichesOnWatch()
 				}
 			}
+			// Record whether this live re-parse left the file below the
+			// enrichment tier: providers exist (so there IS an lsp/ast tier to
+			// fall short of) but the save did not re-run enrichment. When set,
+			// find_usages / get_callers flag their default text_matched
+			// suppression as re-verification-pending so a hidden-but-real usage
+			// is diagnosable rather than silently dropped. Cleared when
+			// enrichment did re-run for the file.
+			idx.setReparsePendingEnrichment(graphPath, providersPresent && !reEnriched)
 		}
 	}
 

@@ -179,3 +179,33 @@ func TestIncrementalReuse_SameFileEdge_KeepsTier(t *testing.T) {
 	assert.Equal(t, graph.ResolvedBy(graph.OriginLSPResolved), after.Tier,
 		"same-file edge must keep its lsp tier across the re-parse (F1)")
 }
+
+// TestSetReparsePendingEnrichment_SetAndClear covers the F2.2 file-node marker
+// the MCP find_usages rider reads: it sets the marker on the KindFile node and
+// clears it, and is a no-op when the marker is already in the desired state.
+func TestSetReparsePendingEnrichment_SetAndClear(t *testing.T) {
+	g := graph.New()
+	g.AddNode(&graph.Node{ID: "a.go", Kind: graph.KindFile, Name: "a.go", FilePath: "a.go"})
+	idx := New(g, newTestRegistry(), config.IndexConfig{Workers: 1}, zap.NewNop())
+
+	fileMeta := func() map[string]any {
+		for _, n := range g.GetFileNodes("a.go") {
+			if n.Kind == graph.KindFile {
+				return n.Meta
+			}
+		}
+		t.Fatalf("file node a.go not found")
+		return nil
+	}
+
+	_, had := fileMeta()[graph.MetaReparsePendingEnrichment]
+	require.False(t, had, "marker absent on a freshly-added file node")
+
+	idx.setReparsePendingEnrichment("a.go", true)
+	_, had = fileMeta()[graph.MetaReparsePendingEnrichment]
+	assert.True(t, had, "marker must be set when the live re-parse skipped enrichment")
+
+	idx.setReparsePendingEnrichment("a.go", false)
+	_, had = fileMeta()[graph.MetaReparsePendingEnrichment]
+	assert.False(t, had, "marker must be cleared when enrichment re-ran")
+}

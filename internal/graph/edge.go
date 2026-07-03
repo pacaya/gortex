@@ -700,6 +700,14 @@ const (
 // edge-returning surface drops these unless the caller opts in.
 const MetaSpeculative = "speculative"
 
+// MetaReparsePendingEnrichment is a KindFile-node Meta key (not an edge key)
+// set by the indexer when a live watch re-parse resolved the file's references
+// without re-running semantic enrichment — so the file's edges may sit below
+// the tier the enrichment pass would mint. find_usages / get_callers read it
+// to flag their default text_matched suppression as re-verification-pending,
+// making a hidden-but-real usage diagnosable instead of silently dropped.
+const MetaReparsePendingEnrichment = "reparse_pending_enrichment"
+
 // OriginRank returns a numeric rank for origin comparison. Higher = more
 // confident. Unknown or empty origin returns 0 so it sorts below all known
 // tiers; filters treat it as "untagged" and fall back to legacy inference.

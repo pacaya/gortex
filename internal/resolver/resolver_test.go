@@ -24,6 +24,52 @@ func TestResolveAll_InternalCall(t *testing.T) {
 
 	assert.Equal(t, 1, stats.Resolved)
 	assert.Equal(t, "pkg/b.go::Bar", callEdge.To)
+	// A unique same-package bare-name call is structurally unambiguous, so it
+	// is stamped ast_resolved — not left to backfill to the name-only tier
+	// that find_usages suppresses by default.
+	assert.Equal(t, graph.OriginASTResolved, callEdge.Origin,
+		"a unique same-package bare-name call must be ast_resolved, not text_matched")
+}
+
+// TestResolveFunctionCall_UniqueBareCallTier is the F2.1 regression: a
+// bare-name call to the sole same-file or same-package definition is
+// grammar-grounded and structurally unambiguous, so it must be stamped
+// ast_resolved (above the name-only tier find_usages suppresses by default).
+// Ambiguous picks and non-call edges stay untagged so suppression can still
+// drop them.
+func TestResolveFunctionCall_UniqueBareCallTier(t *testing.T) {
+	t.Run("same-file unique call is ast_resolved", func(t *testing.T) {
+		g := graph.New()
+		g.AddNode(&graph.Node{ID: "pkg/a.go", Kind: graph.KindFile, Name: "a.go", FilePath: "pkg/a.go", Language: "go"})
+		g.AddNode(&graph.Node{ID: "pkg/a.go::Foo", Kind: graph.KindFunction, Name: "Foo", FilePath: "pkg/a.go", Language: "go"})
+		g.AddNode(&graph.Node{ID: "pkg/a.go::Baz", Kind: graph.KindFunction, Name: "Baz", FilePath: "pkg/a.go", Language: "go"})
+		e := &graph.Edge{From: "pkg/a.go::Baz", To: "unresolved::Foo", Kind: graph.EdgeCalls, FilePath: "pkg/a.go", Line: 3}
+		g.AddEdge(e)
+
+		New(g).ResolveAll()
+
+		assert.Equal(t, "pkg/a.go::Foo", e.To, "same-file call must resolve to Foo")
+		assert.Equal(t, graph.OriginASTResolved, e.Origin, "unique same-file call must be ast_resolved")
+	})
+
+	t.Run("ambiguous same-package pick stays untagged", func(t *testing.T) {
+		g := graph.New()
+		g.AddNode(&graph.Node{ID: "pkg/a.go", Kind: graph.KindFile, Name: "a.go", FilePath: "pkg/a.go", Language: "go"})
+		g.AddNode(&graph.Node{ID: "pkg/b.go", Kind: graph.KindFile, Name: "b.go", FilePath: "pkg/b.go", Language: "go"})
+		g.AddNode(&graph.Node{ID: "pkg/c.go", Kind: graph.KindFile, Name: "c.go", FilePath: "pkg/c.go", Language: "go"})
+		// Two same-package definitions carry the name Foo (a function and a
+		// method) — enough to make the bare-name pick ambiguous.
+		g.AddNode(&graph.Node{ID: "pkg/a.go::Foo", Kind: graph.KindFunction, Name: "Foo", FilePath: "pkg/a.go", Language: "go"})
+		g.AddNode(&graph.Node{ID: "pkg/b.go::T.Foo", Kind: graph.KindMethod, Name: "Foo", FilePath: "pkg/b.go", Language: "go"})
+		g.AddNode(&graph.Node{ID: "pkg/c.go::Caller", Kind: graph.KindFunction, Name: "Caller", FilePath: "pkg/c.go", Language: "go"})
+		e := &graph.Edge{From: "pkg/c.go::Caller", To: "unresolved::Foo", Kind: graph.EdgeCalls, FilePath: "pkg/c.go", Line: 3}
+		g.AddEdge(e)
+
+		New(g).ResolveAll()
+
+		assert.Equal(t, "", e.Origin,
+			"an ambiguous same-package pick must stay untagged so suppression can drop it")
+	})
 }
 
 func TestResolveAll_ExternalImport(t *testing.T) {

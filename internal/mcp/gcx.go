@@ -394,6 +394,9 @@ func encodeFindUsages(sg *query.SubGraph, g graph.Store) ([]byte, error) {
 	if sg.TextMatchedSuppressed > 0 {
 		meta = append(meta, "text_matched_suppressed", fmt.Sprintf("%d", sg.TextMatchedSuppressed))
 	}
+	if sg.SuppressionCaveat != "" {
+		meta = append(meta, "suppression_caveat", sg.SuppressionCaveat)
+	}
 	enc := newGCX(&buf, "find_usages",
 		[]string{"from", "to", "edge_kind", "context", "return_usage", "origin", "tier", "confidence", "from_name", "from_path", "from_line", "from_is_test", "from_test_role", "from_test_runner", "from_type_flavor", "from_ui_component"},
 		meta...,
@@ -483,6 +486,9 @@ func encodeSubGraph(tool string, sg *query.SubGraph) ([]byte, error) {
 	edgeMeta = append(edgeMeta, zeroEdgeCaveatMeta(sg.Caveat)...)
 	if sg.TextMatchedSuppressed > 0 {
 		edgeMeta = append(edgeMeta, "text_matched_suppressed", fmt.Sprintf("%d", sg.TextMatchedSuppressed))
+	}
+	if sg.SuppressionCaveat != "" {
+		edgeMeta = append(edgeMeta, "suppression_caveat", sg.SuppressionCaveat)
 	}
 	edgeEnc := newGCX(&buf, tool+".edges",
 		// line + file_path on the edge let the caller distinguish two

@@ -32,7 +32,9 @@ const minTierParamDescription = "Filter edges by minimum confidence tier. " +
 	"text_matched (name-only). When omitted, text_matched edges are " +
 	"auto-suppressed whenever resolver-verified evidence exists — the " +
 	"response then carries text_matched_suppressed with the hidden count; " +
-	"pass min_tier:\"text_matched\" to include them. " +
+	"pass min_tier:\"text_matched\" to include them. If the target's file was " +
+	"re-parsed after the last enrichment pass, the response also carries " +
+	"suppression_caveat warning the hidden rows may be real. " +
 	"Use lsp_resolved for high-stakes refactors where false positives are expensive."
 
 const includeSpeculativeParamDescription = "Include best-guess speculative " +
@@ -108,12 +110,14 @@ type toonCallerNoteRow struct {
 
 // toonSubGraphResult wraps nodes and edges for TOON tabular output.
 type toonSubGraphResult struct {
-	Nodes       []toonNodeRow         `toon:"nodes"`
-	Edges       []toonEdgeRow         `toon:"edges"`
-	Total       int                   `toon:"total"`
-	Truncated   bool                  `toon:"truncated"`
-	Caveat      *graph.ZeroEdgeCaveat `toon:"caveat,omitempty"`
-	CallerNotes []toonCallerNoteRow   `toon:"caller_notes,omitempty"`
+	Nodes                 []toonNodeRow         `toon:"nodes"`
+	Edges                 []toonEdgeRow         `toon:"edges"`
+	Total                 int                   `toon:"total"`
+	Truncated             bool                  `toon:"truncated"`
+	Caveat                *graph.ZeroEdgeCaveat `toon:"caveat,omitempty"`
+	TextMatchedSuppressed int                   `toon:"text_matched_suppressed,omitempty"`
+	SuppressionCaveat     string                `toon:"suppression_caveat,omitempty"`
+	CallerNotes           []toonCallerNoteRow   `toon:"caller_notes,omitempty"`
 }
 
 // toonSearchResult wraps search results for TOON tabular output.
@@ -330,12 +334,14 @@ func subGraphToTOON(sg *query.SubGraph) (*mcp.CallToolResult, error) {
 		})
 	}
 	result := toonSubGraphResult{
-		Nodes:       nodesToTOONRows(sg.Nodes),
-		Edges:       edgeRows,
-		Total:       sg.TotalNodes,
-		Truncated:   sg.Truncated,
-		Caveat:      sg.Caveat,
-		CallerNotes: callerNotesToTOONRows(sg.CallerNotes),
+		Nodes:                 nodesToTOONRows(sg.Nodes),
+		Edges:                 edgeRows,
+		Total:                 sg.TotalNodes,
+		Truncated:             sg.Truncated,
+		Caveat:                sg.Caveat,
+		TextMatchedSuppressed: sg.TextMatchedSuppressed,
+		SuppressionCaveat:     sg.SuppressionCaveat,
+		CallerNotes:           callerNotesToTOONRows(sg.CallerNotes),
 	}
 	data, err := toon.Marshal(result)
 	if err != nil {
@@ -2244,6 +2250,7 @@ func (s *Server) handleGetCallers(ctx context.Context, req mcp.CallToolRequest) 
 		// Same adaptive default as find_usages: hide the name-only
 		// fan-out once resolver-verified callers exist.
 		sg.SuppressRedundantTextMatches()
+		s.attachSuppressionCaveat(sg, id)
 	}
 	enrichSubGraphEdges(sg)
 	annotateCallerConcurrency(eng.Reader(), sg, id)
@@ -2463,6 +2470,7 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 		// text_matched fan-out is noise — suppress it and report the count
 		// via text_matched_suppressed. min_tier:"text_matched" restores it.
 		sg.SuppressRedundantTextMatches()
+		s.attachSuppressionCaveat(sg, id)
 	}
 	enrichSubGraphEdges(sg)
 	// Classify each usage's reference context (parameter_type / return_type
@@ -2520,6 +2528,48 @@ type usageNode struct {
 type usageResponse struct {
 	*query.SubGraph
 	Nodes []usageNode `json:"nodes"`
+}
+
+// attachSuppressionCaveat adds a human-readable rider to sg when the adaptive
+// default hid text_matched edges AND the target's file is in the
+// re-parsed-but-not-re-enriched window (see suppressionMayBeStale) — so a
+// hidden-but-real usage is diagnosable instead of silently dropped. No-op when
+// nothing was suppressed or the file is not stale; the existing
+// text_matched_suppressed count carries the number in every response either way.
+func (s *Server) attachSuppressionCaveat(sg *query.SubGraph, id string) {
+	if sg == nil || sg.TextMatchedSuppressed == 0 {
+		return
+	}
+	if !s.suppressionMayBeStale(id) {
+		return
+	}
+	sg.SuppressionCaveat = fmt.Sprintf(
+		"%d candidate usage(s) hidden pending re-verification; "+
+			"pass min_tier:\"text_matched\" to see them",
+		sg.TextMatchedSuppressed)
+}
+
+// suppressionMayBeStale reports whether id's file was re-parsed on the live
+// watch path without re-running semantic enrichment — the window in which the
+// resolver-verified edges that triggered text_matched suppression may sit
+// below the enrichment tier, so the suppressed name-only usages could be the
+// real ones. Reads graph.MetaReparsePendingEnrichment, which the indexer
+// stamps on the file's KindFile node. Conservative: false whenever the marker
+// is absent (no rider rather than a false alarm on a converged graph).
+func (s *Server) suppressionMayBeStale(id string) bool {
+	n := s.graph.GetNode(id)
+	if n == nil || n.FilePath == "" {
+		return false
+	}
+	for _, fn := range s.graph.GetFileNodes(n.FilePath) {
+		if fn.Kind != graph.KindFile {
+			continue
+		}
+		v, ok := fn.Meta[graph.MetaReparsePendingEnrichment]
+		b, _ := v.(bool)
+		return ok && b
+	}
+	return false
 }
 
 // newUsageResponse resolves the from_* fields for each node (pure read

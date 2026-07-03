@@ -55,3 +55,32 @@ func (idx *Indexer) persistFileMeta(relPath string, src []byte, result *parser.E
 	_ = fw.DeleteFileMetasByFiles(idx.repoPrefix, []string{filePath})
 	_ = fw.SetFileMetas(idx.repoPrefix, []graph.FileMetaRow{row})
 }
+
+// setReparsePendingEnrichment sets or clears
+// graph.MetaReparsePendingEnrichment on a file's KindFile node, marking
+// whether the most recent live re-parse resolved the file without re-running
+// semantic enrichment. It round-trips the node through AddNode so a disk
+// backend persists the meta change (an in-place map write is lost on sqlite),
+// and skips the write entirely when the marker is already in the desired state
+// so a save storm never re-persists unchanged nodes.
+func (idx *Indexer) setReparsePendingEnrichment(graphPath string, pending bool) {
+	for _, n := range idx.graph.GetFileNodes(graphPath) {
+		if n.Kind != graph.KindFile {
+			continue
+		}
+		_, had := n.Meta[graph.MetaReparsePendingEnrichment]
+		switch {
+		case pending && !had:
+			if n.Meta == nil {
+				n.Meta = map[string]any{}
+			}
+			n.Meta[graph.MetaReparsePendingEnrichment] = true
+		case !pending && had:
+			delete(n.Meta, graph.MetaReparsePendingEnrichment)
+		default:
+			return // already in the desired state — no round-trip
+		}
+		idx.graph.AddNode(n)
+		return
+	}
+}
