@@ -1289,6 +1289,7 @@ func (s *Server) handleReindexRepository(ctx context.Context, req mcp.CallToolRe
 		"edge_count":       result.EdgeCount,
 		"file_count":       result.FileCount,
 		"stale_file_count": result.StaleFileCount,
+		"full_retrack":     result.FullRetrack,
 		"duration_ms":      result.DurationMs,
 	}
 	if len(paths) > 0 {

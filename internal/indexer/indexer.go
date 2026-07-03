@@ -97,9 +97,17 @@ type IndexResult struct {
 	// are zero across every repo, the persisted graph already carries
 	// every resolved / derived edge and the global resolution passes can
 	// be skipped entirely (the warm-restart fast path).
-	DeletedFileCount int          `json:"deleted_file_count,omitempty"`
-	DurationMs       int64        `json:"duration_ms"`
-	Errors           []IndexError `json:"errors,omitempty"`
+	DeletedFileCount int `json:"deleted_file_count,omitempty"`
+	// FullRetrack is true when this result came from a whole-repo
+	// re-track (IndexCtx) rather than an incremental pass — i.e. the
+	// changed-file set is unknown and StaleFileCount does NOT reflect
+	// "how many files changed" (it keeps its normal incremental-work
+	// meaning and is 0 here). Callers that gate global re-resolution on
+	// "did this repo change" must OR in FullRetrack alongside
+	// StaleFileCount / DeletedFileCount.
+	FullRetrack bool         `json:"full_retrack,omitempty"`
+	DurationMs  int64        `json:"duration_ms"`
+	Errors      []IndexError `json:"errors,omitempty"`
 	// RepoPrefix is the prefix the repo was actually registered under.
 	// It usually equals config.ResolvePrefix(entry), but a git worktree
 	// tracked as an independent instance gets a derived `<base>@<tag>`

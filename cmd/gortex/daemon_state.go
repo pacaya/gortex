@@ -381,7 +381,7 @@ func warmupDaemonState(state *daemonState, logger *zap.Logger, markReady func())
 							// toward the fast path, when we can't trust the delta.
 							changedRepos.Add(1)
 							scopeUnknown.Store(true)
-						case res != nil && (res.StaleFileCount > 0 || res.DeletedFileCount > 0 || len(res.FailedFiles) > 0):
+						case res != nil && (res.StaleFileCount > 0 || res.DeletedFileCount > 0 || len(res.FailedFiles) > 0 || res.FullRetrack):
 							changedRepos.Add(1)
 							if res.RepoPrefix != "" {
 								changedPrefixes.Store(res.RepoPrefix, struct{}{})

@@ -1595,12 +1595,13 @@ func (mi *MultiIndexer) ReconcileRepoCtx(ctx context.Context, entry config.RepoE
 	var result *IndexResult
 	if !memoryBacked && idx.HasChangesSinceMtimes(absPath) {
 		result, err = idx.IndexCtx(ctx, absPath)
-		if err == nil && result != nil && result.StaleFileCount == 0 {
+		if err == nil && result != nil {
 			// Signal "this repo did re-indexing work" to the warmup
-			// change-detector (which keys on StaleFileCount): a full
-			// re-track touches every file, so the daemon's global
-			// resolution passes must run.
-			result.StaleFileCount = result.FileCount
+			// change-detector: a full re-track touches every file but
+			// the changed-file set is unknown, so StaleFileCount keeps
+			// its honest incremental-work meaning (0 here) and callers
+			// must key off FullRetrack instead.
+			result.FullRetrack = true
 		}
 	} else {
 		result, err = idx.IncrementalReindex(absPath)
@@ -1639,6 +1640,7 @@ func (mi *MultiIndexer) ReconcileRepoCtx(ctx context.Context, entry config.RepoE
 
 	mi.logger.Info("daemon: reconciled repo from snapshot",
 		zap.String("prefix", prefix),
+		zap.Bool("full_retrack", result.FullRetrack),
 		zap.Int("stale_files_reindexed", result.StaleFileCount),
 		zap.Duration("elapsed", time.Since(start)))
 
