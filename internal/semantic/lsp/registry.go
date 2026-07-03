@@ -397,6 +397,13 @@ var Servers = []ServerSpec{
 		Priority:    5,
 		Daemon:      true,
 		MaxParallel: 6,
+		// csharp-ls is a Roslyn stdio LSP (`dotnet tool install csharp-ls`)
+		// that speaks plain LSP with no args and auto-discovers a .sln under
+		// the workspace root. It is far more commonly installed than
+		// OmniSharp on dev machines, so try it when omnisharp is not on PATH.
+		AlternativeCommands: []ServerAlt{
+			{Command: "csharp-ls"},
+		},
 	},
 	{
 		Name:       "ruby-lsp",

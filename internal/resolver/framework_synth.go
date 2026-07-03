@@ -76,51 +76,52 @@ const (
 // label (for the report grouping) and as the value stamped on each
 // landed edge, so the two never drift.
 const (
-	SynthGRPCStub          = "grpc-stub"
-	SynthTemporalStub      = "temporal-stub"
-	SynthEventChannel      = "event-channel"
-	SynthSwiftObjC         = "swift-objc-bridge"
-	SynthReactNative       = "react-native-bridge"
-	SynthReactNativePair   = "react-native-native-pair"
-	SynthObserverChannel   = "observer-channel"
-	SynthClosureCollection = "closure-collection"
-	SynthReactSetState     = "react-setstate"
-	SynthFlutterSetState   = "flutter-setstate"
-	SynthKMPExpectActual   = "kmp-expect-actual"
-	SynthExpoModules       = "expo-modules-bridge"
-	SynthFabric            = "fabric-codegen"
-	SynthMyBatis           = "mybatis"
-	SynthRustScope         = "rust-scope"
-	SynthFactoryChain      = "factory-chain"
-	SynthSQLCallsite       = "sql-callsite"
-	SynthStoreFactory      = "store-factory"
-	SynthReduxThunk        = "redux-thunk"
-	SynthNgRxEffect        = "ngrx-effect"
-	SynthObjectRegistry    = "object-registry"
-	SynthRTKQuery          = "rtk-query"
-	SynthVuexDispatch      = "vuex-dispatch"
-	SynthCelery            = "celery-dispatch"
-	SynthSpringEvent       = "spring-event"
-	SynthMediatR           = "mediatr-dispatch"
-	SynthSidekiq           = "sidekiq-dispatch"
-	SynthLaravelEvent      = "laravel-event"
-	SynthFnPointerDispatch = "fn-pointer-dispatch"
-	SynthMacroExpansion    = "macro-expansion"
-	SynthGoFrameRoute      = "goframe-route"
-	SynthDjangoDescriptor  = "django-descriptor"
-	SynthExpressResolve    = "express-resolve"
-	SynthReactResolve      = "react-resolve"
-	SynthFastAPIResolve    = "fastapi-resolve"
-	SynthRailsResolve      = "rails-resolve"
-	SynthSwiftUIResolve    = "swiftui-resolve"
-	SynthUIKitResolve      = "uikit-resolve"
-	SynthVaporResolve      = "vapor-resolve"
-	SynthGinMiddleware     = "gin-middleware"
-	SynthSvelteKitLoad     = "sveltekit-load"
-	SynthSpeculative       = "speculative-dispatch"
-	SynthFnValue           = SynthFnValueCallback
-	SynthPascalFormName    = SynthPascalForm
-	SynthValueRefName      = SynthValueRef
+	SynthGRPCStub            = "grpc-stub"
+	SynthTemporalStub        = "temporal-stub"
+	SynthEventChannel        = "event-channel"
+	SynthSwiftObjC           = "swift-objc-bridge"
+	SynthReactNative         = "react-native-bridge"
+	SynthReactNativePair     = "react-native-native-pair"
+	SynthObserverChannel     = "observer-channel"
+	SynthClosureCollection   = "closure-collection"
+	SynthReactSetState       = "react-setstate"
+	SynthFlutterSetState     = "flutter-setstate"
+	SynthKMPExpectActual     = "kmp-expect-actual"
+	SynthExpoModules         = "expo-modules-bridge"
+	SynthFabric              = "fabric-codegen"
+	SynthMyBatis             = "mybatis"
+	SynthRustScope           = "rust-scope"
+	SynthFactoryChain        = "factory-chain"
+	SynthSQLCallsite         = "sql-callsite"
+	SynthStoreFactory        = "store-factory"
+	SynthReduxThunk          = "redux-thunk"
+	SynthNgRxEffect          = "ngrx-effect"
+	SynthObjectRegistry      = "object-registry"
+	SynthRTKQuery            = "rtk-query"
+	SynthVuexDispatch        = "vuex-dispatch"
+	SynthCelery              = "celery-dispatch"
+	SynthSpringEvent         = "spring-event"
+	SynthMediatR             = "mediatr-dispatch"
+	SynthCSharpIfaceDispatch = "csharp-iface-dispatch"
+	SynthSidekiq             = "sidekiq-dispatch"
+	SynthLaravelEvent        = "laravel-event"
+	SynthFnPointerDispatch   = "fn-pointer-dispatch"
+	SynthMacroExpansion      = "macro-expansion"
+	SynthGoFrameRoute        = "goframe-route"
+	SynthDjangoDescriptor    = "django-descriptor"
+	SynthExpressResolve      = "express-resolve"
+	SynthReactResolve        = "react-resolve"
+	SynthFastAPIResolve      = "fastapi-resolve"
+	SynthRailsResolve        = "rails-resolve"
+	SynthSwiftUIResolve      = "swiftui-resolve"
+	SynthUIKitResolve        = "uikit-resolve"
+	SynthVaporResolve        = "vapor-resolve"
+	SynthGinMiddleware       = "gin-middleware"
+	SynthSvelteKitLoad       = "sveltekit-load"
+	SynthSpeculative         = "speculative-dispatch"
+	SynthFnValue             = SynthFnValueCallback
+	SynthPascalFormName      = SynthPascalForm
+	SynthValueRefName        = SynthValueRef
 )
 
 // StampSynthesized marks an edge as the product of a framework
@@ -232,6 +233,11 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		// MediatR CQRS dispatch: Send(new X()) → the IRequestHandler<X>
 		// Handle, Publish(new X()) → every INotificationHandler<X>.
 		synthFunc{name: SynthMediatR, fn: ResolveMediatRCalls},
+		// C# member-level interface dispatch: a call bound to an interface
+		// member fans out to the same-named member on each in-repo
+		// implementation, at the speculative (hidden-by-default) tier. After
+		// the implements-producing passes so the impl fan-out is complete.
+		synthFunc{name: SynthCSharpIfaceDispatch, fn: ResolveCSharpInterfaceDispatch},
 		// Sidekiq job dispatch: Worker.perform_async(...) → the worker's
 		// perform, namespace-aware. Include-gated, typed tier.
 		synthFunc{name: SynthSidekiq, fn: ResolveSidekiqCalls},
@@ -321,6 +327,10 @@ type FrameworkSynthReport struct {
 	// cross-language-family gate (coincidental PascalCase collisions across
 	// two known, different families; bridge synthesizers are exempt).
 	Gated int `json:"gated_cross_family,omitempty"`
+	// ReceiverGated counts C# member-call edges demoted to the speculative
+	// tier because they attach to a same-named member of a type unrelated to
+	// the edge's receiver_type.
+	ReceiverGated int `json:"receiver_type_gated,omitempty"`
 }
 
 // RunFrameworkSynthesizers runs every registered framework synthesizer
@@ -350,6 +360,9 @@ func RunFrameworkSynthesizers(g graph.Store) FrameworkSynthReport {
 		rep.Per = append(rep.Per, SynthCount{Name: r.Name(), Edges: n})
 		rep.Total += n
 	}
+	// Receiver-type gate runs last: it corrects (demotes) already-bound C#
+	// member calls, so it must see the settled call graph.
+	rep.ReceiverGated = demoteCSharpMisattributedMemberCalls(g)
 	return rep
 }
 

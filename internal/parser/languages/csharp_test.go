@@ -60,6 +60,101 @@ func TestCSharpExtractor_Interface(t *testing.T) {
 	assert.Equal(t, []string{"FindById", "Save"}, methods)
 }
 
+// TestCSharpExtractor_InterfaceMembers verifies that interface member
+// declarations — overloaded methods, a property, and a C# 8 default (bodied)
+// method — each get their own <file>::<Iface>.<member> node marked
+// iface_member, while the interface node still carries its method-name list.
+func TestCSharpExtractor_InterfaceMembers(t *testing.T) {
+	src := []byte(`public interface ITruncator {
+    string Truncate(string value);
+    string Truncate(string value, int length);
+    int Count { get; }
+    string Describe() => "default";
+}
+`)
+	e := NewCSharpExtractor()
+	result, err := e.Extract("ITruncator.cs", src)
+	require.NoError(t, err)
+
+	// First Truncate overload keeps the bare id; the second gets the
+	// _L<line> suffix (line 3 in the source above).
+	t1 := nodeByID(result.Nodes, "ITruncator.cs::ITruncator.Truncate")
+	require.NotNil(t, t1, "first Truncate overload node")
+	assert.Equal(t, graph.KindMethod, t1.Kind)
+	assert.Equal(t, "ITruncator", t1.Meta["receiver"])
+	assert.Equal(t, VisibilityPublic, t1.Meta["visibility"])
+	assert.Equal(t, true, t1.Meta["iface_member"])
+
+	t2 := nodeByID(result.Nodes, "ITruncator.cs::ITruncator.Truncate_L3")
+	require.NotNil(t, t2, "overloaded Truncate gets the _L<line> id")
+	assert.Equal(t, true, t2.Meta["iface_member"])
+
+	// Property member — a KindField node marked property + iface_member.
+	count := nodeByID(result.Nodes, "ITruncator.cs::ITruncator.Count")
+	require.NotNil(t, count, "interface property node")
+	assert.Equal(t, graph.KindField, count.Kind)
+	assert.Equal(t, "property", count.Meta["kind"])
+	assert.Equal(t, true, count.Meta["iface_member"])
+
+	// C# 8 default (bodied) method — must NOT leak as a bare function and
+	// is still marked an interface member.
+	describe := nodeByID(result.Nodes, "ITruncator.cs::ITruncator.Describe")
+	require.NotNil(t, describe, "default interface method node")
+	assert.Equal(t, graph.KindMethod, describe.Kind)
+	assert.Equal(t, true, describe.Meta["iface_member"])
+	assert.Nil(t, nodeByID(result.Nodes, "ITruncator.cs::Describe"),
+		"default method must not leak as a bare function")
+
+	// Each member is a MemberOf the interface type node.
+	memberOf := 0
+	for _, ed := range result.Edges {
+		if ed.Kind == graph.EdgeMemberOf && ed.To == "ITruncator.cs::ITruncator" {
+			memberOf++
+		}
+	}
+	assert.Equal(t, 4, memberOf, "2 method overloads + property + default method")
+
+	// Backward compat: the interface node still lists its method names.
+	iface := nodeByID(result.Nodes, "ITruncator.cs::ITruncator")
+	require.NotNil(t, iface)
+	names, _ := iface.Meta["methods"].([]string)
+	assert.Contains(t, names, "Truncate")
+	assert.Contains(t, names, "Describe")
+}
+
+// TestCSharpExtractor_ExtensionMethod verifies extension methods (a static
+// method whose first parameter carries the `this` modifier) are stamped with
+// extension=true + this_param_type, keep their <StaticClass>.<name> id, and a
+// plain static method is not misflagged.
+func TestCSharpExtractor_ExtensionMethod(t *testing.T) {
+	src := []byte(`public static class Exts {
+    public static string Dehumanize(this string value) { return value; }
+    public static int AddTo(this int x, int y) { return x + y; }
+    public static string Plain(string value) { return value; }
+}
+`)
+	e := NewCSharpExtractor()
+	result, err := e.Extract("Exts.cs", src)
+	require.NoError(t, err)
+
+	deh := nodeByID(result.Nodes, "Exts.cs::Exts.Dehumanize")
+	require.NotNil(t, deh, "extension method id stays <StaticClass>.<name>")
+	assert.Equal(t, true, deh.Meta["extension"])
+	assert.Equal(t, "string", deh.Meta["this_param_type"])
+	assert.Equal(t, true, deh.Meta["static"])
+
+	add := nodeByID(result.Nodes, "Exts.cs::Exts.AddTo")
+	require.NotNil(t, add)
+	assert.Equal(t, true, add.Meta["extension"])
+	assert.Equal(t, "int", add.Meta["this_param_type"])
+
+	// A plain static method (no `this`) must not be flagged an extension.
+	plain := nodeByID(result.Nodes, "Exts.cs::Exts.Plain")
+	require.NotNil(t, plain)
+	_, isExt := plain.Meta["extension"]
+	assert.False(t, isExt, "plain static method must not be an extension")
+}
+
 // csharpSymbolNames returns the set of non-file node names in a result.
 func csharpSymbolNames(res *parser.ExtractionResult) map[string]bool {
 	names := map[string]bool{}
@@ -281,9 +376,10 @@ namespace MyApp.Services
 	types := nodesOfKind(result.Nodes, graph.KindType)
 	assert.Len(t, types, 3)
 
-	// 3 methods: constructor + FindById + Save
+	// 5 methods: the 2 interface members (IUserService.FindById / .Save)
+	// plus the concrete UserService constructor + FindById + Save.
 	methods := nodesOfKind(result.Nodes, graph.KindMethod)
-	assert.Len(t, methods, 3)
+	assert.Len(t, methods, 5)
 
 	// 2 imports
 	imports := edgesOfKind(result.Edges, graph.EdgeImports)

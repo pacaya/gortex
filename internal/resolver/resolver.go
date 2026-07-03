@@ -2159,6 +2159,15 @@ func (r *Resolver) resolveMethodCall(e *graph.Edge, methodName string, stats *Re
 		}
 	}
 
+	// C# extension methods: an `x.Foo()` with no matching instance or
+	// interface member Foo may be a call to a `static Foo(this X x)`
+	// extension. Bind precisely (typed match, else unambiguous name);
+	// ambiguous stays unresolved rather than misattributing to a same-name
+	// method on an unrelated type.
+	if r.tryBindCSharpExtension(e, methodName, receiverType, rawCandidates, stats) {
+		return
+	}
+
 	// Locality fallback (replaces the previous alphabetical name-only
 	// pick). At this point candidates have survived Pass 0 — they all
 	// live in packages reachable from the caller. Prefer in this order:
@@ -2178,6 +2187,12 @@ func (r *Resolver) resolveMethodCall(e *graph.Edge, methodName string, stats *Re
 	var sameDirMethod, sameDirFunc, anyMethod, anyFunc *graph.Node
 	methodCount := 0
 	for _, c := range candidates {
+		// Extension methods are bound only by the type-directed extension
+		// rule above; a locality guess must never pick one, which would
+		// misattribute `x.Foo()` to an unrelated extension named Foo.
+		if isCSharpExtension(c) {
+			continue
+		}
 		switch c.Kind {
 		case graph.KindMethod:
 			methodCount++
