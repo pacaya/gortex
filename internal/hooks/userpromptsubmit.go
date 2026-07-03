@@ -24,6 +24,8 @@ const userPromptProbeTimeout = 800 * time.Millisecond
 // block stays a nudge, not a wall of text.
 const maxInjectedHits = 6
 
+var userPromptProbe grepProbeFn = probeViaDaemon
+
 // runUserPromptSubmit handles a UserPromptSubmit hook: it proactively searches
 // the graph for symbols relevant to the user's prompt and injects them as
 // additionalContext, so the model reaches for Gortex's knowledge instead of
@@ -36,18 +38,7 @@ func runUserPromptSubmit(data []byte) {
 	if err := json.Unmarshal(data, &input); err != nil {
 		return
 	}
-	if input.HookEventName != "UserPromptSubmit" {
-		return
-	}
-	query := promptQuery(input.Prompt)
-	if query == "" {
-		return
-	}
-	hits, err := probeViaDaemon(query, userPromptProbeTimeout)
-	if err != nil || len(hits) == 0 {
-		return
-	}
-	block := buildPromptInjection(hits)
+	block := buildUserPromptSubmitContext(input.HookEventName, input.Prompt)
 	if block == "" {
 		return
 	}
@@ -61,6 +52,21 @@ func runUserPromptSubmit(data []byte) {
 		return
 	}
 	fmt.Print(string(out))
+}
+
+func buildUserPromptSubmitContext(eventName, prompt string) string {
+	if eventName != "UserPromptSubmit" {
+		return ""
+	}
+	query := promptQuery(prompt)
+	if query == "" {
+		return ""
+	}
+	hits, err := userPromptProbe(query, userPromptProbeTimeout)
+	if err != nil || len(hits) == 0 {
+		return ""
+	}
+	return buildPromptInjection(hits)
 }
 
 // promptQuery normalizes a raw prompt into a search query, or "" when the
