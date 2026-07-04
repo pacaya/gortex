@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
+	"github.com/zzet/gortex/internal/query"
 )
 
 // Barrel re-export resolve-through for find_usages.
@@ -140,4 +142,94 @@ func hasJSTSExt(file string) bool {
 		}
 	}
 	return false
+}
+
+// isReExportNode reports whether a node is a barrel re-export binding minted
+// at an `export { X } from './mod'` site. Thin alias over graph.IsReExportNode
+// so the find_usages delegation reads at the call site.
+func isReExportNode(n *graph.Node) bool { return graph.IsReExportNode(n) }
+
+// reExportNodeCanonical follows a barrel re-export node's outgoing
+// EdgeReExports edge(s) to the terminal canonical declaration it forwards.
+// It walks the resolved graph — the node→canonical edge the extractor mints is
+// rewritten from `unresolved::import::…` onto the declaration id by the
+// resolver — so a chain of barrels (index → middleware → persist) resolves hop
+// by hop until a non-re-export node is reached. Returns "" when the node has no
+// resolved forward edge (e.g. a bare-package re-export the resolver left
+// unresolved). Distinct from reExportBindingCanonical, which walks a FILE's
+// out-edges on the pre-resolution unresolved targets.
+func reExportNodeCanonical(g graph.Store, id string, depth int) string {
+	if g == nil || depth > maxReExportChainDepth {
+		return ""
+	}
+	for _, e := range g.GetOutEdges(id) {
+		if e == nil || e.Kind != graph.EdgeReExports {
+			continue
+		}
+		to := e.To
+		if to == "" || to == id || graph.IsUnresolvedTarget(to) {
+			continue // unresolved / self — nothing to delegate to
+		}
+		tn := g.GetNode(to)
+		if tn == nil {
+			continue
+		}
+		if isReExportNode(tn) {
+			if canon := reExportNodeCanonical(g, to, depth+1); canon != "" {
+				return canon
+			}
+			// An intermediate barrel whose own forward edge didn't resolve
+			// still stands in as the best delegation target.
+			return to
+		}
+		return to
+	}
+	return ""
+}
+
+// mergeUsageSubGraph folds src's usage rows into dst, deduping nodes by id and
+// edges by (from,to,kind,line), and refreshes the totals. Used by find_usages
+// to union a barrel binding's own refs with its canonical declaration's usages.
+func mergeUsageSubGraph(dst, src *query.SubGraph) {
+	if dst == nil || src == nil {
+		return
+	}
+	haveNode := make(map[string]struct{}, len(dst.Nodes))
+	for _, n := range dst.Nodes {
+		if n != nil {
+			haveNode[n.ID] = struct{}{}
+		}
+	}
+	for _, n := range src.Nodes {
+		if n == nil {
+			continue
+		}
+		if _, dup := haveNode[n.ID]; dup {
+			continue
+		}
+		haveNode[n.ID] = struct{}{}
+		dst.Nodes = append(dst.Nodes, n)
+	}
+	edgeKey := func(e *graph.Edge) string {
+		return e.From + "\x00" + e.To + "\x00" + string(e.Kind) + "\x00" + strconv.Itoa(e.Line)
+	}
+	haveEdge := make(map[string]struct{}, len(dst.Edges))
+	for _, e := range dst.Edges {
+		if e != nil {
+			haveEdge[edgeKey(e)] = struct{}{}
+		}
+	}
+	for _, e := range src.Edges {
+		if e == nil {
+			continue
+		}
+		k := edgeKey(e)
+		if _, dup := haveEdge[k]; dup {
+			continue
+		}
+		haveEdge[k] = struct{}{}
+		dst.Edges = append(dst.Edges, e)
+	}
+	dst.TotalNodes = len(dst.Nodes)
+	dst.TotalEdges = len(dst.Edges)
 }

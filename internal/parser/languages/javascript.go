@@ -812,7 +812,7 @@ func (e *JavaScriptExtractor) emitReExport(m parser.QueryResult, filePath, fileI
 		return
 	}
 	importPath := m.Captures["reexport.path"].Text
-	emitJSReExport(def.Node, importPath, fileID, filePath, src, result)
+	emitJSReExport(def.Node, importPath, fileID, filePath, "javascript", src, result)
 }
 
 func (e *JavaScriptExtractor) emitRequire(m parser.QueryResult, filePath, fileID string, result *parser.ExtractionResult) {

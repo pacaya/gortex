@@ -2178,7 +2178,7 @@ func (r *Resolver) resolveImport(e *graph.Edge, importPath string, stats *Resolv
 
 func (r *Resolver) resolveFunctionCall(e *graph.Edge, funcName string, stats *ResolveStats) {
 	callerRepo := r.callerRepoPrefix(e)
-	candidates := r.cachedFindNodesByNameInRepo(funcName, callerRepo)
+	candidates := withoutReExportForwarders(r.cachedFindNodesByNameInRepo(funcName, callerRepo))
 	if len(candidates) == 0 {
 		// No same-repo candidate. A genuine cross-repo callee is left
 		// unresolved here for CrossRepoResolver — which alone carries the
@@ -2338,6 +2338,34 @@ func (r *Resolver) resolveFunctionCall(e *graph.Edge, funcName string, stats *Re
 	}
 
 	stats.Unresolved++
+}
+
+// withoutReExportForwarders drops barrel re-export binding nodes from a
+// call-resolution candidate set. A re-export node (`export { X } from './mod'`)
+// is a transparent forwarder, never a callee — the call binds to the
+// declaration it forwards, which is a separate same-named candidate. Leaving
+// the forwarder in only adds a phantom candidate that turns an otherwise-clean
+// import-evidence / value-callee pick into a refused ambiguity. Returns the
+// input unchanged when it holds no forwarders (the common case), so non-JS/TS
+// and non-barrel resolution pays nothing.
+func withoutReExportForwarders(candidates []*graph.Node) []*graph.Node {
+	has := false
+	for _, c := range candidates {
+		if graph.IsReExportNode(c) {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return candidates
+	}
+	out := make([]*graph.Node, 0, len(candidates))
+	for _, c := range candidates {
+		if !graph.IsReExportNode(c) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // pickTopLevelValueCallee returns the variable/constant candidate a JS/TS

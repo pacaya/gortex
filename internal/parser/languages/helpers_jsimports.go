@@ -101,7 +101,17 @@ func emitJSPerBindingImports(importNode *sitter.Node, importPath, fileID, filePa
 //     collapses to a single module-level re-export edge.
 //   - namespace `export * as ns from "mod"` — one module-level edge, Alias "ns".
 //   - wildcard `export * from "mod"` — one module-level edge, no Alias.
-func emitJSReExport(exportNode *sitter.Node, importPath, fileID, filePath string, src []byte, result *parser.ExtractionResult) {
+//
+// For each named (value) specifier within the cap it also mints a queryable
+// node at the barrel site under the exported (post-alias) name, so the public
+// façade a consumer imports (`import { persist } from 'zustand/middleware'`)
+// resolves as a real symbol whose id follows the standard `<file>::<name>`
+// scheme. The node carries a `reexport` marker and a node→canonical
+// EdgeReExports edge (resolved through the same import machinery as the
+// file-level edge) so find_usages can delegate to the canonical declaration's
+// usages. Type-only specifiers are left as reference edges by
+// emitTSTypeOnlyExportRefs and never mint a value node here.
+func emitJSReExport(exportNode *sitter.Node, importPath, fileID, filePath, lang string, src []byte, result *parser.ExtractionResult) {
 	line := int(exportNode.StartPoint().Row) + 1
 
 	if clause := findChildByType(exportNode, "export_clause"); clause != nil {
@@ -113,19 +123,71 @@ func emitJSReExport(exportNode *sitter.Node, importPath, fileID, filePath string
 			})
 			return
 		}
+		stmtTypeOnly := tsExportStatementTypeOnly(exportNode, src)
+		mintedNode := map[string]bool{}
 		for _, sp := range specs {
 			orig, alias := jsSpecifierNames(sp, src)
 			if orig == "" {
 				continue
 			}
+			specLine := int(sp.StartPoint().Row) + 1
 			edge := &graph.Edge{
 				From: fileID, To: "unresolved::import::" + importPath + "::" + orig,
-				Kind: graph.EdgeReExports, FilePath: filePath, Line: int(sp.StartPoint().Row) + 1,
+				Kind: graph.EdgeReExports, FilePath: filePath, Line: specLine,
 			}
 			if alias != "" && alias != orig {
 				edge.Alias = alias
 			}
 			result.Edges = append(result.Edges, edge)
+
+			// A type-only re-export (`export type { X } from` or
+			// `export { type X } from`) names a type, not a value — it is
+			// forwarded as a reference edge by emitTSTypeOnlyExportRefs, so
+			// no value node is minted for it.
+			if stmtTypeOnly || tsSpecifierTypeOnly(sp, src) {
+				continue
+			}
+			// The public binding name is the alias when renamed, else the
+			// original — that is the name a consumer imports.
+			publicName := orig
+			if alias != "" {
+				publicName = alias
+			}
+			nodeID := fileID + "::" + publicName
+			if mintedNode[nodeID] {
+				continue
+			}
+			mintedNode[nodeID] = true
+			meta := map[string]any{
+				"reexport":        true,
+				"reexport_source": importPath,
+			}
+			if publicName != orig {
+				meta["reexport_original"] = orig
+			}
+			result.Nodes = append(result.Nodes, &graph.Node{
+				ID: nodeID, Kind: graph.KindVariable, Name: publicName,
+				FilePath: filePath, StartLine: specLine, EndLine: specLine,
+				Language: lang, Meta: meta,
+			})
+			// File → binding: EdgeDefines attaches the binding to the barrel
+			// file (get_file_summary and friends walk defines/contains).
+			result.Edges = append(result.Edges, &graph.Edge{
+				From: fileID, To: nodeID, Kind: graph.EdgeDefines,
+				FilePath: filePath, Line: specLine,
+			})
+			// Binding → canonical: a second EdgeReExports edge, this one
+			// sourced from the node, gives the barrel binding a direct link
+			// to the declaration it forwards once the resolver rewrites the
+			// unresolved target. find_usages walks it to delegate.
+			forward := &graph.Edge{
+				From: nodeID, To: "unresolved::import::" + importPath + "::" + orig,
+				Kind: graph.EdgeReExports, FilePath: filePath, Line: specLine,
+			}
+			if publicName != orig {
+				forward.Alias = publicName
+			}
+			result.Edges = append(result.Edges, forward)
 		}
 		return
 	}

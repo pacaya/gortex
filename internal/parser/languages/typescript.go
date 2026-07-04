@@ -1257,7 +1257,7 @@ func (e *TypeScriptExtractor) emitReExport(m parser.QueryResult, filePath, fileI
 		return
 	}
 	importPath := strings.Trim(m.Captures["reexport.path"].Text, `"'`+"`")
-	emitJSReExport(def.Node, importPath, fileID, filePath, src, result)
+	emitJSReExport(def.Node, importPath, fileID, filePath, "typescript", src, result)
 }
 
 // emitMethod is called once per method_definition captured at root

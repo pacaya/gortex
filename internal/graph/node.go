@@ -347,6 +347,21 @@ type Node struct {
 	FetchedAt time.Time `json:"fetched_at,omitempty"`
 }
 
+// IsReExportNode reports whether n is a barrel re-export binding — a node
+// minted at an `export { X } from './mod'` site that forwards another module's
+// declaration under the exported (post-alias) name. Marked with
+// Meta["reexport"]==true by the JS/TS extractor. These nodes are transparent
+// aliases: call resolution skips them (a call binds to the forwarded
+// declaration, not the façade), while find_usages delegates their usage set to
+// the canonical target.
+func IsReExportNode(n *Node) bool {
+	if n == nil || n.Meta == nil {
+		return false
+	}
+	v, ok := n.Meta["reexport"].(bool)
+	return ok && v
+}
+
 // Brief returns a compact representation with only the fields needed for listing.
 func (n *Node) Brief() map[string]any {
 	b := map[string]any{

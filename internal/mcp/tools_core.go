@@ -2482,24 +2482,38 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	}
 	eng := s.engineFor(ctx)
 	// Barrel re-export resolve-through: a public import path that names a
-	// forwarded binding (`src/middleware.ts::persist`) has no node of its own —
-	// map it to the canonical declaration so find_usages answers with the real
-	// usages instead of not_found. Gated on the id not already being a node, so
-	// a real symbol's result is never altered.
-	if eng.GetSymbol(id) == nil {
+	// forwarded binding (`src/middleware.ts::persist`) may have no node of its
+	// own (an unresolved / over-cap / wildcard barrel) — map it to the
+	// canonical declaration so find_usages answers with the real usages instead
+	// of not_found. Gated on the id not already being a node, so a real
+	// symbol's result is never altered.
+	node := eng.GetSymbol(id)
+	if node == nil {
 		if canon := reExportBindingCanonical(s.graph, id, 0); canon != "" {
 			id = canon
+			node = eng.GetSymbol(id)
 		}
 	}
-	if node := eng.GetSymbol(id); node != nil && !resolvedScopeAllowsNode(resolved, node) {
+	if node != nil && !resolvedScopeAllowsNode(resolved, node) {
 		return symbolNotFoundGuidance(id), nil
 	}
-	sg := eng.FindUsagesScoped(id, query.QueryOptions{
+	opts := query.QueryOptions{
 		WorkspaceID:  resolved.WorkspaceID,
 		ProjectID:    resolved.ProjectID,
 		RepoAllow:    resolved.RepoAllow,
 		ExcludeTests: req.GetBool("exclude_tests", false),
-	})
+	}
+	sg := eng.FindUsagesScoped(id, opts)
+	// Barrel re-export binding: a query on the public façade node
+	// (`src/middleware.ts::persist`) returns its own direct refs — consumer
+	// imports that bind to it — plus the canonical declaration's usages,
+	// deduped. So the façade an agent actually imports answers with the full
+	// usage set instead of only the forwarding site.
+	if isReExportNode(node) {
+		if canon := reExportNodeCanonical(s.graph, id, 0); canon != "" && canon != id {
+			mergeUsageSubGraph(sg, eng.FindUsagesScoped(canon, opts))
+		}
+	}
 
 	sg = filterSubGraphByResolvedScope(sg, resolved)
 	sg.FilterByMinTier(minTier)
