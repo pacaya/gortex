@@ -17,6 +17,7 @@ import (
 // loop. After the per-pass cap the provider's enrichment is abandoned with an
 // error and a bounded reconnect count, and whatever landed earlier stays.
 func TestLSP_Enrich_CrashLoopGuardAbandonsPass(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot, g := seedRepo(t, 60)
 
 	server1 := newInstrumentedServer()

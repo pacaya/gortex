@@ -39,6 +39,11 @@ type Provider struct {
 	// top of the built-in generated/vendored heuristic. Set by the router from
 	// config when the provider is spawned.
 	excludeGlobs []string
+	// sweepMode selects how much of the per-file hover / call-hierarchy sweep
+	// runs ("demand" default / "full" / "off"); see sweep.go. Set by the
+	// router from config when the provider is spawned. An empty value means
+	// the demand-gated default; the GORTEX_LSP_SWEEP env override wins over it.
+	sweepMode string
 	// spec is the ServerSpec this provider was built from (when the
 	// caller used NewProviderFromSpec). nil for legacy NewProvider
 	// invocations — those fall back to single-language routing.
@@ -306,6 +311,35 @@ func enrichNodeHasUnresolvedDemand(g graph.Store, n *graph.Node) bool {
 		return false
 	}
 	return len(g.GetInEdges(graph.UnresolvedMarker+"*."+n.Name)) > 0
+}
+
+// enrichNodeIsDispatchRelevant reports whether a declaration's super/subtype
+// hierarchy the per-file sweep must interrogate: a type or interface whose
+// extends / supertype / subtype edges the AST extractor commonly misses (they
+// are cross-file or resolved dynamically). Such declarations never contribute
+// unresolved-call demand — enrichNodeHasUnresolvedDemand only counts callables —
+// so a file whose only enrichable work is a type hierarchy would score zero
+// demand and be skipped under the demand default. Marking it dispatch-relevant
+// keeps that file in the sweep so its hierarchy edges are still recovered.
+func enrichNodeIsDispatchRelevant(n *graph.Node) bool {
+	if n == nil {
+		return false
+	}
+	return n.Kind == graph.KindType || n.Kind == graph.KindInterface
+}
+
+// nodeHasSemanticType reports whether a node already carries a non-empty
+// semantic_type stamp from an earlier enrichment. The per-file sweep skips
+// re-hovering such a node — the hover would only re-derive the identical type
+// string — which is what keeps a dispatch-relevant file (swept for its call /
+// type-hierarchy edges) from re-paying the whole-file hover cost on a warm
+// restart, where every node reloads with its prior stamp.
+func nodeHasSemanticType(n *graph.Node) bool {
+	if n == nil || n.Meta == nil {
+		return false
+	}
+	s, ok := n.Meta["semantic_type"].(string)
+	return ok && s != ""
 }
 
 // scopedPath re-attaches repoPrefix to a repo-relative path the language
@@ -857,7 +891,7 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	enrichedNodes := make(map[string]bool)
 
 	// Race-safe metric counters for the concurrent hover phase.
-	var diagTotalNodes, diagHoverOK, diagHoverErr, diagHoverNil, diagTypeEmpty, diagEnriched, diagNoPosition atomic.Int64
+	var diagTotalNodes, diagHoverOK, diagHoverErr, diagHoverNil, diagTypeEmpty, diagEnriched, diagNoPosition, diagHoverSkipped atomic.Int64
 
 	// mu guards the cross-goroutine aggregation: per-file stamp buffers,
 	// enrichedNodes, the EnrichResult node counters, and the best-effort
@@ -931,9 +965,10 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	// spans all of its symbols. Files keep encounter order; symbols keep
 	// their order within a file.
 	type fileTargets struct {
-		rel    string
-		nodes  []*graph.Node
-		demand int // declarations still carrying unresolved same-name candidates
+		rel      string
+		nodes    []*graph.Node
+		demand   int  // declarations still carrying unresolved same-name candidates
+		dispatch bool // carries a type / interface whose hierarchy the sweep interrogates
 	}
 	var fileList []*fileTargets
 	fileIndex := map[string]*fileTargets{}
@@ -952,6 +987,9 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		if enrichNodeHasUnresolvedDemand(g, n) {
 			ft.demand++
 		}
+		if enrichNodeIsDispatchRelevant(n) {
+			ft.dispatch = true
+		}
 	}
 	// Demand-driven ordering: enrich the files whose declarations still carry
 	// unresolved same-name call candidates first. Under a per-repo deadline the
@@ -961,6 +999,17 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	sort.SliceStable(fileList, func(i, j int) bool {
 		return fileList[i].demand > fileList[j].demand
 	})
+
+	// Sweep gate: the per-file hover / call-hierarchy sweep below is the
+	// whole-repo churn a warm restart pays to confirm zero new edges. The
+	// resolved mode (GORTEX_LSP_SWEEP env override > router-configured field
+	// > demand-gated default) decides which files it visits — sweepFile
+	// skips a file the mode excludes. "demand" (default) sweeps a file that
+	// still carries unresolved same-name candidates OR declares a type /
+	// interface whose super/subtype hierarchy only this sweep recovers,
+	// "full" sweeps every file, "off" skips the sweep entirely. The
+	// tier-deciding confirm / add / interface passes above are never gated.
+	sweepMode := p.effectiveSweepMode()
 
 	// Call- and type-hierarchy hops are collected per file (while the
 	// file is open) and applied in that file's flush below, so each
@@ -1031,6 +1080,9 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	for _, ft := range fileList {
 		if aborted.Load() || ctx.Err() != nil {
 			break
+		}
+		if !sweepFile(sweepMode, ft.demand, ft.dispatch) {
+			continue // mode excludes this file from the per-file sweep
 		}
 		wg.Add(1)
 		fileSem <- struct{}{} // acquire — bounds simultaneously-open docs
@@ -1137,6 +1189,16 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 			for _, n := range ft.nodes {
 				if aborted.Load() || ctx.Err() != nil {
 					break
+				}
+				// Hover-skip: a node already carrying a semantic_type stamp
+				// (e.g. reloaded on a warm restart) gains nothing from another
+				// hover — the derived type string is unchanged. Skip it so a
+				// file swept for its call / type-hierarchy edges does not
+				// re-pay the whole-file hover cost; the hierarchy interrogation
+				// above already ran for every node regardless.
+				if nodeHasSemanticType(n) {
+					diagHoverSkipped.Add(1)
+					continue
 				}
 				line, ok := lspLine(n)
 				if !ok {
@@ -1246,6 +1308,7 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 	// per-method request volume that drove the pass.
 	didOpens, reopenedFiles, docEvictions, peakOpenDocs := session.stats()
 	p.logger.Info("LSP enrich: hover phase complete",
+		zap.String("sweep_mode", sweepMode),
 		zap.Int64("total_nodes", diagTotalNodes.Load()),
 		zap.Int64("hover_ok", diagHoverOK.Load()),
 		zap.Int64("hover_err", diagHoverErr.Load()),
@@ -1253,6 +1316,7 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		zap.Int64("type_empty", diagTypeEmpty.Load()),
 		zap.Int64("enriched", diagEnriched.Load()),
 		zap.Int64("skipped_no_position", diagNoPosition.Load()),
+		zap.Int64("skipped_already_stamped", diagHoverSkipped.Load()),
 		zap.Int64("reconnect_attempts", p.reconnectAttempts.Load()),
 		zap.Int("did_opens", didOpens),
 		zap.Int("reopened_files", reopenedFiles),

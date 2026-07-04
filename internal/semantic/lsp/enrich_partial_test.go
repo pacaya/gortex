@@ -42,6 +42,7 @@ func providerWithFakeServerParallel(t *testing.T, server *fakeLSPServer, languag
 // back Partial with no error. This is the regression test for the
 // deadline path that used to discard a fully-buffered pass wholesale.
 func TestLSP_Provider_PartialLandingOnCanceledContext(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "main.go"),
@@ -179,6 +180,7 @@ func TestLSP_Provider_PartialLandingOnCanceledContext(t *testing.T) {
 // rejects per request ("cannot unmarshal number -1 into ...
 // position.line of type uint32") — pure wasted round trips.
 func TestLSP_Provider_SkipsNodesWithoutPosition(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "main.go"),

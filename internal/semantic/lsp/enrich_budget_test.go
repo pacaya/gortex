@@ -26,6 +26,7 @@ import (
 // deadline that a sequential confirm pass alone (8 files x 60ms = 480ms > 400ms
 // budget) would have exhausted.
 func TestLSP_Enrich_ConfirmDoesNotStarveAddPhase(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full post-confirm sweep, not the demand-gated default
 	const n = 8
 	const refDelay = 60 * time.Millisecond
 

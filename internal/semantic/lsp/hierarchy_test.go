@@ -14,6 +14,7 @@ import (
 )
 
 func TestLSP_Provider_PromotesCallEdgeViaCallHierarchy(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "main.go"),
@@ -87,6 +88,7 @@ func TestLSP_Provider_PromotesCallEdgeViaCallHierarchy(t *testing.T) {
 }
 
 func TestLSP_Provider_AddsImplementsViaTypeHierarchy(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "shape.ts"),
@@ -155,6 +157,7 @@ func TestLSP_Provider_AddsImplementsViaTypeHierarchy(t *testing.T) {
 }
 
 func TestLSP_Provider_AddsExtendsViaTypeHierarchySupertypes(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "h.ts"),
@@ -223,6 +226,7 @@ func TestLSP_Provider_AddsExtendsViaTypeHierarchySupertypes(t *testing.T) {
 }
 
 func TestLSP_Provider_AddsMissingCallEdgeViaCallHierarchy(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "main.go"),
@@ -292,6 +296,7 @@ func TestLSP_Provider_AddsMissingCallEdgeViaCallHierarchy(t *testing.T) {
 // line — and (b) be stamped at the call-expression line the server
 // reported in fromRanges, not at the caller's declaration line.
 func TestLSP_Provider_IncomingCallStampsCallSiteNotDeclaration(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "q.go"),
@@ -386,6 +391,7 @@ func TestLSP_Provider_IncomingCallStampsCallSiteNotDeclaration(t *testing.T) {
 // method node — not `<callee>#param:<name>` — and the added edge must be
 // stamped at the call site inside the caller.
 func TestLSP_Provider_OutgoingCallMatchesCallableAndStampsCallSite(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "m.go"),
@@ -520,6 +526,7 @@ func TestIdentifierIndex(t *testing.T) {
 // precision filter then suppressed — silently costing recall on repeated
 // calls within one function.
 func TestLSP_Provider_PromotesEveryVerifiedCallSite(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "q.go"),

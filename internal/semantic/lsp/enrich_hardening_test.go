@@ -243,6 +243,7 @@ func runEnrich(t *testing.T, p *Provider, g graph.Store, repoRoot string, timeou
 // ---------------------------------------------------------------------------
 
 func TestLSP_Enrich_ConcurrencyBounded(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot, g := seedRepo(t, 50)
 
 	var inFlight atomic.Int64
@@ -278,6 +279,7 @@ func TestLSP_Enrich_ConcurrencyBounded(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLSP_Enrich_DocLifecyclePairedAndBounded(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	// Many distinct files so each node opens its own document.
 	g := graph.New()
@@ -327,6 +329,7 @@ func TestLSP_Enrich_DocLifecyclePairedAndBounded(t *testing.T) {
 
 // didClose must happen even when hover fails.
 func TestLSP_Enrich_DocClosedEvenOnHoverError(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	g := graph.New()
 	const nFiles = 8
@@ -373,6 +376,7 @@ func TestLSP_Enrich_DocClosedEvenOnHoverError(t *testing.T) {
 // "LSP server exited" error, then verifies the provider reconnects (via the
 // connectOnce seam) and the enrichment completes without error.
 func TestLSP_Enrich_ReconnectsOnServerExit(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot, g := seedRepo(t, 12)
 
 	// First server: after the 3rd hover, it "dies" (we close its client's
@@ -508,6 +512,7 @@ func TestLSP_Enrich_UsesRetriedHoverResult(t *testing.T) {
 // goroutines observe server-exit simultaneously, only ONE reconnection is
 // performed (others wait and retry).
 func TestLSP_Enrich_SingleReconnectUnderConcurrency(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot, g := seedRepo(t, 40)
 
 	server1 := newInstrumentedServer()
@@ -559,6 +564,7 @@ func TestLSP_Enrich_SingleReconnectUnderConcurrency(t *testing.T) {
 // TestLSP_Enrich_AbortsWhenReconnectFails verifies that a permanently-dead
 // server causes Enrich to return an error after exhausting retries.
 func TestLSP_Enrich_AbortsWhenReconnectFails(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot, g := seedRepo(t, 6)
 
 	server1 := newInstrumentedServer()
@@ -598,7 +604,8 @@ func TestLSP_Enrich_AbortsWhenReconnectFails(t *testing.T) {
 // of the dead session's opens) rather than hovered against an assumed-open
 // doc. The new server must therefore receive a paired didOpen/didClose.
 func TestLSP_Enrich_ReopensDocsOnNewServerAfterReconnect(t *testing.T) {
-	repoRoot, g := seedRepo(t, 8) // 8 nodes, all in main.go
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
+	repoRoot, g := seedRepo(t, 8)        // 8 nodes, all in main.go
 
 	server1 := newInstrumentedServer()
 	p, cleanup := providerWithInstrumentedServer(t, server1, []string{"go"}, 8)

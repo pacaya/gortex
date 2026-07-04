@@ -239,6 +239,17 @@ type SemanticConfig struct {
 	// matching any glob is not enriched and does not count toward a repo's
 	// present languages, so a language server is not spawned just to index it.
 	ExcludeGlobs []string `mapstructure:"exclude_globs" yaml:"exclude_globs,omitempty"`
+	// LSPSweep selects how much of the per-file LSP hover / call-hierarchy
+	// enrichment sweep runs. On an already-resolved graph that sweep re-opens
+	// and re-hovers every file to confirm zero new edges, so gating it cuts
+	// warm-restart churn:
+	//   - "demand" (DEFAULT / empty): sweep only files whose declarations
+	//     still carry unresolved same-name call candidates.
+	//   - "full": sweep every file of the language (pre-knob behaviour).
+	//   - "off": skip the per-file sweep; the tier-deciding confirm / add
+	//     passes still run.
+	// The GORTEX_LSP_SWEEP env override wins over this setting.
+	LSPSweep string `mapstructure:"lsp_sweep" yaml:"lsp_sweep,omitempty"`
 	// SkipEmbed lists (language, kind) combinations that should be
 	// indexed for graph queries but *not* embedded into the vector
 	// search. Design tokens (CSS custom properties), terraform

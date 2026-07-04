@@ -16,6 +16,11 @@ type Config struct {
 	// languages (so a language server is not spawned for a repo whose only
 	// files of that language are excluded).
 	ExcludeGlobs []string `mapstructure:"exclude_globs" yaml:"exclude_globs,omitempty"`
+	// LSPSweep mirrors config.SemanticConfig.LSPSweep — the per-file LSP
+	// enrichment sweep mode ("demand" default / "full" / "off"). Threaded to
+	// each spawned LSP provider via the router's WithEnrichSweepMode. The
+	// GORTEX_LSP_SWEEP env override wins over it at enrichment time.
+	LSPSweep string `mapstructure:"lsp_sweep" yaml:"lsp_sweep,omitempty"`
 }
 
 // ProviderConfig holds configuration for a single semantic provider.

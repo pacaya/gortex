@@ -68,6 +68,12 @@ type Router struct {
 	// enrichment, propagated to every spawned provider.
 	enrichExcludeGlobs []string
 
+	// enrichSweepMode is the configured per-file enrichment sweep mode
+	// ("demand" default / "full" / "off"), propagated to every spawned
+	// provider. Empty means the demand-gated default; the GORTEX_LSP_SWEEP
+	// env override wins over it at enrichment time.
+	enrichSweepMode string
+
 	mu        sync.Mutex
 	providers map[providerKey]*routedProvider // (spec.Name, workspace) → cached provider
 	enabled   map[string]*ServerSpec          // spec.Name → spec marked enabled by config (no spawn until For/ForSpec)
@@ -316,6 +322,15 @@ func (r *Router) WithEnrichExcludeGlobs(globs []string) *Router {
 	return r
 }
 
+// WithEnrichSweepMode sets the per-file enrichment sweep mode ("demand"
+// default / "full" / "off") propagated to every spawned provider. An empty
+// value keeps the demand-gated default; the GORTEX_LSP_SWEEP env override
+// still wins over whatever is set here. Builder-style.
+func (r *Router) WithEnrichSweepMode(mode string) *Router {
+	r.enrichSweepMode = mode
+	return r
+}
+
 // WithReaperInterval starts a background reaper that calls Reap() at
 // the given cadence. Idempotent — calling twice replaces the previous
 // reaper. A zero duration disables reaping.
@@ -434,6 +449,7 @@ func (r *Router) forSpecWorkspace(spec *ServerSpec, workspace string, pin bool) 
 	p := NewProviderFromSpec(spec, r.logger)
 	p.workspaceFolders = r.additionalWorkspaceFolders
 	p.excludeGlobs = r.enrichExcludeGlobs
+	p.sweepMode = r.enrichSweepMode
 	// ruby-lsp (and any spec opting in) runs a `bundle install` for a composed
 	// bundle on spawn unless BUNDLE_GEMFILE is set; point it at the workspace's
 	// own Gemfile when present so enrichment skips that install.

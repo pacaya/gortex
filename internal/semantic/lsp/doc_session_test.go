@@ -19,6 +19,7 @@ import (
 // file), and the per-file hover sweep — must be didOpen'd exactly once: the
 // shared document session keeps it warm across phases instead of reopening it.
 func TestLSP_Enrich_SessionSharedAcrossPasses(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // keep the per-file sweep in play so it shares the warm document
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "shared.go"),

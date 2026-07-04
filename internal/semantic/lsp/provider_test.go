@@ -135,6 +135,7 @@ func providerWithFakeServer(t *testing.T, server *fakeLSPServer, languages []str
 // ---------------------------------------------------------------------------
 
 func TestLSP_Provider_EnrichesNodeMetaFromHover(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "main.go"),
@@ -417,6 +418,7 @@ func TestLSP_Provider_FiltersByLanguage(t *testing.T) {
 }
 
 func TestLSP_Provider_OpensEachFileOnce(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "shared.go"),
@@ -542,6 +544,7 @@ func TestLSP_Provider_EnrichFileIsNoOp(t *testing.T) {
 }
 
 func TestLSP_Provider_EnrichSurvivesHoverFailures(t *testing.T) {
+	t.Setenv("GORTEX_LSP_SWEEP", "full") // exercise the full per-file sweep, not the demand-gated default
 	repoRoot := t.TempDir()
 	require.NoError(t, os.WriteFile(
 		filepath.Join(repoRoot, "main.go"),
