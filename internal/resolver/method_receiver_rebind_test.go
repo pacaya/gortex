@@ -1,6 +1,8 @@
 package resolver
 
 import (
+	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,6 +10,71 @@ import (
 
 	"github.com/zzet/gortex/internal/graph"
 )
+
+// getFileNodesCounter wraps a graph.Store and counts GetFileNodes calls so a
+// test can prove the per-file receiver rebind builds a package's type index
+// once (O(files)) rather than rebuilding it per file (O(files^2)).
+type getFileNodesCounter struct {
+	graph.Store
+	calls int
+}
+
+func (c *getFileNodesCounter) GetFileNodes(fp string) []*graph.Node {
+	c.calls++
+	return c.Store.GetFileNodes(fp)
+}
+
+// TestRebindGoMethodReceiversForFile_MemoizesPackageTypeIndex is the regression
+// for the scoped-tail quadratic: dispatching the per-file receiver rebind over
+// every file of a D-file package rebuilt the package's type index from scratch
+// each time — D GetFileNodes per file, D^2 for the package. The index is a pure
+// function of the directory and is not mutated by the tail, so it must be built
+// once and reused, collapsing the package cost back to O(D).
+func TestRebindGoMethodReceiversForFile_MemoizesPackageTypeIndex(t *testing.T) {
+	const dfiles = 12
+	dir := "repoa/pkg"
+	typeFile := dir + "/t0.go"
+
+	cs := &getFileNodesCounter{Store: graph.New()}
+	// The canonical type T lives in file 0; every other file declares a method
+	// on T whose receiver is a phantom <methodfile>::T the rebind must lift onto
+	// file 0's T — the cross-file-method shape the pass exists to fix.
+	cs.AddNode(&graph.Node{ID: typeFile, Kind: graph.KindFile, Name: "t0.go", FilePath: typeFile, Language: "go", RepoPrefix: "repoa"})
+	cs.AddNode(&graph.Node{ID: typeFile + "::T", Kind: graph.KindType, Name: "T", FilePath: typeFile, Language: "go", RepoPrefix: "repoa"})
+	for i := 1; i < dfiles; i++ {
+		f := fmt.Sprintf("%s/m%d.go", dir, i)
+		cs.AddNode(&graph.Node{ID: f, Kind: graph.KindFile, Name: filepath.Base(f), FilePath: f, Language: "go", RepoPrefix: "repoa"})
+		m := fmt.Sprintf("%s::T.M%d", f, i)
+		cs.AddNode(&graph.Node{ID: m, Kind: graph.KindMethod, Name: fmt.Sprintf("M%d", i), FilePath: f, Language: "go", RepoPrefix: "repoa"})
+		cs.AddEdge(&graph.Edge{From: m, To: f + "::T", Kind: graph.EdgeMemberOf, FilePath: f, Line: 1})
+	}
+
+	r := New(cs)
+	r.buildDirIndexes()
+	defer r.clearDirIndexes()
+
+	files := []string{typeFile}
+	for i := 1; i < dfiles; i++ {
+		files = append(files, fmt.Sprintf("%s/m%d.go", dir, i))
+	}
+	cs.calls = 0
+	for _, f := range files {
+		r.rebindGoMethodReceiversForFile(f)
+	}
+
+	// Memoized: the type index is built once (dfiles GetFileNodes) plus one
+	// memberOf fetch per file — ~2·D. The quadratic rebuild would be ~D·(D+1)
+	// (132 for D=12); 3·D (36) sits well below it and above the linear cost.
+	assert.LessOrEqualf(t, cs.calls, 3*dfiles,
+		"per-file receiver rebind rebuilt the package type index per file (%d GetFileNodes for %d files)", cs.calls, dfiles)
+
+	// Correctness: every phantom cross-file receiver rebound onto file 0's T.
+	for i := 1; i < dfiles; i++ {
+		f := fmt.Sprintf("%s/m%d.go", dir, i)
+		assert.Truef(t, hasEdgeKind(cs, fmt.Sprintf("%s::T.M%d", f, i), typeFile+"::T", graph.EdgeMemberOf),
+			"method M%d's receiver must rebind onto the canonical type", i)
+	}
+}
 
 // TestRebindGoMethodReceivers_CollapsesCrossFileMethods is the
 // regression for the Go extractor emitting EdgeMemberOf targets as

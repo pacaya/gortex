@@ -72,14 +72,27 @@ func (r *Resolver) rebindGoMethodReceivers() {
 // dominant per-edit cost on a large graph). dirIndex (built by
 // buildPassIndexes before this runs) supplies the package's files.
 func (r *Resolver) rebindGoMethodReceiversForFile(filePath string) {
-	typesIdx := make(map[pkgKey]string)
-	for _, fn := range r.dirIndex[filepath.Dir(filePath)] {
-		for _, n := range r.graph.GetFileNodes(fn.FilePath) {
-			if n != nil && n.Language == "go" &&
-				(n.Kind == graph.KindType || n.Kind == graph.KindInterface) {
-				addGoTypeToIndex(typesIdx, n)
+	// The package's type index is a pure function of the directory's files and
+	// never mutated by the tail passes, so memoize it: a scoped tail visiting
+	// every file of a D-file package builds it once (O(D)) instead of per file
+	// (O(D^2)). The empty result is cached too so a package with no Go types
+	// isn't re-scanned per file.
+	dir := filepath.Dir(filePath)
+	typesIdx, ok := r.receiverTypeIdxByDir[dir]
+	if !ok {
+		typesIdx = make(map[pkgKey]string)
+		for _, fn := range r.dirIndex[dir] {
+			for _, n := range r.graph.GetFileNodes(fn.FilePath) {
+				if n != nil && n.Language == "go" &&
+					(n.Kind == graph.KindType || n.Kind == graph.KindInterface) {
+					addGoTypeToIndex(typesIdx, n)
+				}
 			}
 		}
+		if r.receiverTypeIdxByDir == nil {
+			r.receiverTypeIdxByDir = make(map[string]map[pkgKey]string)
+		}
+		r.receiverTypeIdxByDir[dir] = typesIdx
 	}
 	if len(typesIdx) == 0 {
 		return

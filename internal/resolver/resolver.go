@@ -50,6 +50,13 @@ type Resolver struct {
 	logger       *zap.Logger
 	dirIndex     map[string][]*graph.Node
 	lastDirIndex map[string][]*graph.Node
+	// receiverTypeIdxByDir memoizes, per package directory, the Go type index
+	// the per-file method-receiver rebind builds. On a scoped tail that visits
+	// every file of a D-file package, building it once per package (O(D)) rather
+	// than once per file (O(D^2) GetFileNodes) removes the quadratic. Cleared
+	// with dirIndex — it is only valid while the type nodes it indexes are held
+	// stable for the duration of one ResolveAll/ResolveFile pass.
+	receiverTypeIdxByDir map[string]map[pkgKey]string
 	// cppIncludeDirs maps a repo-relative C/C++ source file to its ordered
 	// include search path (the `-I` / `-isystem` dirs from compile_commands.json),
 	// so a quoted/angle include resolves against the real compiler dir set
@@ -629,7 +636,13 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	// (scanning every KindLocal, every Go type) that dominate a warm restart,
 	// and unchanged repos are already in their post-full-resolve steady state,
 	// so their edges are no-ops here.
-	if len(r.scope) == 0 {
+	// Past a per-repo file budget the per-file dispatch's O(files) store round
+	// trips (plus the per-package type-index builds behind the receiver rebind)
+	// cost more than a single whole-graph streaming sweep. The two produce the
+	// identical edge set — the attribution passes are idempotent and re-running
+	// them over an unchanged repo is a no-op — so a large changed repo is routed
+	// through the streaming path instead of the per-file storm.
+	if len(r.scope) == 0 || r.scopedTailExceedsFileBudget() {
 		r.runFileAttributionPassesLocked()
 	} else {
 		for _, fp := range r.scopedFiles() {
@@ -784,6 +797,43 @@ func (r *Resolver) edgeFromInScope(from string) bool {
 	return ok
 }
 
+// scopedTailFileBudget bounds how many files a single changed repo may hold
+// before the scoped per-file attribution tail is abandoned for the whole-graph
+// streaming passes. Above it the per-file store round trips dominate one
+// streaming sweep, so a large changed repo among small siblings would otherwise
+// make the "incremental" warm restart's pre-ready phase slower than a full one.
+// A var (not const) so tests can drive both branches on small fixtures.
+var scopedTailFileBudget = 2000
+
+// scopedTailExceedsFileBudget reports whether any repo in the active scope holds
+// more KindFile nodes than scopedTailFileBudget. It reads the already-built
+// dirIndex (no extra store materialization) and early-returns as soon as one
+// repo crosses the budget, so a large changed repo never pays the per-file
+// dispatch's O(files) query storm just to discover it should have streamed.
+// Callers gate on len(r.scope) > 0 first.
+func (r *Resolver) scopedTailExceedsFileBudget() bool {
+	perRepo := make(map[string]int, len(r.scope))
+	for _, nodes := range r.dirIndex {
+		for _, n := range nodes {
+			if n == nil {
+				continue
+			}
+			prefix := n.RepoPrefix
+			if prefix == "" {
+				prefix = graph.RepoPrefixOfID(n.ID)
+			}
+			if _, ok := r.scope[prefix]; !ok {
+				continue
+			}
+			perRepo[prefix]++
+			if perRepo[prefix] > scopedTailFileBudget {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // scopedFiles returns the file paths of every KindFile node owned by a repo in
 // the active resolve scope. Callers gate on len(r.scope) > 0 first, so an empty
 // scope yields nothing. Backs the per-file dispatch of the post-resolve Go
@@ -846,6 +896,7 @@ func (r *Resolver) buildDirIndexes() {
 func (r *Resolver) clearDirIndexes() {
 	r.dirIndex = nil
 	r.lastDirIndex = nil
+	r.receiverTypeIdxByDir = nil
 }
 
 // warmLookupCache batches the per-edge GetNode / FindNodesByName

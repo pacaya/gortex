@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"fmt"
 	"sort"
 	"testing"
 
@@ -208,6 +209,71 @@ func TestResolveAll_ScopedEqualsFull_RelativeImports(t *testing.T) {
 		"scoped and full relative-import resolution must produce identical edge sets")
 	assert.True(t, hasEdgeKind(scopedStore, "repoa/pkg/app.py", "repoa/pkg/util.py", graph.EdgeImports),
 		"the python relative import must resolve to the internal file under the scoped pass")
+}
+
+// TestScopedTailExceedsFileBudget pins the size gate that routes a large changed
+// repo away from the per-file attribution storm: the gate fires when any repo in
+// scope holds more KindFile nodes than the budget, and reads the already-built
+// dirIndex rather than re-materializing the repo just to count.
+func TestScopedTailExceedsFileBudget(t *testing.T) {
+	s := graph.New()
+	for i := 0; i < 3; i++ {
+		f := fmt.Sprintf("repoa/pkg/f%d.go", i)
+		s.AddNode(&graph.Node{ID: f, Kind: graph.KindFile, Name: fmt.Sprintf("f%d.go", i), FilePath: f, Language: "go", RepoPrefix: "repoa"})
+	}
+	s.AddNode(&graph.Node{ID: "repob/x/b.go", Kind: graph.KindFile, Name: "b.go", FilePath: "repob/x/b.go", Language: "go", RepoPrefix: "repob"})
+
+	r := New(s)
+	r.buildDirIndexes()
+	defer r.clearDirIndexes()
+
+	orig := scopedTailFileBudget
+	defer func() { scopedTailFileBudget = orig }()
+
+	r.SetScope(map[string]struct{}{"repoa": {}})
+	scopedTailFileBudget = 2
+	assert.True(t, r.scopedTailExceedsFileBudget(), "repoa's 3 files exceed a budget of 2")
+	scopedTailFileBudget = 3
+	assert.False(t, r.scopedTailExceedsFileBudget(), "repoa's 3 files do not exceed a budget of 3")
+
+	// A small changed repo stays on the per-file path even when a large sibling
+	// exists, because only in-scope repos are counted.
+	r.SetScope(map[string]struct{}{"repob": {}})
+	scopedTailFileBudget = 2
+	assert.False(t, r.scopedTailExceedsFileBudget(), "repob's single file is within budget")
+}
+
+// TestResolveAll_ScopedLargeRepoEqualsFull is the correctness gate for the size
+// guard: when a changed repo exceeds the file budget the scoped tail runs the
+// whole-graph streaming passes instead of the per-file dispatch, and must still
+// land the identical edge + node set a full resolve produces. buildGoTailFixture
+// gives repo A two files, so a budget of 1 forces the streaming branch.
+func TestResolveAll_ScopedLargeRepoEqualsFull(t *testing.T) {
+	orig := scopedTailFileBudget
+	scopedTailFileBudget = 1
+	defer func() { scopedTailFileBudget = orig }()
+
+	scopedStore := graph.New()
+	buildGoTailFixture(scopedStore)
+	twinStore := graph.New()
+	buildGoTailFixture(twinStore)
+
+	scoped := New(scopedStore)
+	scoped.SetScope(map[string]struct{}{"repoa": {}})
+	require.NotNil(t, scoped.ResolveAll())
+
+	full := New(twinStore)
+	require.NotNil(t, full.ResolveAll())
+
+	assert.Equal(t, storeEdgeSet(twinStore), storeEdgeSet(scopedStore),
+		"a scoped resolve that streams the large repo's tail must equal the full resolve")
+	assert.Equal(t, storeNodeSet(twinStore), storeNodeSet(scopedStore))
+
+	// The tail still attributed repo A's edges under the streaming branch.
+	assert.False(t, hasCallEdge(scopedStore, "repoa/pkg/a.go::UsesLen", "unresolved::len"),
+		"repo A's builtin call must be attributed under the streaming tail")
+	assert.True(t, hasEdgeKind(scopedStore, "repoa/pkg/a2.go::Widget.Do", "repoa/pkg/a.go::Widget", graph.EdgeMemberOf),
+		"repo A's phantom method receiver must rebind under the streaming tail")
 }
 
 // TestBuildImportClosureFiltered_Equivalence pins the closure-scoping contract
