@@ -137,6 +137,24 @@ func shouldEngageAssist(mode assistMode, query string) bool {
 	}
 }
 
+// deferColdLoadForAssist decides whether an implicit search-assist
+// request must defer its local-model cold load. Given that assist would
+// otherwise engage, it returns engage=false + deferred=true exactly when
+// the model is NOT yet loaded AND a background enrichment pass is in
+// flight — loading a multi-GiB model then would contend with enrichment
+// for CPU/GPU/RAM. When the model is already loaded, or nothing is
+// enriching, assist proceeds unchanged. The explicit `ask` path never
+// calls this: user intent always loads the model.
+func deferColdLoadForAssist(engage, modelLoaded, enrichmentBusy bool) (engageOut, deferred bool) {
+	if !engage {
+		return false, false
+	}
+	if modelLoaded || !enrichmentBusy {
+		return true, false
+	}
+	return false, true
+}
+
 // decomposeMinLeafLen is the shortest leaf token the decomposition
 // fallback keeps. One- and two-character fragments ("id", "to", a
 // lone "s") match too broadly to rescue a query usefully and only

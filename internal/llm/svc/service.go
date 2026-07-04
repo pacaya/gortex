@@ -17,12 +17,52 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/zzet/gortex/internal/llm"
 	"github.com/zzet/gortex/internal/llm/agent"
 	"github.com/zzet/gortex/internal/llm/conversationlog"
 	"github.com/zzet/gortex/internal/llm/provider"
 	"github.com/zzet/gortex/internal/savings"
 )
+
+// loadable is implemented by a provider whose backing model is loaded
+// lazily and can be unloaded when idle (the local llama provider). The
+// service consults it via ModelLoaded so the search-assist gate can
+// avoid triggering an expensive cold load while enrichment is running.
+// Providers with no cold-load cost (the HTTP backends) do not implement
+// it and are always treated as ready.
+type loadable interface {
+	Loaded() bool
+}
+
+// loggerConfigurable is implemented by a provider that emits lifecycle
+// diagnostics (model load / idle unload) to a structured logger the
+// service supplies after construction.
+type loggerConfigurable interface {
+	SetLogger(*zap.Logger)
+}
+
+// ServiceOption customises a Service at construction. Options are
+// applied before the provider is built so a WithLogger logger can be
+// propagated into a lifecycle-aware provider.
+type ServiceOption func(*Service)
+
+// WithBusyPredicate installs the enrichment-busy predicate the
+// search-assist gate consults: when it reports true and the local model
+// is not yet loaded, an implicit assist request defers its cold load
+// rather than contend with the in-flight enrichment pass. A nil
+// predicate (the default) always reads as "not busy".
+func WithBusyPredicate(fn func() bool) ServiceOption {
+	return func(s *Service) { s.busy = fn }
+}
+
+// WithLogger attaches the structured logger the service propagates into
+// a lifecycle-aware provider (the local model's load / idle-unload
+// diagnostics).
+func WithLogger(l *zap.Logger) ServiceOption {
+	return func(s *Service) { s.logger = l }
+}
 
 // errServiceUnavailable is returned by operational methods when no
 // provider could be constructed (disabled config, build without
@@ -66,6 +106,16 @@ type Service struct {
 	// JSONL when a conversation-log directory is configured. Opt-in
 	// (records raw LLM I/O): a nil/disabled logger is a no-op.
 	convLog *conversationlog.Logger
+
+	// busy, when set, reports whether a background enrichment pass is in
+	// flight — the signal the search-assist gate uses to defer a local
+	// model cold load. Nil reads as "not busy". Installed via
+	// WithBusyPredicate.
+	busy func() bool
+
+	// logger receives the provider's lifecycle diagnostics (model load /
+	// idle unload). Installed via WithLogger; nil degrades to a no-op.
+	logger *zap.Logger
 }
 
 // NewService constructs the service and its provider. Provider
@@ -74,7 +124,7 @@ type Service struct {
 // call. A disabled or misconfigured config yields a Service whose
 // Enabled() reports false; the construction error is retained and
 // surfaced via ProviderErr.
-func NewService(cfg llm.Config, backend llm.Backend) *Service {
+func NewService(cfg llm.Config, backend llm.Backend, opts ...ServiceOption) *Service {
 	cfg = cfg.ApplyDefaults()
 	s := &Service{
 		cfg:             cfg,
@@ -85,6 +135,9 @@ func NewService(cfg llm.Config, backend llm.Backend) *Service {
 		routedProviders: map[string]llm.Provider{},
 		convLog:         conversationlog.New(conversationlog.DirFromEnv()),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	if cfg.IsEnabled() && backend != nil {
 		p, err := provider.New(cfg)
 		if err != nil {
@@ -92,9 +145,45 @@ func NewService(cfg llm.Config, backend llm.Backend) *Service {
 		} else {
 			s.provider = p
 			s.profile = llm.ProfileForProvider(p.Name())
+			s.configureProvider(p)
 		}
 	}
 	return s
+}
+
+// configureProvider propagates the service's logger into a
+// lifecycle-aware provider (the local model). A provider without the
+// SetLogger method, or a nil logger, is left untouched.
+func (s *Service) configureProvider(p llm.Provider) {
+	if s.logger == nil {
+		return
+	}
+	if lc, ok := p.(loggerConfigurable); ok {
+		lc.SetLogger(s.logger)
+	}
+}
+
+// ModelLoaded reports whether the active provider's backing model is
+// resident. A provider with no cold-load cost (the HTTP backends), or no
+// provider at all, always reports true — there is nothing to load.
+func (s *Service) ModelLoaded() bool {
+	if s == nil || s.provider == nil {
+		return true
+	}
+	if l, ok := s.provider.(loadable); ok {
+		return l.Loaded()
+	}
+	return true
+}
+
+// EnrichmentBusy reports whether the configured busy predicate fires —
+// i.e. a background enrichment pass is currently running. A nil
+// predicate (never configured) reports false.
+func (s *Service) EnrichmentBusy() bool {
+	if s == nil || s.busy == nil {
+		return false
+	}
+	return s.busy()
 }
 
 // SetConversationDir enables (or disables) the conversation-log sink at
@@ -245,6 +334,7 @@ func (s *Service) providerForModel(model string) (llm.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.configureProvider(p)
 	s.routedProviders[model] = p
 	return p, nil
 }

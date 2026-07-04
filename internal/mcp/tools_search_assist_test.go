@@ -100,6 +100,35 @@ func TestShouldEngageAssist(t *testing.T) {
 	assert.True(t, shouldEngageAssist(assistDeep, "where do we hash"))
 }
 
+// TestDeferColdLoadForAssist covers the enrichment-aware first-load
+// gate: an implicit assist request defers its local-model cold load
+// only when the model is not yet loaded AND enrichment is in flight.
+func TestDeferColdLoadForAssist(t *testing.T) {
+	cases := []struct {
+		name         string
+		engage       bool
+		modelLoaded  bool
+		enrichBusy   bool
+		wantEngage   bool
+		wantDeferred bool
+	}{
+		{"not engaging stays off", false, false, true, false, false},
+		{"loaded model ignores busy", true, true, true, true, false},
+		{"not busy proceeds", true, false, false, true, false},
+		{"unloaded + busy defers", true, false, true, false, true},
+		{"loaded + not busy proceeds", true, true, false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engage, deferred := deferColdLoadForAssist(tc.engage, tc.modelLoaded, tc.enrichBusy)
+			assert.Equal(t, tc.wantEngage, engage, "engage")
+			assert.Equal(t, tc.wantDeferred, deferred, "deferred")
+			// Deferral and engagement are mutually exclusive.
+			assert.False(t, engage && deferred, "engage and deferred must never both be true")
+		})
+	}
+}
+
 func TestTruncateBody(t *testing.T) {
 	cases := []struct {
 		name     string

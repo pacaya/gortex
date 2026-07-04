@@ -643,6 +643,21 @@ func (m *Manager) EnrichmentStatuses() []EnrichmentStatus {
 	return out
 }
 
+// EnrichmentActive reports whether any per-(repo, provider) enrichment
+// pass is currently in the running state. The LLM lifecycle gate uses it
+// to defer an expensive local-model cold load while enrichment is in
+// flight — the two must not contend for CPU/GPU/RAM on a small machine.
+func (m *Manager) EnrichmentActive() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, st := range m.enrichStatus {
+		if st.State == EnrichStateRunning {
+			return true
+		}
+	}
+	return false
+}
+
 // enrichMarkerCurrent reports whether the persisted completion marker for
 // (repoPrefix, provider) already records rs.SHA on a clean tree, so a
 // re-enrichment would confirm nothing. It returns false — never skip — when:

@@ -1365,7 +1365,17 @@ func (s *Server) SetupLLM(cfg llm.Config) {
 		return
 	}
 	backend := svc.NewInProcessBackend(s.engine, s.effectiveContractRegistry)
-	service := svc.NewService(cfg, backend)
+	// The busy predicate lets the search-assist gate defer an expensive
+	// local-model cold load while a background enrichment pass is in
+	// flight — the two must not contend for CPU/GPU/RAM. Reads the
+	// semantic manager lazily so it sees a manager attached after
+	// SetupLLM, and reports "not busy" until one is.
+	busy := func() bool {
+		return s.semanticMgr != nil && s.semanticMgr.EnrichmentActive()
+	}
+	service := svc.NewService(cfg, backend,
+		svc.WithBusyPredicate(busy),
+		svc.WithLogger(s.logger))
 	s.SetLLMService(service)
 	if err := service.ProviderErr(); err != nil {
 		s.logger.Warn("LLM provider unavailable — `ask` tool and search assist disabled",

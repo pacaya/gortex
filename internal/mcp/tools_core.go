@@ -1464,6 +1464,22 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 	if isSoup || !expand.allowsLLMExpansion() {
 		engage = false
 	}
+	// Enrichment-aware first-load gate: an implicit assist request must
+	// not trigger a cold load of the local model while a background
+	// enrichment pass is in flight — the two would contend for
+	// CPU/GPU/RAM. Defer assist for this request (BM25-only ranking) and
+	// tell the caller via a rider; the explicit `ask` tool loads
+	// regardless. Once the model is already loaded, busy() is irrelevant.
+	var assistDeferred bool
+	if engage {
+		modelLoaded := s.llmService.ModelLoaded()
+		busy := s.llmService.EnrichmentBusy()
+		engage, assistDeferred = deferColdLoadForAssist(engage, modelLoaded, busy)
+		if assistDeferred {
+			s.logger.Info("deferred local model cold-load during enrichment",
+				zap.String("query", q))
+		}
+	}
 
 	fetchLimit := offset + limit + 10
 	if engage {
@@ -1882,6 +1898,16 @@ func (s *Server) handleSearchSymbols(ctx context.Context, req mcp.CallToolReques
 			assistDebug["verify_dropped"] = len(verifyDbg.Considered) - len(verifyDbg.Kept)
 		}
 		resp["assist"] = assistDebug
+	}
+	// When the assist cold-load was deferred (enrichment in flight),
+	// tell the caller the results are BM25-only and LLM-assisted ranking
+	// will be available shortly — so a thin result set isn't read as a
+	// hard miss.
+	if assistDeferred {
+		resp["assist_deferred"] = map[string]any{
+			"reason": "enrichment_in_progress",
+			"detail": "local model cold-load deferred while background enrichment is running; results are BM25-only. Retry shortly for LLM-assisted ranking, or use the `ask` tool to load the model now.",
+		}
 	}
 	// Surface the 11-signal rerank breakdown when the caller asked
 	// for it via debug=true. Page-sliced to match the rows in
