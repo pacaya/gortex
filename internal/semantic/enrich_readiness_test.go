@@ -79,3 +79,34 @@ func TestRunEnrichOne_FastProviderSkipsReadiness(t *testing.T) {
 	require.Len(t, results, 1, "a fast provider still runs; the readiness gate is simply skipped")
 	assert.Equal(t, "gopls-like", results[0].Provider)
 }
+
+// notReadyProvider models a ReadinessProber whose workspace never finishes
+// loading: WaitReady reports ErrWorkspaceNotReady. The manager must record the
+// honest not-ready state and skip the sweep instead of running it against an
+// empty server and reporting a misleading "completed, 0 coverage".
+type notReadyProvider struct {
+	slowSolutionProvider
+}
+
+func (n *notReadyProvider) WaitReady(ctx context.Context, repoRoot string) error {
+	n.waited = true
+	return ErrWorkspaceNotReady
+}
+
+// TestRunEnrichOne_NeverReadySkipsSweepWithHonestState: when readiness never
+// confirms, the pass is skipped and recorded as not_ready — no result is
+// produced, so a later cycle retries.
+func TestRunEnrichOne_NeverReadySkipsSweepWithHonestState(t *testing.T) {
+	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	p := &notReadyProvider{slowSolutionProvider{name: "csharp-like", languages: []string{"csharp"}}}
+
+	results := mgr.runEnrichOne(graph.New(), "repo", "/tmp/repo", "csharp", p, 10, RepoEnrichState{}, nil, map[string]bool{})
+
+	require.True(t, p.waited, "readiness prober must be invoked")
+	assert.Empty(t, results, "the sweep is skipped, so no result is produced")
+
+	statuses := mgr.EnrichmentStatuses()
+	require.Len(t, statuses, 1)
+	assert.Equal(t, EnrichStateNotReady, statuses[0].State,
+		"a workspace that never loads is recorded as not_ready, not completed")
+}

@@ -1,63 +1,234 @@
 package resolver
 
-import "github.com/zzet/gortex/internal/graph"
+import (
+	"strconv"
 
-// Member-level C# interface-dispatch synthesis.
+	"github.com/zzet/gortex/internal/graph"
+)
+
+// Member-level C# interface-dispatch synthesis: the implements-family cascade.
 //
-// A through-interface call site — `x.Convert(1)` where `x` is typed as the
-// interface — binds to the interface *member* declaration node
-// (<file>::IConverter.Convert), which the extractor now emits. But the method
-// a compiler would actually dispatch to at runtime lives on each concrete
-// implementation of that interface. This pass mints one best-guess `calls`
-// edge from the call site to the same-named member on every in-repo
-// implementation, so a forward/backward call walk can reach the concrete
-// bodies that a purely static binding leaves invisible.
+// Roslyn — the reference C# resolver — treats an interface method and every
+// method that implements it (directly, or through a base class that implements
+// the interface) as ONE linked family, and reports the union of the family's
+// call sites for every member. Two mechanisms feed that union:
 //
-// Only one implementation runs at any given site, so the fan-out is genuinely
-// a guess: the edges ride at the speculative tier (OriginSpeculative +
-// Meta[speculative]=true) — present-but-hidden-by-default, excluded by
-// min_tier filtering, and auditable via `analyze kind=speculative`. Keeping
-// them hidden is also what protects precision: a visible fan-out would attach
-// every interface-dispatch call site to every implementation's member.
+//  1. Through-interface calls: `x.Convert(1)` where `x` is typed as the
+//     interface binds to the interface member node. Those calls must surface
+//     on every concrete implementation.
+//  2. Sibling implementation calls: a converter's own `Convert(-number)`
+//     (a self/recursive or same-class call) binds directly to that class's
+//     method node — it never touches the interface node. Roslyn still reports
+//     that site for the interface method AND for every sibling implementation.
+//
+// A fan-out anchored only on calls bound to the interface member (mechanism 1)
+// misses the dominant mass of real-corpus usages, which are mechanism 2. This
+// pass therefore builds the full implements-family per (interface, method
+// name) — the interface member plus the same-named method on every type whose
+// implements/extends chain reaches the interface — and, for every call edge
+// bound to ANY family member, synthesizes call edges to ALL other members.
+//
+// Tier: ast_inferred / ConfidenceTyped (non-speculative, type-keyed) — the
+// same tier the sibling one-to-many dispatch passes use (MediatR Publish ->
+// every handler, Spring publishEvent -> every listener), so the cascade rides
+// in the DEFAULT find_usages / get_callers result. Family membership is
+// established strictly through the implements/extends chain — never by name
+// matching alone — so unrelated same-named methods are never linked.
 
-// csharpIfaceDispatchCap bounds the per-site fan-out. A widely-implemented
-// interface (Humanizer's INumberToWordsConverter has ~40 language impls) must
-// not mint an unbounded edge set from a single call site; above the cap the
-// whole fan-out is dropped as noise. Mirrors speculativeHardCap.
-const csharpIfaceDispatchCap = 40
+// csharpIfaceDispatchCap bounds the family size (every interface-member
+// overload node plus every implementing method node). C# overloads mint one
+// node each, so a broadly-localised interface — one implementation per locale,
+// several overloads per class — legitimately runs to ~70+ member nodes
+// (Humanizer's INumberToWordsConverter.Convert family measures 72) and is
+// exactly the shape this pass exists to cover, so the cap sits above it with
+// headroom; a family wider than the cap is dropped whole as noise
+// (pathological hub interfaces like a monorepo-wide Dispose).
+const csharpIfaceDispatchCap = 128
 
-// ResolveCSharpInterfaceDispatch fans calls bound to a C# interface member out
-// to the concrete same-named member of each in-repo implementation. Returns
-// the number of fan-out edges landed.
+// MetaViaMethodSetInference is the Meta["via"] marker the resolver stamps on
+// EdgeImplements edges minted by structural method-set inference (as opposed
+// to a source-declared base list). Hierarchy-walking passes that must follow
+// only declared subtyping filter on it.
+const MetaViaMethodSetInference = "method-set-inference"
+
+// csharpCallSiteKey identifies one attributed call site. Line is part of the
+// key on purpose: ground truth is line-based, so every call-site line of every
+// family member must fan out to every other member, not one edge per
+// (caller, callee) pair.
+func csharpCallSiteKey(from, to, filePath string, line int) string {
+	return from + "\x00" + to + "\x00" + filePath + "\x00" + strconv.Itoa(line)
+}
+
+// ResolveCSharpInterfaceDispatch fans every call bound to a member of a C#
+// implements-family out to all other members of that family. Returns the
+// number of fan-out edges landed.
 func ResolveCSharpInterfaceDispatch(g graph.Store) int {
 	if g == nil {
 		return 0
 	}
 
-	// interface type node id → its in-repo implementation type node ids.
-	// EdgeImplements is From=type, To=interface; only resolved targets count.
-	implsByIface := map[string][]string{}
-	for e := range g.EdgesByKind(graph.EdgeImplements) {
-		if e == nil || e.From == "" || graph.IsUnresolvedTarget(e.To) {
-			continue
+	// Subtype adjacency over the resolved type hierarchy: super → subs.
+	// EdgeImplements and EdgeExtends both count — a class reaches an interface
+	// through any chain of base classes / base interfaces (e.g. Afrikaans
+	// extends Genderless which implements INumberToWordsConverter).
+	//
+	// Only SOURCE-DECLARED hierarchy edges qualify. The method-set inference
+	// pass mints EdgeImplements from every type whose bare method names cover
+	// an interface — with a single-method interface like IOrdinalizer.Convert
+	// that "links" every Convert-bearing class in the repo, and a family built
+	// over it would union unrelated hierarchies (NumberToWords converters into
+	// the Ordinalizer family). Those edges carry the inference marker; skip
+	// them. Origin cannot discriminate here: it is stamped/backfilled at
+	// different pipeline stages, so declared and inferred edges converge.
+	// This pass can run BEFORE the resolver has bound base-list targets (the
+	// pipeline settles hierarchy targets across several later passes), so an
+	// `unresolved::Name` target is resolved here by an exact, same-repo,
+	// unique type/interface name lookup — ambiguity means skip, never guess.
+	children := map[string][]string{}
+	for _, kind := range []graph.EdgeKind{graph.EdgeImplements, graph.EdgeExtends} {
+		for e := range g.EdgesByKind(kind) {
+			if e == nil || e.From == "" || e.To == "" {
+				continue
+			}
+			if e.Meta != nil && e.Meta["via"] == MetaViaMethodSetInference {
+				continue
+			}
+			toID := e.To
+			if graph.IsUnresolvedTarget(toID) {
+				toID = csharpResolveHierarchyTarget(g, e.From, toID)
+				if toID == "" {
+					continue
+				}
+			}
+			children[toID] = append(children[toID], e.From)
 		}
-		implsByIface[e.To] = append(implsByIface[e.To], e.From)
 	}
-	if len(implsByIface) == 0 {
+	if len(children) == 0 {
 		return 0
 	}
-	// implementation type node id → member name → concrete method node.
-	membersByType := memberMethodNodesByType(g)
 
-	// Existing resolved (From,To) call pairs, so a fan-out edge never
-	// duplicates a real call (e.g. a caller that already reaches the concrete
-	// member directly).
+	// implementation/interface type node id → member name → method nodes.
+	// Every overload matters: C# overloads mint one node each (Convert,
+	// Convert_L39, ...) sharing the same Name, and real call sites bind to any
+	// of them — a single-node-per-name projection would silently drop the
+	// overload the corpus actually calls through.
+	membersByType := csharpMemberMethodsAllByType(g)
+	if len(membersByType) == 0 {
+		return 0
+	}
+
+	// Anchor discovery: every C# interface member method node, via its
+	// EdgeMemberOf owner, grouped by (interface, name) so the interface's own
+	// overload nodes land in ONE family rather than seeding duplicates.
+	type anchorGroup struct {
+		ifaceID    string
+		name       string
+		repoPrefix string
+		nodeIDs    []string
+	}
+	anchorGroups := map[string]*anchorGroup{}
+	var anchorOrder []string
+	for e := range g.EdgesByKind(graph.EdgeMemberOf) {
+		if e == nil || graph.IsUnresolvedTarget(e.To) {
+			continue
+		}
+		m := g.GetNode(e.From)
+		if m == nil || m.Kind != graph.KindMethod || m.Language != "csharp" || !csharpIsIfaceMember(m) {
+			continue
+		}
+		key := e.To + "\x00" + m.Name
+		ag := anchorGroups[key]
+		if ag == nil {
+			ag = &anchorGroup{ifaceID: e.To, name: m.Name, repoPrefix: m.RepoPrefix}
+			anchorGroups[key] = ag
+			anchorOrder = append(anchorOrder, key)
+		}
+		ag.nodeIDs = append(ag.nodeIDs, m.ID)
+	}
+	if len(anchorGroups) == 0 {
+		return 0
+	}
+
+	// Descendant closure per interface, computed once and shared across that
+	// interface's anchors (one per member name).
+	descCache := map[string][]string{}
+	descendants := func(ifaceID string) []string {
+		if d, ok := descCache[ifaceID]; ok {
+			return d
+		}
+		var out []string
+		visited := map[string]bool{ifaceID: true}
+		queue := append([]string(nil), children[ifaceID]...)
+		for len(queue) > 0 {
+			t := queue[0]
+			queue = queue[1:]
+			if visited[t] {
+				continue
+			}
+			visited[t] = true
+			out = append(out, t)
+			queue = append(queue, children[t]...)
+		}
+		descCache[ifaceID] = out
+		return out
+	}
+
+	// Build families and the member → families index.
+	type family struct {
+		ifaceID string
+		members []string
+	}
+	var families []family
+	famsOfMember := map[string][]int{}
+	for _, key := range anchorOrder {
+		ag := anchorGroups[key]
+		memberIDs := append([]string(nil), ag.nodeIDs...)
+		anchorSet := map[string]bool{}
+		for _, id := range ag.nodeIDs {
+			anchorSet[id] = true
+		}
+		implCount := 0
+		for _, sub := range descendants(ag.ifaceID) {
+			byName := membersByType[sub]
+			if byName == nil {
+				continue
+			}
+			for _, m := range byName[ag.name] {
+				if m == nil || anchorSet[m.ID] {
+					continue
+				}
+				// In-repo only: cross-repo dispatch is CrossRepoResolver's domain.
+				if m.RepoPrefix != ag.repoPrefix {
+					continue
+				}
+				memberIDs = append(memberIDs, m.ID)
+				implCount++
+			}
+		}
+		// A family needs an interface member plus at least one implementation
+		// to cascade; one wider than the cap is dropped whole as noise.
+		if implCount == 0 || len(memberIDs) > csharpIfaceDispatchCap {
+			continue
+		}
+		idx := len(families)
+		families = append(families, family{ifaceID: ag.ifaceID, members: memberIDs})
+		for _, id := range memberIDs {
+			famsOfMember[id] = append(famsOfMember[id], idx)
+		}
+	}
+	if len(families) == 0 {
+		return 0
+	}
+
+	// Existing resolved call sites, keyed per line, so a fan-out edge never
+	// duplicates a real call at the same site (a caller that already reaches
+	// the member directly, or a prior run of this pass).
 	existing := map[string]bool{}
 	for e := range g.EdgesByKind(graph.EdgeCalls) {
 		if e == nil || e.IsSpeculative() || graph.IsUnresolvedTarget(e.To) {
 			continue
 		}
-		existing[e.From+"\x00"+e.To] = true
+		existing[csharpCallSiteKey(e.From, e.To, e.FilePath, e.Line)] = true
 	}
 
 	var batch []*graph.Edge
@@ -66,43 +237,48 @@ func ResolveCSharpInterfaceDispatch(g graph.Store) int {
 		if e == nil || e.IsSpeculative() || graph.IsUnresolvedTarget(e.To) {
 			continue
 		}
-		target := g.GetNode(e.To)
-		if target == nil || target.Kind != graph.KindMethod || target.Language != "csharp" ||
-			!csharpIsIfaceMember(target) {
+		// Never re-fan from this pass's own output — real call sites only.
+		if e.Meta != nil && e.Meta[MetaSynthesizedBy] == SynthCSharpIfaceDispatch {
 			continue
 		}
-		ifaceTypeID := csharpMemberOwnerType(g, target.ID)
-		if ifaceTypeID == "" {
+		fams := famsOfMember[e.To]
+		if len(fams) == 0 {
 			continue
 		}
-		impls := implsByIface[ifaceTypeID]
-		if len(impls) == 0 || len(impls) > csharpIfaceDispatchCap {
-			continue
+		// Tier-gate the SOURCE: a typed or scope-resolved binding (and an
+		// untagged legacy edge, which carries unknown — not low — confidence,
+		// mirroring SuppressRedundantTextMatches) fans from any caller. A
+		// text_matched binding is a name-only guess that can land on a family
+		// member from a completely unrelated same-named method (an
+		// IOrdinalizer.Convert self-call text-matched into the
+		// INumberToWordsConverter family); those fan ONLY when the caller is
+		// itself a member of the same family — the intra-family self/sibling-
+		// call shape the weak tier legitimately carries (overload self-calls
+		// bind text_matched).
+		weakSource := e.Origin == graph.OriginTextMatched
+		var fromFams []int
+		if weakSource {
+			fromFams = famsOfMember[e.From]
+			if len(fromFams) == 0 {
+				continue
+			}
 		}
-		method := target.Name
-		for _, implTypeID := range impls {
-			byName := membersByType[implTypeID]
-			if byName == nil {
+		for _, fi := range fams {
+			if weakSource && !containsInt(fromFams, fi) {
 				continue
 			}
-			impl := byName[method]
-			if impl == nil || impl.ID == target.ID {
-				continue
+			f := families[fi]
+			for _, member := range f.members {
+				if member == e.To {
+					continue
+				}
+				k := csharpCallSiteKey(e.From, member, e.FilePath, e.Line)
+				if existing[k] || seen[k] {
+					continue
+				}
+				seen[k] = true
+				batch = append(batch, csharpIfaceDispatchEdge(e, member, f.ifaceID, len(f.members)-1))
 			}
-			// In-repo only: the implementation must live in the interface's
-			// repo (cross-repo dispatch is CrossRepoResolver's domain).
-			if impl.RepoPrefix != target.RepoPrefix {
-				continue
-			}
-			if existing[e.From+"\x00"+impl.ID] {
-				continue
-			}
-			k := e.From + "\x00" + impl.ID
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			batch = append(batch, csharpIfaceDispatchEdge(e, impl.ID, ifaceTypeID, len(impls)))
 		}
 	}
 	for _, ne := range batch {
@@ -121,44 +297,112 @@ func csharpIsIfaceMember(n *graph.Node) bool {
 	return v
 }
 
-// csharpMemberOwnerType returns the type/interface node id a member belongs to,
-// via its EdgeMemberOf edge, or "" when unresolved.
-func csharpMemberOwnerType(g graph.Store, memberID string) string {
-	for _, oe := range g.GetOutEdges(memberID) {
-		if oe.Kind == graph.EdgeMemberOf && !graph.IsUnresolvedTarget(oe.To) {
-			return oe.To
-		}
-	}
-	return ""
-}
-
-// csharpIfaceDispatchEdge builds one speculative fan-out call edge from the
-// call site e to a concrete implementation member. Confidence is 1/N over the
-// fan-out width, floored/capped like the speculative-dispatch pass.
+// csharpIfaceDispatchEdge builds one fan-out call edge from the call site e to
+// another family member, at the non-speculative ast_inferred tier so it
+// survives the default speculative filter on find_usages / get_callers. The
+// fan-out width rides in candidate_count for auditing; only one implementation
+// runs at a site, but Roslyn reports the reference on every family member and
+// this pass mirrors that.
 func csharpIfaceDispatchEdge(e *graph.Edge, to, ifaceTypeID string, fanout int) *graph.Edge {
-	conf := 1.0
-	if fanout > 0 {
-		conf = 1.0 / float64(fanout)
-	}
-	if conf > 0.45 {
-		conf = 0.45
-	}
-	if conf < 0.05 {
-		conf = 0.05
-	}
 	ne := &graph.Edge{
 		From: e.From, To: to, Kind: graph.EdgeCalls,
 		FilePath: e.FilePath, Line: e.Line,
-		Origin:          graph.OriginSpeculative,
-		Confidence:      conf,
-		ConfidenceLabel: graph.ConfidenceLabelFor(graph.EdgeCalls, conf),
+		Origin:          graph.OriginASTInferred,
+		Confidence:      ConfidenceTyped,
+		ConfidenceLabel: graph.ConfidenceLabelFor(graph.EdgeCalls, ConfidenceTyped),
 		Meta: map[string]any{
-			graph.MetaSpeculative: true,
-			"via":                 "csharp-iface-dispatch",
-			"iface_type":          ifaceTypeID,
-			"candidate_count":     fanout,
+			"via":             "csharp-iface-dispatch",
+			"iface_type":      ifaceTypeID,
+			"candidate_count": fanout,
 		},
 	}
 	StampSynthesized(ne, SynthCSharpIfaceDispatch)
 	return ne
+}
+
+// csharpMemberMethodsAllByType is the overload-preserving variant of
+// memberMethodNodesByType: type node id → member name → EVERY method node with
+// that name (C# overloads mint one node per declaration, so a name maps to
+// several nodes). Uses the backend's MemberMethodsByType projection when
+// available, else walks EdgeMemberOf.
+func csharpMemberMethodsAllByType(g graph.Store) map[string]map[string][]*graph.Node {
+	if cap, ok := g.(graph.MemberMethodsByType); ok {
+		raw := cap.MemberMethodsByType()
+		if len(raw) == 0 {
+			return nil
+		}
+		out := make(map[string]map[string][]*graph.Node, len(raw))
+		for typeID, methods := range raw {
+			set := make(map[string][]*graph.Node, len(methods))
+			for _, m := range methods {
+				set[m.Name] = append(set[m.Name], &graph.Node{
+					ID:         m.MethodID,
+					Kind:       graph.KindMethod,
+					Name:       m.Name,
+					FilePath:   m.FilePath,
+					StartLine:  m.StartLine,
+					RepoPrefix: m.RepoPrefix,
+				})
+			}
+			out[typeID] = set
+		}
+		return out
+	}
+	out := map[string]map[string][]*graph.Node{}
+	for e := range g.EdgesByKind(graph.EdgeMemberOf) {
+		method := g.GetNode(e.From)
+		if method == nil || method.Kind != graph.KindMethod {
+			continue
+		}
+		set := out[e.To]
+		if set == nil {
+			set = make(map[string][]*graph.Node)
+			out[e.To] = set
+		}
+		set[method.Name] = append(set[method.Name], method)
+	}
+	return out
+}
+
+// containsInt reports whether xs contains v. Family lists are tiny (a method
+// belongs to one or two families), so a linear scan beats a map.
+func containsInt(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// csharpResolveHierarchyTarget binds an `unresolved::Name` base-list target to
+// the unique same-repo C# type/interface node with that exact name, or ""
+// when the caller is not C#, the name is unknown, or the name is ambiguous —
+// a wrong hierarchy link unions unrelated families, so no guess is ever made.
+func csharpResolveHierarchyTarget(g graph.Store, fromID, unresolvedTo string) string {
+	name := graph.UnresolvedName(unresolvedTo)
+	if name == "" {
+		return ""
+	}
+	from := g.GetNode(fromID)
+	if from == nil || from.Language != "csharp" {
+		return ""
+	}
+	var cand *graph.Node
+	for _, n := range g.FindNodesByNameInRepo(name, from.RepoPrefix) {
+		if n == nil || (n.Kind != graph.KindType && n.Kind != graph.KindInterface) {
+			continue
+		}
+		if n.Language != "csharp" {
+			continue
+		}
+		if cand != nil {
+			return "" // ambiguous — do not guess
+		}
+		cand = n
+	}
+	if cand == nil {
+		return ""
+	}
+	return cand.ID
 }

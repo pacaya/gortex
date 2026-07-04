@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -844,7 +845,23 @@ func (m *Manager) runEnrichOne(g graph.Store, repoName, repoRoot, lang string, p
 	// and best-effort: a probe timeout or error just proceeds.
 	if rp, ok := provider.(ReadinessProber); ok && enrichReadinessBudget > 0 {
 		rctx, rcancel := context.WithTimeout(context.Background(), enrichReadinessBudget)
-		if err := rp.WaitReady(rctx, repoRoot); err != nil {
+		err := rp.WaitReady(rctx, repoRoot)
+		rcancel()
+		if errors.Is(err, ErrWorkspaceNotReady) {
+			// The server never finished loading its workspace: a sweep now
+			// would spend the whole budget answering empty and report a
+			// misleading "completed, 0 coverage". Record the honest state and
+			// skip; the repo stays un-enriched so a later cycle retries.
+			m.logger.Info("semantic enrichment: workspace not ready; skipping sweep",
+				zap.String("provider", provider.Name()),
+				zap.String("language", lang),
+				zap.String("repo", repoName),
+			)
+			m.setEnrichStatus(repoName, provider.Name(), lang, EnrichStateNotReady, 0, nil,
+				"workspace did not finish loading within the readiness budget; sweep skipped, repo left for retry")
+			return results
+		}
+		if err != nil {
 			m.logger.Debug("semantic enrichment: readiness probe did not confirm; proceeding best-effort",
 				zap.String("provider", provider.Name()),
 				zap.String("language", lang),
@@ -852,7 +869,6 @@ func (m *Manager) runEnrichOne(g graph.Store, repoName, repoRoot, lang string, p
 				zap.Error(err),
 			)
 		}
-		rcancel()
 	}
 
 	_, isContextEnricher := provider.(ContextEnricher)

@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/zzet/gortex/internal/graph"
@@ -91,6 +92,15 @@ type ReadinessProber interface {
 	WaitReady(ctx context.Context, repoRoot string) error
 }
 
+// ErrWorkspaceNotReady is returned by a ReadinessProber.WaitReady when the
+// server never finished loading its workspace within the readiness budget. The
+// Manager treats it specially: rather than run a futile sweep against a server
+// that will answer every query empty (the "completed in 8s, 0 coverage"
+// pathology), it records an honest not-ready state and skips the pass, leaving
+// the repo un-enriched so a later cycle retries. Any other WaitReady error is
+// best-effort and the pass proceeds.
+var ErrWorkspaceNotReady = errors.New("semantic: workspace did not become ready within the readiness budget")
+
 // EnrichResult contains statistics from an enrichment pass.
 type EnrichResult struct {
 	Provider        string  `json:"provider"`
@@ -157,6 +167,7 @@ const (
 	EnrichStatePartial   = "partial"   // deadline hit; completed work landed and is counted
 	EnrichStateAbandoned = "abandoned" // legacy provider detached at deadline; result discarded
 	EnrichStateFailed    = "failed"
+	EnrichStateNotReady  = "not_ready" // readiness prober timed out; sweep skipped, repo left for retry
 )
 
 // EnrichmentStatus reports the lifecycle state of one provider's per-repo

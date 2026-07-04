@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -2080,17 +2082,20 @@ func (p *Provider) ensureClient(workspaceRoot string) error {
 }
 
 // WaitReady implements semantic.ReadinessProber for the Roslyn / MSBuild-class
-// C# servers (csharp-ls, OmniSharp), whose workspace load continues past
-// `initialize` and serves empty results until the solution finishes loading.
-// Bringing the client up here — spawn, optional `dotnet restore`, and the
-// `initialize` handshake — moves that cold-start latency OUT of the per-repo
-// enrichment deadline the Manager starts immediately afterward, so the query
-// budget is not consumed by the load. Every other server is ready to answer
-// once initialized and does not implement ReadinessProber, so it never waits.
-// The call runs synchronously (it completes before the enrichment pass calls
-// ensureClient again, which then no-ops), so there is no concurrent client
-// setup to race; ctx bounds the caller's expectation and short-circuits an
-// already-cancelled budget.
+// C# servers (csharp-ls, OmniSharp). They answer `initialize` quickly but keep
+// loading the solution in the background and serve empty results until it
+// finishes — the pathology where the enrichment deadline elapses mid-load and
+// the pass lands zero edges ("completed in 8s, 0 coverage"). WaitReady brings
+// the client up (spawn, optional `dotnet restore`, `initialize`) and then blocks
+// on a readiness probe until the solution's compilation is live, so the Manager
+// starts the per-repo deadline only once real queries will actually resolve.
+//
+// The probe polls workspace/symbol until it returns a match; on the load-timeout
+// it reports semantic.ErrWorkspaceNotReady so the Manager skips the sweep with an
+// honest not-ready state instead of running it against a still-empty server.
+// Every other server answers once initialized and does not implement
+// ReadinessProber, so it never waits. Runs synchronously; ctx bounds the
+// readiness budget and short-circuits an already-cancelled one.
 func (p *Provider) WaitReady(ctx context.Context, repoRoot string) error {
 	if !p.servesCSharp() {
 		return nil
@@ -2102,7 +2107,135 @@ func (p *Provider) WaitReady(ctx context.Context, repoRoot string) error {
 	if err != nil {
 		return err
 	}
-	return p.ensureClient(absRoot)
+	if err := p.ensureClient(absRoot); err != nil {
+		return err
+	}
+	return p.waitForCSharpSolutionLoad(ctx, absRoot)
+}
+
+// csharpSolutionLoadTimeout bounds how long WaitReady polls for the Roslyn
+// solution load to finish after `initialize` returns. csharpReadinessProbeInterval
+// spaces the polls. Both are var (not const) so tests can shrink them.
+var (
+	csharpSolutionLoadTimeout    = 120 * time.Second
+	csharpReadinessProbeInterval = 750 * time.Millisecond
+)
+
+// waitForCSharpSolutionLoad blocks until the server's compilation can answer a
+// workspace/symbol probe (the solution finished loading) or the load-timeout
+// elapses. Bounded by the smaller of ctx and csharpSolutionLoadTimeout.
+func (p *Provider) waitForCSharpSolutionLoad(ctx context.Context, repoRoot string) error {
+	query, ok := csharpProbeQuery(repoRoot)
+	if !ok {
+		// No C# declaration to probe with — there is nothing to enrich either,
+		// so treat the workspace as ready and let the (empty) pass complete.
+		return nil
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, csharpSolutionLoadTimeout)
+	defer cancel()
+	return p.pollWorkspaceReady(loadCtx, query)
+}
+
+// pollWorkspaceReady polls workspace/symbol until it returns at least one match
+// — the signal the compilation is live — or ctx expires. On expiry it wraps
+// semantic.ErrWorkspaceNotReady so the Manager can record an honest not-ready
+// state and skip the sweep. A transport / RPC error counts as "still loading",
+// not fatal, so a server mid-load is retried rather than abandoned.
+func (p *Provider) pollWorkspaceReady(ctx context.Context, query string) error {
+	ticker := time.NewTicker(csharpReadinessProbeInterval)
+	defer ticker.Stop()
+	for {
+		if p.workspaceSymbolNonEmpty(query) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: workspace/symbol %q stayed empty", semantic.ErrWorkspaceNotReady, query)
+		case <-ticker.C:
+		}
+	}
+}
+
+// workspaceSymbolNonEmpty issues one workspace/symbol request and reports
+// whether the server returned any symbol. A nil client or any error reads as
+// "not ready yet" rather than a hard failure.
+func (p *Provider) workspaceSymbolNonEmpty(query string) bool {
+	client := p.client
+	if client == nil {
+		return false
+	}
+	var syms []json.RawMessage
+	params := struct {
+		Query string `json:"query"`
+	}{Query: query}
+	if err := client.Call("workspace/symbol", params, &syms); err != nil {
+		return false
+	}
+	return len(syms) > 0
+}
+
+var csharpTypeDeclRe = regexp.MustCompile(`\b(?:class|interface|struct|enum)\s+([A-Za-z_]\w*)|\brecord\s+(?:class\s+|struct\s+)?([A-Za-z_]\w*)`)
+var csharpNamespaceRe = regexp.MustCompile(`\bnamespace\s+([A-Za-z_][\w.]*)`)
+
+// csharpDeclName extracts a probeable identifier from C# source: a type name
+// (class / interface / struct / record / enum) when present, else the leaf of a
+// namespace declaration. Returns "" when the source has neither.
+func csharpDeclName(src []byte) string {
+	if m := csharpTypeDeclRe.FindSubmatch(src); m != nil {
+		if len(m[1]) > 0 {
+			return string(m[1])
+		}
+		if len(m[2]) > 0 {
+			return string(m[2])
+		}
+	}
+	if m := csharpNamespaceRe.FindSubmatch(src); m != nil {
+		ns := string(m[1])
+		if i := strings.LastIndexByte(ns, '.'); i >= 0 {
+			ns = ns[i+1:]
+		}
+		return ns
+	}
+	return ""
+}
+
+// csharpProbeQuery walks repoRoot for the first C# type/namespace declaration
+// and returns its name — a workspace/symbol query token guaranteed to match once
+// the solution loads. ok=false when the tree holds no probeable declaration
+// (in which case there is nothing to enrich, so readiness is moot). The walk is
+// capped so a huge monorepo can't turn readiness into a full-tree scan.
+func csharpProbeQuery(repoRoot string) (string, bool) {
+	var found string
+	scanned := 0
+	_ = filepath.WalkDir(repoRoot, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != repoRoot && (strings.HasPrefix(name, ".") || name == "bin" || name == "obj" || name == "node_modules") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".cs") {
+			return nil
+		}
+		scanned++
+		if scanned > 500 {
+			return fs.SkipAll
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		if name := csharpDeclName(src); name != "" {
+			found = name
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found, found != ""
 }
 
 // fanoutDiagnostics wakes everyone who called WaitForDiagnostics for

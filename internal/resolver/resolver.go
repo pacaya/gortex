@@ -3654,15 +3654,42 @@ func (r *Resolver) inferImplements(scopeTypes, scopeIfaces map[string]bool) int 
 	}
 	wg.Wait()
 
+	// A declared base list often resolves to the very (From, To, FilePath,
+	// Line) tuple the inference would mint — C# puts the base list on the
+	// declaration line — and AddEdge replaces in place on an identical key, so
+	// re-minting would CLOBBER the declared edge with an inference-marked
+	// copy. Never overwrite a declared fact with a guess: skip pairs that
+	// already exist without the marker.
+	declared := map[string]bool{}
+	for e := range r.graph.EdgesByKind(graph.EdgeImplements) {
+		if e == nil {
+			continue
+		}
+		if e.Meta != nil && e.Meta["via"] == MetaViaMethodSetInference {
+			continue
+		}
+		declared[e.From+"\x00"+e.To] = true
+	}
+
 	added := 0
 	for _, chunkResults := range results {
 		for _, p := range chunkResults {
+			if declared[p.typeID+"\x00"+p.ifaceID] {
+				continue
+			}
 			r.graph.AddEdge(&graph.Edge{
 				From:     p.typeID,
 				To:       p.ifaceID,
 				Kind:     graph.EdgeImplements,
 				FilePath: p.filePath,
 				Line:     p.line,
+				// Mark the edge as structurally inferred so hierarchy-walking
+				// consumers can tell a method-set guess from a source-declared
+				// base list. A one-method interface (Convert) makes every
+				// same-named type "implement" it — fine for discovery
+				// surfaces, poison for passes that union call sites across an
+				// implements-family.
+				Meta: map[string]any{"via": MetaViaMethodSetInference},
 			})
 			added++
 		}

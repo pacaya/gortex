@@ -235,8 +235,9 @@ func defaultFrameworkSynthesizers() []FrameworkSynthesizer {
 		synthFunc{name: SynthMediatR, fn: ResolveMediatRCalls},
 		// C# member-level interface dispatch: a call bound to an interface
 		// member fans out to the same-named member on each in-repo
-		// implementation, at the speculative (hidden-by-default) tier. After
-		// the implements-producing passes so the impl fan-out is complete.
+		// implementation, at the ast_inferred tier so it rides in the default
+		// find_usages / get_callers result. After the implements-producing
+		// passes so the impl fan-out is complete.
 		synthFunc{name: SynthCSharpIfaceDispatch, fn: ResolveCSharpInterfaceDispatch},
 		// Sidekiq job dispatch: Worker.perform_async(...) → the worker's
 		// perform, namespace-aware. Include-gated, typed tier.
