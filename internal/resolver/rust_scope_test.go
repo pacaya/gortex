@@ -210,6 +210,41 @@ fn run() {
 	}
 }
 
+// TestRustScope_ConstructorReceiverBind: a `let c = Config::default()` local
+// seeds tenv[c]=Config in the extractor, so the selector call `c.tune()` binds
+// to Config.tune end to end through the receiver_type path. A same-named method
+// on a different type must NOT be picked — the inferred owner is exact.
+func TestRustScope_ConstructorReceiverBind(t *testing.T) {
+	src := `
+struct Config {}
+
+impl Config {
+    fn default() -> Config { Config {} }
+    fn tune(&self) {}
+}
+
+struct Other {}
+
+impl Other {
+    fn tune(&self) {}
+}
+
+fn run() {
+    let c = Config::default();
+    c.tune();
+}
+`
+	g := buildRustGraph(t, map[string]string{"lib.rs": src})
+
+	ResolveRustScopeCalls(g)
+
+	targets := callTargetsFromRust(g, "lib.rs::run")
+	require.Contains(t, targets, "lib.rs::Config.tune",
+		"c.tune() where c = Config::default() should bind to Config.tune, got %v", targets)
+	require.NotContains(t, targets, "lib.rs::Other.tune",
+		"the same-named method on Other must not be picked")
+}
+
 // TestRustScope_Idempotent: a second run does not change the resolved
 // state nor produce additional rebindings.
 func TestRustScope_Idempotent(t *testing.T) {

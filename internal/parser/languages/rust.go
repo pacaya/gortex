@@ -1338,15 +1338,62 @@ func lookupRustRecvType(paramsByFunc map[string]map[string]string, tenv typeEnv,
 	return t, ok
 }
 
+// rustConcreteTypeName reports whether name can seed the local type
+// environment from an associated-constructor qualifier as a resolvable,
+// concrete type. It must be UpperCamelCase and name a real type, so a single
+// uppercase letter (a generic parameter such as T/E/K, which owns no methods
+// in the graph) and the `Self` placeholder (which names no node) are both
+// rejected. A struct literal cannot name a generic parameter and so is guarded
+// more loosely above; only here — the qualifier of a `T::ctor()` call — may a
+// bare single letter really be a generic parameter, so the single-letter form
+// is refused to keep an inferred receiver from ever pointing at a non-type.
+func rustConcreteTypeName(name string) bool {
+	if len(name) < 2 || name == "Self" {
+		return false
+	}
+	return name[0] >= 'A' && name[0] <= 'Z'
+}
+
+// rustSelfReturningCtor reports whether an associated-function name is one of
+// the conventional constructors that yields a value of the type it hangs off.
+// Binding a let's inferred type to that qualifier is safe because idiomatic
+// Rust reserves these names for constructors that return the owning type itself,
+// unwrapped: `T::from`/`T::default` implement the From / Default traits
+// (`fn(..) -> Self`), and `new`/`with_capacity`/`with_config`/`empty` are the
+// near-universal inherent-constructor convention, each returning `Self`.
+//
+// Only names whose result IS the qualifier type belong here. Constructors that
+// return a *wrapper* around Self are deliberately excluded: `from_str` and
+// `open` yield a `Result<Self>` and `builder` a separate builder struct, so the
+// binding's real type is that wrapper — not the qualifier. The downstream
+// owner-match cannot recover from admitting them: it refuses to bind to a method
+// the qualifier type does NOT own, but a wrapper-returning constructor whose
+// qualifier happens to own a same-named method (a getter shadowing a builder's
+// setter, say) would bind that call to the wrong owner rather than fall through
+// to unresolved. Confining the list to genuinely Self-returning names is what
+// keeps every seeded receiver pointing at the value actually in hand.
+func rustSelfReturningCtor(method string) bool {
+	switch method {
+	case "new", "default", "from", "with_capacity", "with_config", "empty":
+		return true
+	}
+	return false
+}
+
 // inferTypeFromRustExpr inspects a tree-sitter expression node to infer
 // the type of a let declaration's RHS.
 func inferTypeFromRustExpr(node *sitter.Node, src []byte) string {
 	switch node.Type() {
 	case "struct_expression":
-		// Config { port: 8080 } — first named child is the type name.
+		// Config { port: 8080 } — first named child is the type name. The
+		// literal constructs a value of exactly that type, so a selector call
+		// on the binding resolves against it. A struct literal can never name a
+		// generic parameter (Rust forbids `T { .. }`), so even a single-letter
+		// UpperCamelCase name is a concrete type here and is trusted — the
+		// single-letter rejection only guards the associated-call arm below,
+		// where the qualifier may instead be a generic parameter.
 		if node.NamedChildCount() > 0 {
-			typeNode := node.NamedChild(0)
-			name := typeNode.Content(src)
+			name := node.NamedChild(0).Content(src)
 			// Strip module path.
 			if idx := strings.LastIndex(name, "::"); idx >= 0 {
 				name = name[idx+2:]
@@ -1357,20 +1404,27 @@ func inferTypeFromRustExpr(node *sitter.Node, src []byte) string {
 		}
 
 	case "call_expression":
-		// Type::new() — scoped_identifier with path containing ::new
+		// Type::<ctor>(..) — a scoped associated call whose qualifier names the
+		// constructed type. Only the conventional Self-returning constructors are
+		// trusted, and the qualifier must be a bare concrete type name, so the
+		// seeded binding can only point at the value the constructor produces —
+		// never at a lowercase module function, `Self`, or a generic parameter.
 		if node.NamedChildCount() > 0 {
 			funcNode := node.NamedChild(0)
 			if funcNode.Type() == "scoped_identifier" {
 				funcText := funcNode.Content(src)
-				// e.g. "Config::new" or "module::Config::new"
-				if strings.HasSuffix(funcText, "::new") {
-					typePart := strings.TrimSuffix(funcText, "::new")
-					// Take last segment.
-					if idx := strings.LastIndex(typePart, "::"); idx >= 0 {
-						typePart = typePart[idx+2:]
-					}
-					if len(typePart) > 0 && typePart[0] >= 'A' && typePart[0] <= 'Z' {
-						return typePart
+				// e.g. "Config::from" or "module::Config::with_capacity".
+				if idx := strings.LastIndex(funcText, "::"); idx > 0 {
+					method := funcText[idx+2:]
+					if rustSelfReturningCtor(method) {
+						typePart := funcText[:idx]
+						// Take last path segment as the type name.
+						if j := strings.LastIndex(typePart, "::"); j >= 0 {
+							typePart = typePart[j+2:]
+						}
+						if rustConcreteTypeName(typePart) {
+							return typePart
+						}
 					}
 				}
 			}

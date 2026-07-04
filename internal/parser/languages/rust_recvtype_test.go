@@ -47,6 +47,58 @@ impl Foo {
 	assert.Equal(t, "Foo", recvTypeOfCall(result.Edges, "foo.rs::Foo.a"))
 }
 
+// recvTypeForMethod returns the receiver_type stamped on the selector-call
+// edge from `from` whose method is `method` (To == "unresolved::*.<method>"),
+// so a test can assert the inferred type for one specific call among several.
+func recvTypeForMethod(edges []*graph.Edge, from, method string) (string, bool) {
+	for _, ed := range edges {
+		if ed.Kind == graph.EdgeCalls && ed.From == from && ed.To == "unresolved::*."+method {
+			rt, _ := ed.Meta["receiver_type"].(string)
+			return rt, true
+		}
+	}
+	return "", false
+}
+
+// A let bound to a Self-returning associated constructor (default/with_capacity
+// /from) seeds the local's type, so a later selector call on it stamps
+// receiver_type for the resolver. A lowercase module function and a
+// single-letter generic qualifier must NOT seed a type — the constructor
+// returns a value of an unknown concrete type there, so guessing would risk a
+// wrong-owner bind.
+func TestRsExtractor_ConstructorReceiverType(t *testing.T) {
+	src := []byte(`
+struct Config {}
+struct Buf {}
+struct Matcher {}
+fn run() {
+    let c = Config::default();
+    c.tune();
+    let b = Buf::with_capacity(8);
+    b.push(1);
+    let m = Matcher::from(pattern);
+    m.find();
+    let g = thing::from(x);
+    g.walk();
+    let t = T::from(x);
+    t.step();
+}
+`)
+	e := NewRustExtractor()
+	result, err := e.Extract("main.rs", src)
+	require.NoError(t, err)
+
+	got := func(method string) string {
+		rt, _ := recvTypeForMethod(result.Edges, "main.rs::run", method)
+		return rt
+	}
+	assert.Equal(t, "Config", got("tune"), "Config::default() should seed tenv[c]=Config")
+	assert.Equal(t, "Buf", got("push"), "Buf::with_capacity() should seed tenv[b]=Buf")
+	assert.Equal(t, "Matcher", got("find"), "Matcher::from() should seed tenv[m]=Matcher")
+	assert.Equal(t, "", got("walk"), "lowercase module qualifier must not seed a type")
+	assert.Equal(t, "", got("step"), "single-letter generic qualifier must not seed a type")
+}
+
 // A parameter shadows a same-named file-wide let binding at call resolution.
 func TestRsExtractor_ParamShadowsLet(t *testing.T) {
 	src := []byte(`struct A {}
