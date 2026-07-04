@@ -1063,6 +1063,16 @@ func (idx *Indexer) runDeferredContracts() {
 // RootPath returns the root path used for relative path computation.
 func (idx *Indexer) RootPath() string { return idx.rootPath }
 
+// storeRootPath records the repository root, skipping a redundant
+// self-assignment. The watcher goroutine reads idx.rootPath without a
+// lock, so re-storing the identical value from a concurrent reindex or
+// mtime-census pass would be a data race for no observable change.
+func (idx *Indexer) storeRootPath(absRoot string) {
+	if idx.rootPath != absRoot {
+		idx.rootPath = absRoot
+	}
+}
+
 // populateCppIncludeDirs reconstructs each C/C++ source file's include search
 // path from compile_commands.json and hands it to the resolver, so a quoted
 // include binds against the real `-I` dir set (deterministic collision-breaking)
@@ -4581,7 +4591,7 @@ func (idx *Indexer) SetRootPath(root string) {
 	if err != nil {
 		abs = root
 	}
-	idx.rootPath = abs
+	idx.storeRootPath(abs)
 }
 
 // IncrementalReindexPaths re-indexes only the files reachable from the
@@ -4608,7 +4618,7 @@ func (idx *Indexer) IncrementalReindexPaths(root string, paths []string) (*Index
 	if err != nil {
 		return nil, err
 	}
-	idx.rootPath = absRoot
+	idx.storeRootPath(absRoot)
 
 	// scopeRels holds the repo-relative slash-paths the caller asked to
 	// reindex — used both to drive the discovery walk and to bound
@@ -4877,7 +4887,7 @@ func (idx *Indexer) IncrementalReindex(root string) (*IndexResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx.rootPath = absRoot
+	idx.storeRootPath(absRoot)
 
 	// Collect files currently on disk.
 	diskFiles := make(map[string]bool)
@@ -7031,7 +7041,7 @@ func (idx *Indexer) HasChangesSinceMtimes(root string) bool {
 	if err != nil {
 		return true
 	}
-	idx.rootPath = absRoot
+	idx.storeRootPath(absRoot)
 
 	diskFiles := make(map[string]bool)
 	errStop := errors.New("stop-walk")
@@ -7103,7 +7113,7 @@ func (idx *Indexer) ChangedSinceMtimes(root string) (changed []string, deleted [
 	if absErr != nil {
 		return nil, nil, absErr
 	}
-	idx.rootPath = absRoot
+	idx.storeRootPath(absRoot)
 
 	diskFiles := make(map[string]bool)
 	walkErr := filepath.WalkDir(absRoot, func(path string, d os.DirEntry, werr error) error {
