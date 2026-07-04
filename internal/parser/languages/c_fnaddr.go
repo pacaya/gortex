@@ -61,7 +61,7 @@ func captureCFnAddressRefs(result *parser.ExtractionResult, root *sitter.Node, f
 			return
 		}
 		name := n.Content(src)
-		if name == "" || isCFnAddressNonTarget(name) {
+		if name == "" || isCFnAddressNonTarget(name) || isCValueRefNoise(name) {
 			return
 		}
 		// A name the file itself declares (function / variable / constant /
@@ -182,4 +182,65 @@ func isCFnAddressNonTarget(name string) bool {
 		return true
 	}
 	return false
+}
+
+// isCValueRefNoise reports whether a captured value-position identifier is
+// grep-level noise that must never become a cross-file function reference. A
+// generated command-table row interleaves the handler with flag macros
+// (CMD_WRITE), enum constants (OBJ_STRING), short arity counts, and keywords
+// that only reach identifier position through ERROR recovery on a malformed
+// fragment. Three cheap shape rules drop them before they flood the resolver
+// gate, keeping the pass to the small set of free identifiers that can turn
+// into a real cross-TU function edge:
+//
+//   - shorter than 4 characters — too short to be a distinct handler name and
+//     the dominant collision source under the gate's repo-wide unique-name bind;
+//   - ALL_CAPS — the macro / enum-constant convention; a handler name is mixed-
+//     or lower-case, never all-uppercase;
+//   - a C keyword — never a value, only reachable in this position via a
+//     recovered parse.
+//
+// A real handler (getCommand, strlenCommand, pingCommand) is mixed-case and
+// well over four characters, so none of the rules touch it.
+func isCValueRefNoise(name string) bool {
+	if len(name) < 4 {
+		return true
+	}
+	if isAllCapsToken(name) {
+		return true
+	}
+	return cValueRefKeyword[name]
+}
+
+// isAllCapsToken reports whether name follows the ALL_CAPS macro / constant
+// convention: it contains at least one letter and no lowercase letter. A
+// mixed-case handler (getCommand) has a lowercase letter and is never treated
+// as a macro; a digits-and-underscores-only token (never a valid identifier)
+// is excluded by the letter requirement.
+func isAllCapsToken(name string) bool {
+	hasLetter := false
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			return false
+		case c >= 'A' && c <= 'Z':
+			hasLetter = true
+		}
+	}
+	return hasLetter
+}
+
+// cValueRefKeyword is the set of C keywords long enough to survive the
+// length rule that could reach an identifier value position only through ERROR
+// recovery on a malformed generated fragment.
+var cValueRefKeyword = map[string]bool{
+	"auto": true, "break": true, "case": true, "char": true, "const": true,
+	"continue": true, "default": true, "double": true, "else": true,
+	"enum": true, "extern": true, "float": true, "goto": true, "long": true,
+	"register": true, "restrict": true, "return": true, "short": true,
+	"signed": true, "sizeof": true, "static": true, "struct": true,
+	"switch": true, "typedef": true, "union": true, "unsigned": true,
+	"void": true, "volatile": true, "while": true, "inline": true,
+	"_Bool": true, "_Complex": true,
 }

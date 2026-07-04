@@ -160,22 +160,10 @@ func resolveFnValueName(g graph.Store, filePath, name string) string {
 // resolveUniqueFnValue returns the ID of the sole function/method named name in
 // the repo, or "" when none or more than one exists (unique-or-drop). The
 // shared repo-wide resolution rule for qualified-path and gate-skipping
-// (curated-HOF string) function values.
+// (curated-HOF string) function values. Prototype declarations of the name
+// never make it ambiguous — see uniqueFnValueMatch.
 func resolveUniqueFnValue(g graph.Store, name string) string {
-	match := ""
-	for _, n := range g.FindNodesByName(name) {
-		if n == nil {
-			continue
-		}
-		if n.Kind != graph.KindFunction && n.Kind != graph.KindMethod {
-			continue
-		}
-		if match != "" && match != n.ID {
-			return "" // ambiguous — drop
-		}
-		match = n.ID
-	}
-	return match
+	return uniqueFnValueMatch(g, name, nil)
 }
 
 // resolveFnValueCrossModule binds a function value to a uniquely-named
@@ -186,7 +174,25 @@ func resolveUniqueFnValue(g graph.Store, name string) string {
 // the name look ambiguous. The same-file path is preferred by the caller; this
 // is the cross-module fallback.
 func resolveFnValueCrossModule(g graph.Store, name string) string {
-	match := ""
+	return uniqueFnValueMatch(g, name, isFileLocalLinkage)
+}
+
+// uniqueFnValueMatch is the shared unique-or-drop scan over every
+// function/method named name, with an optional per-node exclusion.
+//
+// A C-family forward declaration (`void strlenCommand(client *c);` in a
+// header, stamped Meta["prototype"]) names the SAME extern symbol as its
+// definition, not a competitor — C has one flat namespace per linked program.
+// Counting it as a distinct candidate made every prototyped function
+// permanently ambiguous (definition + header declaration = two nodes), which
+// silently dropped the entire generated-command-table reference surface: a
+// codebase that declares its handlers in a shared header is exactly the
+// codebase that wires them through a table. Definitions therefore win:
+// prototypes are consulted only when no definition matches at all (the
+// definition's translation unit isn't indexed), and then under the same
+// unique-or-drop rule.
+func uniqueFnValueMatch(g graph.Store, name string, exclude func(*graph.Node) bool) string {
+	def, proto := "", ""
 	for _, n := range g.FindNodesByName(name) {
 		if n == nil {
 			continue
@@ -194,15 +200,44 @@ func resolveFnValueCrossModule(g graph.Store, name string) string {
 		if n.Kind != graph.KindFunction && n.Kind != graph.KindMethod {
 			continue
 		}
-		if isFileLocalLinkage(n) {
+		if exclude != nil && exclude(n) {
 			continue
 		}
-		if match != "" && match != n.ID {
-			return "" // ambiguous — drop
+		if isPrototypeDecl(n) {
+			if proto != "" && proto != n.ID {
+				proto = ambiguousFnValue
+			} else {
+				proto = n.ID
+			}
+			continue
 		}
-		match = n.ID
+		if def != "" && def != n.ID {
+			return "" // two real definitions — genuinely ambiguous
+		}
+		def = n.ID
 	}
-	return match
+	if def != "" {
+		return def
+	}
+	if proto == ambiguousFnValue {
+		return ""
+	}
+	return proto
+}
+
+// ambiguousFnValue is a sentinel marking a name matched by more than one
+// prototype declaration; it can never collide with a real node ID because the
+// ID convention is "<file>::<name>".
+const ambiguousFnValue = "\x00ambiguous"
+
+// isPrototypeDecl reports whether a node is a C-family forward declaration
+// (stamped Meta["prototype"] by the extractor) rather than a definition.
+func isPrototypeDecl(n *graph.Node) bool {
+	if n.Meta == nil {
+		return false
+	}
+	v, _ := n.Meta["prototype"].(bool)
+	return v
 }
 
 // isFileLocalLinkage reports whether a node was stamped with translation-unit
