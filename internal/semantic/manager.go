@@ -696,9 +696,14 @@ func (m *Manager) enrichMarkerCurrent(g graph.Store, repoPrefix, provider string
 // recordEnrichMarker persists the completion marker for a provider that
 // finished a non-partial pass, so a later restart can skip it while the repo
 // sits at the same clean sha. No-op when the caller supplied no sha (nothing
-// to key freshness on) or the backend does not persist enrichment state.
+// to key freshness on), the working tree is dirty (the pass enriched
+// uncommitted content, so its edges do not describe the committed state the
+// HEAD sha names — the read gate enrichMarkerCurrent likewise refuses to skip
+// on a dirty tree, and recording here would be honored as authoritative once
+// the tree becomes clean at the same sha), or the backend does not persist
+// enrichment state.
 func (m *Manager) recordEnrichMarker(g graph.Store, repoPrefix, provider string, rs RepoEnrichState, coverage float64) {
-	if rs.SHA == "" {
+	if rs.SHA == "" || rs.Dirty {
 		return
 	}
 	store, ok := g.(graph.EnrichmentStateStore)

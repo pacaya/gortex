@@ -164,6 +164,31 @@ func TestEnrichAll_PartialWritesNoMarker(t *testing.T) {
 	assert.False(t, found, "a partial pass must NOT persist a completion marker")
 }
 
+// TestEnrichAll_DirtyWritesNoMarker: a non-partial pass over a DIRTY working
+// tree must persist NO completion marker. The pass enriched uncommitted
+// content, so its edges do not describe the committed state the HEAD sha names;
+// recording a marker keyed by that sha would be honored as authoritative once
+// the tree becomes clean at the same sha (enrichMarkerCurrent refuses to skip
+// while dirty but skips once clean), suppressing the re-enrichment the reverted
+// files need.
+func TestEnrichAll_DirtyWritesNoMarker(t *testing.T) {
+	mgr, ran := markerManager(t)
+	g := newMarkerStore(t)
+
+	opts := EnrichOptions{RepoState: map[string]RepoEnrichState{
+		markerRepo: {SHA: "sha-xyz", Dirty: true},
+	}}
+	results, partial, err := mgr.EnrichAll(g, markerRoots(t), opts)
+	require.NoError(t, err)
+	require.True(t, *ran, "a dirty tree has no current marker, so the provider must run")
+	require.Len(t, results, 1)
+	assert.False(t, partial[markerRepo], "the pass completed non-partial")
+
+	_, found, err := g.GetEnrichmentState(markerRepo, "test-go")
+	require.NoError(t, err)
+	assert.False(t, found, "a dirty pass must NOT persist a completion marker")
+}
+
 // TestEnrichAll_ForceEnvBypassesMarkerGate: GORTEX_WARMUP_FORCE_ENRICH=1
 // forces the pass even when the marker is current.
 func TestEnrichAll_ForceEnvBypassesMarkerGate(t *testing.T) {
