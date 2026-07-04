@@ -341,7 +341,9 @@ func (s *Server) runMaintenance() {
 // IdleTimeoutFromEnv reads the opt-in GORTEX_DAEMON_IDLE_TIMEOUT — a Go
 // duration (e.g. "30m", "2h"). Returns 0 (disabled) when unset, empty, or
 // unparseable, so the daemon only ever auto-exits when the user asked it to.
-func IdleTimeoutFromEnv() time.Duration { return parseIdleTimeout(os.Getenv("GORTEX_DAEMON_IDLE_TIMEOUT")) }
+func IdleTimeoutFromEnv() time.Duration {
+	return parseIdleTimeout(os.Getenv("GORTEX_DAEMON_IDLE_TIMEOUT"))
+}
 
 func parseIdleTimeout(v string) time.Duration {
 	v = strings.TrimSpace(v)

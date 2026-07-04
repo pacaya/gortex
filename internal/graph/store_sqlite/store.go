@@ -100,7 +100,7 @@ type Store struct {
 	memEstMu  sync.Mutex
 	memEstVal map[string]graph.RepoMemoryEstimate
 	memEstAt  time.Time
-  
+
 	// Bulk-load fast path (graph.BulkLoader). Non-nil only between
 	// BeginBulkLoad and FlushBulk, and only on a first/empty cold index.
 	// database/sql PRAGMAs are connection-local, so the fast path pins one

@@ -519,7 +519,7 @@ func TestRouter_SetMaxAlive_LoweringEvictsAndCounts(t *testing.T) {
 	defer r.Close()
 
 	base := time.Now()
-	injectProvider(r, "spec-a", "/repo/a", base, 0)               // oldest → evicted first
+	injectProvider(r, "spec-a", "/repo/a", base, 0) // oldest → evicted first
 	injectProvider(r, "spec-b", "/repo/b", base.Add(time.Second), 0)
 	injectProvider(r, "spec-c", "/repo/c", base.Add(2*time.Second), 0) // newest → survives
 
@@ -545,7 +545,7 @@ func TestRouter_SetMaxAlive_NeverEvictsPinned(t *testing.T) {
 	defer r.Close()
 
 	base := time.Now()
-	injectProvider(r, "pinned", "/repo/p", base, 1)              // oldest but pinned
+	injectProvider(r, "pinned", "/repo/p", base, 1) // oldest but pinned
 	injectProvider(r, "spec-b", "/repo/b", base.Add(time.Second), 0)
 	injectProvider(r, "spec-c", "/repo/c", base.Add(2*time.Second), 0)
 

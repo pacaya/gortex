@@ -728,10 +728,10 @@ func filterPendingByScope(pending []*graph.Edge, scope map[string]struct{}) []*g
 // edgeInResolveScope reports whether a scoped ResolveAll pass must reconsider
 // a pending edge. An edge is in scope when any of three rules hold:
 //
-//   (a) it originates in a changed repo (its source could re-target),
-//   (b) its unresolved target is repo-qualified to a changed repo, or
-//   (c) its target is a bare, unqualified unresolved::Name — which could
-//       newly bind into any changed repo, so it is always reconsidered.
+//	(a) it originates in a changed repo (its source could re-target),
+//	(b) its unresolved target is repo-qualified to a changed repo, or
+//	(c) its target is a bare, unqualified unresolved::Name — which could
+//	    newly bind into any changed repo, so it is always reconsidered.
 //
 // Everything else — an edge from an unchanged repo whose target is
 // repo-qualified to another unchanged repo — is excluded.

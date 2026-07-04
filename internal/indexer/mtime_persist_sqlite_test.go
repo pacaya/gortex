@@ -76,8 +76,8 @@ func Steady() {}
 // (rarely triggered) genuine parse-error path.
 type alwaysFailExtractor struct{}
 
-func (alwaysFailExtractor) Language() string      { return "gortex-test-brokenlang" }
-func (alwaysFailExtractor) Extensions() []string  { return []string{".brokenlang"} }
+func (alwaysFailExtractor) Language() string     { return "gortex-test-brokenlang" }
+func (alwaysFailExtractor) Extensions() []string { return []string{".brokenlang"} }
 func (alwaysFailExtractor) Extract(_ string, _ []byte) (*parser.ExtractionResult, error) {
 	return nil, errors.New("synthetic extraction failure")
 }
