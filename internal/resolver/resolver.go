@@ -431,7 +431,7 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	// can never disable inline LSP on a later single-file ResolveFile.
 	r.bulkMode = true
 	defer func() { r.bulkMode = false }()
-	var deferredLSP []*graph.Edge
+	var deferredLSP []deferredLSPEdge
 	superChunk := len(pending)
 	if r.validateLiveness {
 		if sz := resolveChunkSize(); sz < superChunk {
@@ -460,7 +460,7 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 		}
 		perWorkerStats := make([]ResolveStats, workers)
 		perWorkerJobs := make([][]reindexJob, workers)
-		perWorkerDeferred := make([][]*graph.Edge, workers)
+		perWorkerDeferred := make([][]deferredLSPEdge, workers)
 		var wg sync.WaitGroup
 		chunk := (len(scPending) + workers - 1) / workers
 		for w := 0; w < workers; w++ {
@@ -477,8 +477,19 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 				defer wg.Done()
 				ws := &perWorkerStats[idx]
 				jobs := make([]reindexJob, 0, len(slice))
-				var deferred []*graph.Edge
+				var deferred []deferredLSPEdge
 				for _, e := range slice {
+					// Capture LSP eligibility + the pre-heuristic identifier
+					// BEFORE resolveEdge runs: e.To is still the `unresolved::`
+					// stub here (the real edge is rewritten only in the apply
+					// phase below), so this sees the pre-heuristic target even
+					// for an edge the heuristic then confidently (mis)binds.
+					// Collecting EVERY LSP-eligible edge — not only the ones the
+					// heuristic leaves unresolved — is what preserves the LSP-
+					// first override the inline path applies: the post-loop batch
+					// re-binds via the type-aware helper, correcting a confident-
+					// but-wrong heuristic bind (see resolveDeferredLSP).
+					lspTarget, lspElig := r.lspDeferTarget(e)
 					clone := cloneEdgeForResolve(e)
 					oldTo, changed := r.resolveEdge(clone, ws)
 					processed.Add(1)
@@ -501,12 +512,14 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 							origin:     clone.Origin,
 							meta:       clone.Meta,
 						})
-					} else if r.lspDeferEligible(e) {
-						// The heuristic cascade left this LSP-eligible edge
-						// unresolved and bulk mode skipped the inline LSP round-
-						// trip. Collect it for the post-loop deferred batch so the
-						// helper is consulted off the parallel worker barrier.
-						deferred = append(deferred, e)
+					}
+					if lspElig {
+						// Bulk mode skipped the inline LSP round-trip; collect the
+						// edge for the post-loop deferred batch so the helper is
+						// consulted off the parallel worker barrier. Independent of
+						// `changed`: a heuristic-resolved edge is still deferred so
+						// LSP retains override authority.
+						deferred = append(deferred, deferredLSPEdge{edge: e, target: lspTarget})
 					}
 					releaseResolverClone(clone)
 				}
@@ -1707,10 +1720,13 @@ func (r *Resolver) resolveEdge(e *graph.Edge, stats *ResolveStats) (oldTo string
 	// In bulk mode (a whole-graph ResolveAll warmup pass) the inline
 	// round-trip is skipped: the definition lookup serialises inside the
 	// helper, so paying it here parks the parallel workers on the helper
-	// lock. ResolveAll instead collects the edges the heuristic cascade
-	// leaves unresolved and binds them in one deferred batch after the loop
-	// (see resolveDeferredLSP + lspDeferEligible). Single-file paths keep
-	// bulkMode false, so an interactive edit still resolves LSP-first.
+	// lock. ResolveAll instead collects EVERY LSP-eligible edge and binds
+	// them in one deferred batch after the loop (see resolveDeferredLSP +
+	// lspDeferTarget). Deferring only the heuristic-unresolved edges would
+	// let a confident heuristic mis-bind escape LSP correction, so the batch
+	// re-binds heuristic-resolved edges too — retaining the LSP-first
+	// override this inline branch gives single-file paths, where bulkMode is
+	// false and an interactive edit still resolves LSP-first.
 	if !r.bulkMode && r.tryResolveViaLSP(e, target, stats) {
 		return oldTo, e.To != oldTo
 	}

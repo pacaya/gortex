@@ -59,6 +59,17 @@ func (r *Resolver) guardCrossPackageCallEdges(jobs []reindexJob, closure map[str
 		if r.validateLiveness && !edgeStillLive(r.graph, j.edge) {
 			continue
 		}
+		// The deferred LSP batch may have re-bound (or confirmed) this edge
+		// after the heuristic job was recorded, stamping it OriginLSPResolved —
+		// compiler-grade evidence the name-only fallback this guard polices
+		// never had. j.origin still holds the stale heuristic tier, so trust
+		// the live edge: never revert an LSP-owned binding. (The batch now
+		// overrides confident heuristic binds, so a recorded job's target can
+		// be LSP-owned; before, the batch only touched heuristic-unresolved
+		// edges, disjoint from these jobs, and this never fired.)
+		if j.edge.Origin == graph.OriginLSPResolved {
+			continue
+		}
 		if !isCallLikeEdge(j.kind) {
 			continue
 		}

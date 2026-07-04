@@ -105,91 +105,122 @@ func (r *Resolver) tryResolveViaLSP(e *graph.Edge, target string, stats *Resolve
 	return true
 }
 
-// lspDeferEligible reports whether a bulk-mode ResolveAll should collect e
-// for the deferred LSP batch: the heuristic cascade left it unresolved and the
-// installed helper claims its file. Mirrors tryResolveViaLSP's up-front gating
+// deferredLSPEdge is one entry in the bulk-mode deferred LSP batch: the live
+// edge plus the pre-heuristic identifier target captured before the heuristic
+// cascade mutated it. The target is snapshotted while e.To is still the
+// `unresolved::` stub, because by the time the deferred batch runs the edge
+// may already carry a heuristic-resolved node ID from which the original
+// identifier can no longer be recovered.
+type deferredLSPEdge struct {
+	edge   *graph.Edge
+	target string
+}
+
+// lspDeferTarget reports whether a bulk-mode ResolveAll should collect e for
+// the deferred LSP batch and, when so, returns the pre-heuristic identifier
+// target the helper will look up. Mirrors tryResolveViaLSP's up-front gating
 // (helper present, real file position, supported extension, a bare identifier
 // the helper can locate) so the batch only carries edges the helper could
-// actually bind. Read-only; safe to call from the parallel resolve workers,
-// which already call SupportsPath via the inline path today.
-func (r *Resolver) lspDeferEligible(e *graph.Edge) bool {
+// actually bind. Called from the parallel resolve workers on the live edge
+// BEFORE resolveEdge runs on its clone, so e.To is still the `unresolved::`
+// stub here and the derived target is the pre-heuristic one. Read-only.
+func (r *Resolver) lspDeferTarget(e *graph.Edge) (string, bool) {
 	if r.lspHelper == nil || e == nil || e.FilePath == "" || e.Line <= 0 {
-		return false
+		return "", false
 	}
 	if !graph.IsUnresolvedTarget(e.To) {
-		return false
+		return "", false
 	}
 	if !r.lspHelper.SupportsPath(e.FilePath) {
-		return false
+		return "", false
 	}
 	target := graph.UnresolvedName(e.To)
 	if target == "" {
 		target = strings.TrimPrefix(e.To, unresolvedPrefix)
 	}
-	return identifierFromTarget(target) != ""
+	if identifierFromTarget(target) == "" {
+		return "", false
+	}
+	return target, true
 }
 
-// resolveDeferredLSP binds the edges the bulk-mode compute loop collected —
-// LSP-eligible edges the heuristic cascade left unresolved — through the
-// installed helper, applying every hit via one ReindexEdges call. It runs
-// AFTER the parallel chunk loop so a synchronous textDocument/definition
-// round-trip never stalls the heuristic worker fan-out at its barrier.
+// resolveDeferredLSP binds the LSP-eligible edges the bulk-mode compute loop
+// collected through the installed helper, applying every hit via one
+// ReindexEdges call. It runs AFTER the parallel chunk loop so a synchronous
+// textDocument/definition round-trip never stalls the heuristic worker fan-out
+// at its barrier.
+//
+// The batch carries EVERY LSP-eligible edge, not only the ones the heuristic
+// cascade left unresolved: this is what preserves the LSP-first override the
+// inline (non-bulk) path applies. The heuristic can confidently bind an edge
+// to the WRONG node (e.g. a same-directory sibling that shadows a symbol whose
+// real import the resolver can't expand); the type-aware helper re-binds it to
+// the correct definition here, exactly as running LSP-first would have. Each
+// entry's target is the pre-heuristic identifier captured before the cascade
+// ran, so the helper is queried by the source-file identifier even for an edge
+// whose live To now points at a heuristic-resolved node.
+//
+// A successful bind stamps OriginLSPResolved (via tryResolveViaLSP), which is
+// also the signal the cross-package guard uses to leave these edges alone.
 //
 // The helper serialises its own language-server calls, so the batch walks the
 // edges serially, grouped by file for locality in the helper's open-file set
-// and lookupNodeByLocation's per-file index. With a single installed helper
-// there is no cross-helper parallelism to exploit — the win is that these
-// calls no longer contend on the helper lock inside the parallel workers, and
-// that the balanced heuristic phase completes without LSP stragglers.
+// and lookupNodeByLocation's per-file index. The win over the inline path is
+// that these calls no longer contend on the helper lock inside the parallel
+// workers, and the balanced heuristic phase completes without LSP stragglers.
 //
 // Caller holds r.mu (the deferred batch is invoked from inside ResolveAll,
 // while the per-pass lookup / lsp indexes are still live). Returns the number
-// of edges the helper bound; ResolveAll folds it into the pass total.
-func (r *Resolver) resolveDeferredLSP(edges []*graph.Edge) int {
+// of edges that were heuristic-UNRESOLVED before the helper bound them — only
+// those move the pass tally from Unresolved to Resolved. Overriding an
+// already-resolved heuristic bind changes the target but not the count.
+func (r *Resolver) resolveDeferredLSP(edges []deferredLSPEdge) int {
 	if len(edges) == 0 || r.lspHelper == nil {
 		return 0
 	}
-	byFile := make(map[string][]*graph.Edge, len(edges))
+	byFile := make(map[string][]deferredLSPEdge, len(edges))
 	files := make([]string, 0, len(edges))
-	for _, e := range edges {
-		if e == nil {
+	for _, de := range edges {
+		if de.edge == nil {
 			continue
 		}
-		if _, seen := byFile[e.FilePath]; !seen {
-			files = append(files, e.FilePath)
+		fp := de.edge.FilePath
+		if _, seen := byFile[fp]; !seen {
+			files = append(files, fp)
 		}
-		byFile[e.FilePath] = append(byFile[e.FilePath], e)
+		byFile[fp] = append(byFile[fp], de)
 	}
 	sort.Strings(files)
 
 	var stats ResolveStats
+	newlyResolved := 0
 	reindexBatch := make([]graph.EdgeReindex, 0, len(edges))
 	for _, f := range files {
-		for _, e := range byFile[f] {
+		for _, de := range byFile[f] {
+			e := de.edge
 			// A concurrent single-file edit during an inter-chunk yield may
-			// have resolved or evicted this edge since it was collected;
-			// skip anything no longer unresolved or no longer in the graph so
-			// we neither double-bind nor half-resurrect an evicted edge.
-			if !graph.IsUnresolvedTarget(e.To) {
-				continue
-			}
+			// have evicted this edge since it was collected; skip anything no
+			// longer in the graph so we don't half-resurrect an evicted edge.
+			// A resolved-but-live edge is NOT skipped: the heuristic may have
+			// confidently bound it to the wrong node, and the LSP override
+			// below is exactly what corrects that.
 			if r.validateLiveness && !edgeStillLive(r.graph, e) {
 				continue
 			}
 			oldTo := e.To
-			target := graph.UnresolvedName(e.To)
-			if target == "" {
-				target = strings.TrimPrefix(e.To, unresolvedPrefix)
-			}
-			if r.tryResolveViaLSP(e, target, &stats) {
+			wasUnresolved := graph.IsUnresolvedTarget(oldTo)
+			if r.tryResolveViaLSP(e, de.target, &stats) {
 				reindexBatch = append(reindexBatch, graph.EdgeReindex{Edge: e, OldTo: oldTo})
+				if wasUnresolved {
+					newlyResolved++
+				}
 			}
 		}
 	}
 	if len(reindexBatch) > 0 {
 		r.graph.ReindexEdges(reindexBatch)
 	}
-	return stats.Resolved
+	return newlyResolved
 }
 
 // identifierFromTarget extracts the bare identifier from a resolver
