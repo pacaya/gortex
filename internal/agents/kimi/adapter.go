@@ -8,8 +8,8 @@
 //
 // Kimi's hooks are user-level today, so project-mode `gortex init` only writes
 // the repo-local MCP file. Machine-wide `gortex install` writes user MCP and,
-// when hooks are enabled, a UserPromptSubmit hook that shells `gortex hook
-// --agent=kimi`.
+// when hooks are enabled, UserPromptSubmit and PreToolUse hooks that shell
+// `gortex hook --agent=kimi`.
 //
 // Docs: https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html
 package kimi
@@ -128,7 +128,7 @@ func (a *Adapter) applyGlobal(env agents.Env, opts agents.ApplyOpts, res *agents
 
 	if env.InstallHooks {
 		hookAction, err := agents.MergeTOML(env.Stderr, filepath.Join(home, "config.toml"), func(root map[string]any, _ bool) (bool, error) {
-			return upsertUserPromptSubmitHook(root, env, opts), nil
+			return upsertKimiHooks(root, env, opts), nil
 		}, opts)
 		if err != nil {
 			return res, err
@@ -157,28 +157,38 @@ func kimiConfigRoot(env agents.Env) string {
 	return filepath.Join(env.Home, ".kimi-code")
 }
 
-func upsertUserPromptSubmitHook(root map[string]any, env agents.Env, opts agents.ApplyOpts) bool {
+func upsertKimiHooks(root map[string]any, env agents.Env, opts agents.ApplyOpts) bool {
 	existing, ok := kimiHookList(root["hooks"])
 	if !ok {
 		return false
 	}
 
-	found := false
-	kept := make([]any, 0, len(existing)+1)
+	found := make(map[string]bool)
+	kept := make([]any, 0, len(existing)+2)
 	for _, entry := range existing {
-		if kimiHookEntryInvokesKimi(entry) {
-			found = true
+		if event, ok := kimiHookEntryInvokesKimi(entry); ok {
+			found[event] = true
 			if opts.Force {
 				continue
 			}
 		}
 		kept = append(kept, entry)
 	}
-	if found && !opts.Force {
+
+	changed := false
+	for _, hook := range kimiHooks(env) {
+		event, _ := hook["event"].(string)
+		if found[event] && !opts.Force {
+			continue
+		}
+		kept = append(kept, hook)
+		changed = true
+	}
+	if !changed {
 		return false
 	}
 
-	root["hooks"] = append(kept, kimiUserPromptSubmitHook(env))
+	root["hooks"] = kept
 	return true
 }
 
@@ -200,9 +210,27 @@ func kimiHookList(v any) ([]any, bool) {
 	}
 }
 
+func kimiHooks(env agents.Env) []map[string]any {
+	return []map[string]any{
+		kimiUserPromptSubmitHook(env),
+		kimiPreToolUseHook(env),
+	}
+}
+
 func kimiUserPromptSubmitHook(env agents.Env) map[string]any {
 	return map[string]any{
 		"event":   "UserPromptSubmit",
+		"command": kimiHookCommand(env),
+		"timeout": kimiHookTimeoutSeconds,
+	}
+}
+
+func kimiPreToolUseHook(env agents.Env) map[string]any {
+	// Do not set matcher here: Kimi currently exposes MCP tool names as the
+	// underlying tool name without a documented server namespace. The dispatcher
+	// does the narrow Gortex read-tool filtering and silently ignores the rest.
+	return map[string]any{
+		"event":   "PreToolUse",
 		"command": kimiHookCommand(env),
 		"timeout": kimiHookTimeoutSeconds,
 	}
@@ -216,17 +244,19 @@ func kimiHookCommand(env agents.Env) string {
 	return base + " --agent=kimi"
 }
 
-func kimiHookEntryInvokesKimi(entry any) bool {
+func kimiHookEntryInvokesKimi(entry any) (string, bool) {
 	m, ok := entry.(map[string]any)
 	if !ok {
-		return false
+		return "", false
 	}
 	event, _ := m["event"].(string)
-	if event != "UserPromptSubmit" {
-		return false
+	switch event {
+	case "UserPromptSubmit", "PreToolUse":
+	default:
+		return "", false
 	}
 	cmd, _ := m["command"].(string)
-	return kimiCommandInvokesKimiHook(cmd)
+	return event, kimiCommandInvokesKimiHook(cmd)
 }
 
 func kimiCommandInvokesKimiHook(cmd string) bool {

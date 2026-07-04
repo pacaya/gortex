@@ -34,7 +34,7 @@ func TestKimiProjectWritesOnlyProjectMCP(t *testing.T) {
 	agentstest.AssertIdempotent(t, a, env)
 }
 
-func TestKimiGlobalWritesMCPAndUserPromptHook(t *testing.T) {
+func TestKimiGlobalWritesMCPAndHooks(t *testing.T) {
 	env := kimiTestEnv(t)
 	env.Mode = agents.ModeGlobal
 	a := New()
@@ -51,22 +51,11 @@ func TestKimiGlobalWritesMCPAndUserPromptHook(t *testing.T) {
 	}
 
 	hooks := readKimiHooks(t, env)
-	if len(hooks) != 1 {
-		t.Fatalf("hooks=%#v want 1", hooks)
+	if len(hooks) != 2 {
+		t.Fatalf("hooks=%#v want 2", hooks)
 	}
-	hook := hooks[0]
-	if hook["event"] != "UserPromptSubmit" {
-		t.Errorf("event=%v want UserPromptSubmit", hook["event"])
-	}
-	if hook["command"] != testKimiHookCommand {
-		t.Errorf("command=%v want %q", hook["command"], testKimiHookCommand)
-	}
-	if hook["timeout"] != int64(kimiHookTimeoutSeconds) {
-		t.Errorf("timeout=%v want %d", hook["timeout"], kimiHookTimeoutSeconds)
-	}
-	if _, ok := hook["matcher"]; ok {
-		t.Errorf("UserPromptSubmit hook should not write matcher: %#v", hook)
-	}
+	assertKimiHook(t, hooks[0], "UserPromptSubmit")
+	assertKimiHook(t, hooks[1], "PreToolUse")
 
 	agentstest.AssertIdempotent(t, a, env)
 }
@@ -118,14 +107,17 @@ timeout = 5
 		t.Fatalf("default_model was not preserved: %#v", cfg)
 	}
 	hooks := readKimiHooks(t, env)
-	if len(hooks) != 2 {
-		t.Fatalf("hooks=%#v want user+gortex", hooks)
+	if len(hooks) != 3 {
+		t.Fatalf("hooks=%#v want user+gortex hooks", hooks)
 	}
 	if hooks[0]["event"] != "Notification" {
 		t.Fatalf("user hook was not preserved first: %#v", hooks)
 	}
 	if hooks[1]["event"] != "UserPromptSubmit" {
 		t.Fatalf("missing gortex UserPromptSubmit hook: %#v", hooks)
+	}
+	if hooks[2]["event"] != "PreToolUse" {
+		t.Fatalf("missing gortex PreToolUse hook: %#v", hooks)
 	}
 }
 
@@ -144,6 +136,11 @@ command = "echo user"
 event = "UserPromptSubmit"
 command = "/tmp/old-gortex hook --agent=kimi"
 timeout = 30
+
+[[hooks]]
+event = "PreToolUse"
+command = "/tmp/old-gortex hook --agent=kimi"
+timeout = 30
 `
 	if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
 		t.Fatal(err)
@@ -153,15 +150,14 @@ timeout = 30
 		t.Fatalf("apply force: %v", err)
 	}
 	hooks := readKimiHooks(t, env)
-	if len(hooks) != 2 {
-		t.Fatalf("hooks=%#v want user+current gortex", hooks)
+	if len(hooks) != 3 {
+		t.Fatalf("hooks=%#v want user+current gortex hooks", hooks)
 	}
 	if hooks[0]["command"] != "echo user" {
 		t.Fatalf("user hook was not preserved: %#v", hooks)
 	}
-	if hooks[1]["command"] != testKimiHookCommand {
-		t.Fatalf("gortex hook was not refreshed: %#v", hooks)
-	}
+	assertKimiHook(t, hooks[1], "UserPromptSubmit")
+	assertKimiHook(t, hooks[2], "PreToolUse")
 }
 
 func kimiTestEnv(t *testing.T) agents.Env {
@@ -207,4 +203,20 @@ func readKimiHooks(t *testing.T, env agents.Env) []map[string]any {
 		out = append(out, m)
 	}
 	return out
+}
+
+func assertKimiHook(t *testing.T, hook map[string]any, event string) {
+	t.Helper()
+	if hook["event"] != event {
+		t.Errorf("event=%v want %s", hook["event"], event)
+	}
+	if hook["command"] != testKimiHookCommand {
+		t.Errorf("command=%v want %q", hook["command"], testKimiHookCommand)
+	}
+	if hook["timeout"] != int64(kimiHookTimeoutSeconds) {
+		t.Errorf("timeout=%v want %d", hook["timeout"], kimiHookTimeoutSeconds)
+	}
+	if _, ok := hook["matcher"]; ok {
+		t.Errorf("%s hook should not write matcher: %#v", event, hook)
+	}
 }

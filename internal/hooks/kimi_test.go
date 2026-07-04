@@ -50,6 +50,102 @@ func TestRunKimiUserPromptSubmitContentParts(t *testing.T) {
 	}
 }
 
+func TestRunKimiPreToolUseGortexReadPlainStdout(t *testing.T) {
+	withForceCompress(t, true)
+	cwd := writeGortexProjectMarker(t, t.TempDir())
+	tests := []struct {
+		name string
+		tool string
+	}{
+		{
+			name: "kimi plain read_file",
+			tool: "read_file",
+		},
+		{
+			name: "kimi plain get_editing_context",
+			tool: "get_editing_context",
+		},
+		{
+			name: "prefixed read_file",
+			tool: gortexReadFileTool,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				runKimi(kimiPreToolPayload(cwd, tt.tool, `{"path":"internal/a.go"}`))
+			})
+			if out == "" {
+				t.Fatal("expected Kimi MCP read PreToolUse guidance, got empty output")
+			}
+			for _, want := range []string{"compress_bodies", "search_text", "keep"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("stdout guidance missing %q: %q", want, out)
+				}
+			}
+			for _, notWant := range []string{"hookSpecificOutput", "additionalContext", "permissionDecision"} {
+				if strings.Contains(out, notWant) {
+					t.Fatalf("Kimi PreToolUse nudge must stay plain stdout, got %q", out)
+				}
+			}
+		})
+	}
+}
+
+func TestRunKimiPreToolUseGortexReadSilentShapes(t *testing.T) {
+	withForceCompress(t, false)
+	cwd := writeGortexProjectMarker(t, t.TempDir())
+	tests := []struct {
+		name  string
+		cwd   string
+		tool  string
+		input string
+	}{
+		{
+			name:  "compressed",
+			cwd:   cwd,
+			tool:  "read_file",
+			input: `{"path":"internal/a.go","compress_bodies":true}`,
+		},
+		{
+			name:  "capped",
+			cwd:   cwd,
+			tool:  "read_file",
+			input: `{"path":"internal/a.go","max_lines":80}`,
+		},
+		{
+			name:  "non-source file",
+			cwd:   cwd,
+			tool:  "read_file",
+			input: `{"path":"README.md"}`,
+		},
+		{
+			name:  "other tool",
+			cwd:   cwd,
+			tool:  "search_text",
+			input: `{"query":"Foo"}`,
+		},
+		{
+			name:  "outside project",
+			cwd:   t.TempDir(),
+			tool:  "read_file",
+			input: `{"path":"internal/a.go"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				runKimi(kimiPreToolPayload(tt.cwd, tt.tool, tt.input))
+			})
+			if out != "" {
+				t.Fatalf("expected silent no-op, got %q", out)
+			}
+		})
+	}
+}
+
 func TestRunKimiNoopShapes(t *testing.T) {
 	cwd := writeGortexProjectMarker(t, t.TempDir())
 	restore := stubUserPromptProbe(t, nil, errors.New("should not be called"))
@@ -110,6 +206,10 @@ func TestKimiGortexEnabledProjectMarkers(t *testing.T) {
 
 func kimiPromptPayload(cwd, prompt string) []byte {
 	return []byte(`{"hook_event_name":"UserPromptSubmit","cwd":` + strconv.Quote(cwd) + `,"prompt":` + strconv.Quote(prompt) + `}`)
+}
+
+func kimiPreToolPayload(cwd, toolName, input string) []byte {
+	return []byte(`{"hook_event_name":"PreToolUse","cwd":` + strconv.Quote(cwd) + `,"tool_name":` + strconv.Quote(toolName) + `,"tool_input":` + input + `}`)
 }
 
 func writeGortexProjectMarker(t *testing.T, dir string) string {

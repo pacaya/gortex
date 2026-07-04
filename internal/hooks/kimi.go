@@ -9,10 +9,9 @@ import (
 	"strings"
 )
 
-// RunKimi handles the Kimi Code CLI hook wire shape. PR 1 intentionally
-// supports only UserPromptSubmit: Kimi reliably appends normal stdout from that
-// event to the turn context, while PreToolUse/PostToolUse need separate
-// contract work.
+// RunKimi handles the Kimi Code CLI hook wire shape. Kimi consumes plain
+// stdout as hook-added context, so this dispatcher intentionally avoids
+// Claude-style structured additionalContext JSON.
 func RunKimi() {
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -23,24 +22,53 @@ func RunKimi() {
 
 func runKimi(data []byte) {
 	var input struct {
-		HookEventName string `json:"hook_event_name"`
-		CWD           string `json:"cwd"`
-		Prompt        any    `json:"prompt"`
+		HookEventName string         `json:"hook_event_name"`
+		CWD           string         `json:"cwd"`
+		ToolName      string         `json:"tool_name"`
+		ToolInput     map[string]any `json:"tool_input"`
+		Prompt        any            `json:"prompt"`
 	}
 	if err := json.Unmarshal(data, &input); err != nil {
 		return
 	}
-	if input.HookEventName != "UserPromptSubmit" {
+	switch input.HookEventName {
+	case "UserPromptSubmit", "PreToolUse":
+	default:
 		return
 	}
 	if !kimiGortexEnabledProject(input.CWD) {
 		return
 	}
-	ctx := buildUserPromptSubmitContext(input.HookEventName, kimiPromptText(input.Prompt))
+	switch input.HookEventName {
+	case "UserPromptSubmit":
+		ctx := buildUserPromptSubmitContext(input.HookEventName, kimiPromptText(input.Prompt))
+		if ctx == "" {
+			return
+		}
+		fmt.Print(ctx)
+	case "PreToolUse":
+		runKimiPreToolUse(input.ToolName, input.ToolInput)
+	}
+}
+
+func runKimiPreToolUse(toolName string, toolInput map[string]any) {
+	if !kimiGortexReadPreToolUseTool(toolName) {
+		return
+	}
+	ctx := gortexReadNudge(toolName, toolInput)
 	if ctx == "" {
 		return
 	}
 	fmt.Print(ctx)
+}
+
+func kimiGortexReadPreToolUseTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case gortexReadFileTool, gortexEditingContextTool, "read_file", "get_editing_context":
+		return true
+	default:
+		return false
+	}
 }
 
 func kimiPromptText(v any) string {
