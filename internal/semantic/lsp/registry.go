@@ -89,6 +89,16 @@ type ServerSpec struct {
 	// degrades to reference confirmation: it skips the sweep and header
 	// files and warns with the remediation.
 	NeedsCompileDB bool
+	// DefaultSweepMode overrides the global demand-gated default of the
+	// per-file hover / call-hierarchy sweep for this server. Empty keeps
+	// the "demand" default; "full" makes the server sweep every file
+	// unless the operator sets an explicit sweep mode (config or the
+	// GORTEX_LSP_SWEEP env), both of which still win. Set for a server
+	// whose net-new edges come mostly from call hierarchy the demand gate
+	// skips — rust-analyzer, whose ambiguous receivers resolve through
+	// std-library types the graph never indexes, so its recall lives in
+	// the full sweep rather than in cheaper static confirmation.
+	DefaultSweepMode string
 }
 
 // ConnectSpec carries the transport coordinates for passive LSP attach
@@ -337,6 +347,12 @@ var Servers = []ServerSpec{
 		Priority:    5,
 		Daemon:      true,
 		MaxParallel: 8,
+		// Rust method calls bind overwhelmingly to standard-library
+		// receiver types the graph never indexes, so static confirmation
+		// leaves rust-analyzer's net-new call-hierarchy edges on the table;
+		// its recall lives in the full sweep. Default to it (operator config
+		// / GORTEX_LSP_SWEEP still override).
+		DefaultSweepMode: sweepModeFull,
 	},
 	{
 		Name:    "clangd",

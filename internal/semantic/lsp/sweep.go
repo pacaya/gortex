@@ -59,23 +59,35 @@ func normalizeSweepMode(v string) string {
 }
 
 // resolveSweepMode picks the effective per-file sweep mode by precedence:
-// the GORTEX_LSP_SWEEP env override wins over the configured value, which
-// wins over the demand-gated default. An unrecognised value at any level
-// is ignored (falls through) rather than failing the pass.
-func resolveSweepMode(configured string) string {
+// the GORTEX_LSP_SWEEP env override wins over the operator-configured value,
+// which wins over the per-server spec default, which wins over the global
+// demand-gated default. Only the two operator-set sources (env, config) can
+// override a server's own default, so a server that needs the full sweep
+// gets it out of the box while an operator retains the last word. An
+// unrecognised value at any level is ignored (falls through) rather than
+// failing the pass.
+func resolveSweepMode(configured, specDefault string) string {
 	if env := normalizeSweepMode(os.Getenv(SweepEnv)); env != "" {
 		return env
 	}
 	if cfg := normalizeSweepMode(configured); cfg != "" {
 		return cfg
 	}
+	if sd := normalizeSweepMode(specDefault); sd != "" {
+		return sd
+	}
 	return sweepModeDemand
 }
 
 // effectiveSweepMode resolves the sweep mode for this provider, honouring
-// the GORTEX_LSP_SWEEP env override over the router-configured field.
+// the GORTEX_LSP_SWEEP env override over the router-configured field over
+// the server spec's own DefaultSweepMode.
 func (p *Provider) effectiveSweepMode() string {
-	return resolveSweepMode(p.sweepMode)
+	specDefault := ""
+	if p.spec != nil {
+		specDefault = p.spec.DefaultSweepMode
+	}
+	return resolveSweepMode(p.sweepMode, specDefault)
 }
 
 // sweepFile reports whether the per-file hover / call-hierarchy sweep should

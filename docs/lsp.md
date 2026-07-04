@@ -225,7 +225,14 @@ Resolution precedence, highest first:
    it where you launch `gortex daemon` / `gortex server` to dial one run without
    editing config.
 2. The `.gortex.yaml` key `semantic.lsp_sweep` (same values).
-3. The `demand` default.
+3. A per-server default. Most servers have none and fall through to the global
+   default; **rust-analyzer defaults to `full`**. Rust method calls bind
+   overwhelmingly to standard-library receiver types the graph never indexes, so
+   static confirmation leaves rust-analyzer's net-new call-hierarchy edges on the
+   table — its recall lives in the full sweep. Either operator source above
+   overrides it, so `semantic.lsp_sweep: demand` (or the env) puts rust-analyzer
+   back on the demand gate.
+4. The `demand` default.
 
 An unrecognised value at any level is ignored and the next source applies.
 

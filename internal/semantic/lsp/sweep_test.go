@@ -33,27 +33,46 @@ func TestNormalizeSweepMode(t *testing.T) {
 }
 
 func TestResolveSweepMode_EnvWinsOverConfig(t *testing.T) {
-	// No env, no config → demand default.
+	// No env, no config, no spec default → demand default.
 	t.Setenv(SweepEnv, "")
-	assert.Equal(t, sweepModeDemand, resolveSweepMode(""), "empty env + empty config resolves to the demand default")
+	assert.Equal(t, sweepModeDemand, resolveSweepMode("", ""), "empty env + empty config + empty spec default resolves to the demand default")
 
 	// Config alone is honoured when the env is unset.
-	assert.Equal(t, sweepModeFull, resolveSweepMode("full"), "configured value is used when env is unset")
-	assert.Equal(t, sweepModeOff, resolveSweepMode("off"))
+	assert.Equal(t, sweepModeFull, resolveSweepMode("full", ""), "configured value is used when env is unset")
+	assert.Equal(t, sweepModeOff, resolveSweepMode("off", ""))
 
 	// An unrecognised config value falls back to the default rather than failing.
-	assert.Equal(t, sweepModeDemand, resolveSweepMode("bogus"))
+	assert.Equal(t, sweepModeDemand, resolveSweepMode("bogus", ""))
 
 	// Env wins over config in both directions.
 	t.Setenv(SweepEnv, "full")
-	assert.Equal(t, sweepModeFull, resolveSweepMode("off"), "env override must win over a configured off")
+	assert.Equal(t, sweepModeFull, resolveSweepMode("off", ""), "env override must win over a configured off")
 	t.Setenv(SweepEnv, "off")
-	assert.Equal(t, sweepModeOff, resolveSweepMode("full"), "env override must win over a configured full")
+	assert.Equal(t, sweepModeOff, resolveSweepMode("full", ""), "env override must win over a configured full")
 
 	// An unrecognised env value is ignored — config (then default) takes over.
 	t.Setenv(SweepEnv, "garbage")
-	assert.Equal(t, sweepModeFull, resolveSweepMode("full"), "an unrecognised env value falls through to config")
-	assert.Equal(t, sweepModeDemand, resolveSweepMode(""), "an unrecognised env value with no config falls through to the default")
+	assert.Equal(t, sweepModeFull, resolveSweepMode("full", ""), "an unrecognised env value falls through to config")
+	assert.Equal(t, sweepModeDemand, resolveSweepMode("", ""), "an unrecognised env value with no config falls through to the default")
+}
+
+func TestResolveSweepMode_SpecDefault(t *testing.T) {
+	t.Setenv(SweepEnv, "")
+
+	// A spec default is used when neither env nor config is set.
+	assert.Equal(t, sweepModeFull, resolveSweepMode("", sweepModeFull), "spec default is used when env + config are unset")
+
+	// Operator config outranks the spec default in both directions.
+	assert.Equal(t, sweepModeDemand, resolveSweepMode("demand", sweepModeFull), "configured value wins over a full spec default")
+	assert.Equal(t, sweepModeOff, resolveSweepMode("off", sweepModeFull), "configured off wins over a full spec default")
+
+	// The env override outranks both config and the spec default.
+	t.Setenv(SweepEnv, "demand")
+	assert.Equal(t, sweepModeDemand, resolveSweepMode("", sweepModeFull), "env wins over a full spec default")
+
+	// An unrecognised spec default is ignored — falls through to the demand default.
+	t.Setenv(SweepEnv, "")
+	assert.Equal(t, sweepModeDemand, resolveSweepMode("", "bogus"), "an unrecognised spec default falls through to the demand default")
 }
 
 func TestSweepFile(t *testing.T) {
@@ -101,6 +120,21 @@ func TestEffectiveSweepMode(t *testing.T) {
 	empty := &Provider{}
 	t.Setenv(SweepEnv, "")
 	assert.Equal(t, sweepModeDemand, empty.effectiveSweepMode(), "an unset field and unset env resolve to the demand default")
+
+	// A server spec's DefaultSweepMode is honoured when neither env nor the
+	// router field is set — and both still override it.
+	specFull := &Provider{spec: &ServerSpec{DefaultSweepMode: sweepModeFull}}
+	assert.Equal(t, sweepModeFull, specFull.effectiveSweepMode(), "the spec default is used when env + field are unset")
+	specWithField := &Provider{sweepMode: "demand", spec: &ServerSpec{DefaultSweepMode: sweepModeFull}}
+	assert.Equal(t, sweepModeDemand, specWithField.effectiveSweepMode(), "the router-configured field wins over the spec default")
+	t.Setenv(SweepEnv, "off")
+	assert.Equal(t, sweepModeOff, specFull.effectiveSweepMode(), "the env override wins over the spec default")
+
+	// The rust-analyzer registry spec ships a full-sweep default.
+	t.Setenv(SweepEnv, "")
+	ra := &Provider{spec: SpecByName("rust-analyzer")}
+	require.NotNil(t, ra.spec)
+	assert.Equal(t, sweepModeFull, ra.effectiveSweepMode(), "rust-analyzer defaults to the full sweep out of the box")
 }
 
 // enrichCapturingResult runs a full enrichment pass and returns its result,
