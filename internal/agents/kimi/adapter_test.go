@@ -51,11 +51,10 @@ func TestKimiGlobalWritesMCPAndHooks(t *testing.T) {
 	}
 
 	hooks := readKimiHooks(t, env)
-	if len(hooks) != 2 {
-		t.Fatalf("hooks=%#v want 2", hooks)
+	if len(hooks) != 4 {
+		t.Fatalf("hooks=%#v want 4", hooks)
 	}
-	assertKimiHook(t, hooks[0], "UserPromptSubmit")
-	assertKimiHook(t, hooks[1], "PreToolUse")
+	assertKimiGortexHooks(t, hooks, 0)
 
 	agentstest.AssertIdempotent(t, a, env)
 }
@@ -107,18 +106,13 @@ timeout = 5
 		t.Fatalf("default_model was not preserved: %#v", cfg)
 	}
 	hooks := readKimiHooks(t, env)
-	if len(hooks) != 3 {
+	if len(hooks) != 5 {
 		t.Fatalf("hooks=%#v want user+gortex hooks", hooks)
 	}
 	if hooks[0]["event"] != "Notification" {
 		t.Fatalf("user hook was not preserved first: %#v", hooks)
 	}
-	if hooks[1]["event"] != "UserPromptSubmit" {
-		t.Fatalf("missing gortex UserPromptSubmit hook: %#v", hooks)
-	}
-	if hooks[2]["event"] != "PreToolUse" {
-		t.Fatalf("missing gortex PreToolUse hook: %#v", hooks)
-	}
+	assertKimiGortexHooks(t, hooks, 1)
 }
 
 func TestKimiForceReplacesOnlyGortexHook(t *testing.T) {
@@ -150,14 +144,13 @@ timeout = 30
 		t.Fatalf("apply force: %v", err)
 	}
 	hooks := readKimiHooks(t, env)
-	if len(hooks) != 3 {
+	if len(hooks) != 5 {
 		t.Fatalf("hooks=%#v want user+current gortex hooks", hooks)
 	}
 	if hooks[0]["command"] != "echo user" {
 		t.Fatalf("user hook was not preserved: %#v", hooks)
 	}
-	assertKimiHook(t, hooks[1], "UserPromptSubmit")
-	assertKimiHook(t, hooks[2], "PreToolUse")
+	assertKimiGortexHooks(t, hooks, 1)
 }
 
 func kimiTestEnv(t *testing.T) agents.Env {
@@ -205,7 +198,7 @@ func readKimiHooks(t *testing.T, env agents.Env) []map[string]any {
 	return out
 }
 
-func assertKimiHook(t *testing.T, hook map[string]any, event string) {
+func assertKimiHook(t *testing.T, hook map[string]any, event string, timeout int) {
 	t.Helper()
 	if hook["event"] != event {
 		t.Errorf("event=%v want %s", hook["event"], event)
@@ -213,10 +206,20 @@ func assertKimiHook(t *testing.T, hook map[string]any, event string) {
 	if hook["command"] != testKimiHookCommand {
 		t.Errorf("command=%v want %q", hook["command"], testKimiHookCommand)
 	}
-	if hook["timeout"] != int64(kimiHookTimeoutSeconds) {
-		t.Errorf("timeout=%v want %d", hook["timeout"], kimiHookTimeoutSeconds)
+	if hook["timeout"] != int64(timeout) {
+		t.Errorf("timeout=%v want %d", hook["timeout"], timeout)
 	}
 	if _, ok := hook["matcher"]; ok {
 		t.Errorf("%s hook should not write matcher: %#v", event, hook)
 	}
+}
+
+// assertKimiGortexHooks checks the four gortex-managed hooks appear, in order,
+// starting at hooks[offset].
+func assertKimiGortexHooks(t *testing.T, hooks []map[string]any, offset int) {
+	t.Helper()
+	assertKimiHook(t, hooks[offset+0], "UserPromptSubmit", kimiHookTimeoutSeconds)
+	assertKimiHook(t, hooks[offset+1], "PreToolUse", kimiHookTimeoutSeconds)
+	assertKimiHook(t, hooks[offset+2], "Stop", kimiStopHookTimeoutSeconds)
+	assertKimiHook(t, hooks[offset+3], "SubagentStart", kimiSubagentHookTimeoutSeconds)
 }

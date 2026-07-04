@@ -18,7 +18,7 @@ func TestRunKimiUserPromptSubmitPlainStdout(t *testing.T) {
 	defer restore()
 
 	out := captureStdout(t, func() {
-		runKimi(kimiPromptPayload(cwd, "fix auth token validation"))
+		runKimi(kimiPromptPayload(cwd, "fix auth token validation"), 0, ModeDeny)
 	})
 	if out == "" {
 		t.Fatal("expected Kimi prompt context, got empty output")
@@ -43,7 +43,7 @@ func TestRunKimiUserPromptSubmitContentParts(t *testing.T) {
 	defer restore()
 
 	out := captureStdout(t, func() {
-		runKimi([]byte(`{"hook_event_name":"UserPromptSubmit","cwd":` + strconv.Quote(cwd) + `,"prompt":[{"type":"text","text":"trace auth middleware"},{"type":"image","source":"ignored"}]}`))
+		runKimi([]byte(`{"hook_event_name":"UserPromptSubmit","cwd":`+strconv.Quote(cwd)+`,"prompt":[{"type":"text","text":"trace auth middleware"},{"type":"image","source":"ignored"}]}`), 0, ModeDeny)
 	})
 	if !strings.Contains(out, "AuthMiddleware") {
 		t.Fatalf("content-parts prompt did not produce context:\n%s", out)
@@ -74,7 +74,7 @@ func TestRunKimiPreToolUseGortexReadPlainStdout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out := captureStdout(t, func() {
-				runKimi(kimiPreToolPayload(cwd, tt.tool, `{"path":"internal/a.go"}`))
+				runKimi(kimiPreToolPayload(cwd, tt.tool, `{"path":"internal/a.go"}`), 0, ModeDeny)
 			})
 			if out == "" {
 				t.Fatal("expected Kimi MCP read PreToolUse guidance, got empty output")
@@ -137,7 +137,7 @@ func TestRunKimiPreToolUseGortexReadSilentShapes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			out := captureStdout(t, func() {
-				runKimi(kimiPreToolPayload(tt.cwd, tt.tool, tt.input))
+				runKimi(kimiPreToolPayload(tt.cwd, tt.tool, tt.input), 0, ModeDeny)
 			})
 			if out != "" {
 				t.Fatalf("expected silent no-op, got %q", out)
@@ -157,7 +157,7 @@ func TestRunKimiNoopShapes(t *testing.T) {
 		kimiPromptPayload(cwd, "/clear"),
 	}
 	for _, tc := range cases {
-		out := captureStdout(t, func() { runKimi(tc) })
+		out := captureStdout(t, func() { runKimi(tc, 0, ModeDeny) })
 		if out != "" {
 			t.Fatalf("expected no output for %s, got %q", tc, out)
 		}
@@ -175,7 +175,7 @@ func TestRunKimiNoopOutsideGortexProject(t *testing.T) {
 	defer restore()
 
 	out := captureStdout(t, func() {
-		runKimi(kimiPromptPayload(t.TempDir(), "fix auth token validation"))
+		runKimi(kimiPromptPayload(t.TempDir(), "fix auth token validation"), 0, ModeDeny)
 	})
 	if out != "" {
 		t.Fatalf("expected no output outside a Gortex-enabled project, got %q", out)

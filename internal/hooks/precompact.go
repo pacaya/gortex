@@ -177,11 +177,31 @@ func cappedLines(s string, max int) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// callServerTool issues a POST /v1/tools/{name} against the server and returns
-// the text content from the first response block. Returns empty string on any
-// error (server unreachable, non-200, missing content) so callers can degrade
-// silently.
+// callServerTool resolves a Gortex tool call for a hook handler. It first
+// tries the HTTP REST surface (POST /v1/tools/{name} on the given port, served
+// only when the daemon runs with --http-addr); when that yields nothing it
+// falls back to the daemon's AF_UNIX socket, scoped to the current hook's
+// working directory. Returns "" on any error so callers degrade silently.
+//
+// The socket fallback is gated on a set hookCWD (see setHookCWD): the pure-HTTP
+// unit tests never set it, so they keep their existing "no bridge" semantics,
+// while a live hook process — which sets hookCWD from the payload — reaches a
+// normally-running daemon that only listens on the socket.
 func callServerTool(port int, name string, args map[string]any) string {
+	if raw := callServerToolHTTP(port, name, args); raw != "" {
+		return raw
+	}
+	cwd := loadHookCWD()
+	if cwd == "" {
+		return ""
+	}
+	return callServerToolDaemonFn(cwd, name, args)
+}
+
+// callServerToolHTTP issues a POST /v1/tools/{name} against the server and
+// returns the text content from the first response block. Returns empty string
+// on any error (server unreachable, non-200, missing content).
+func callServerToolHTTP(port int, name string, args map[string]any) string {
 	if args == nil {
 		args = map[string]any{}
 	}

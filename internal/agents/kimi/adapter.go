@@ -8,8 +8,9 @@
 //
 // Kimi's hooks are user-level today, so project-mode `gortex init` only writes
 // the repo-local MCP file. Machine-wide `gortex install` writes user MCP and,
-// when hooks are enabled, UserPromptSubmit and PreToolUse hooks that shell
-// `gortex hook --agent=kimi`.
+// when hooks are enabled, UserPromptSubmit / PreToolUse / Stop / SubagentStart
+// hooks that shell `gortex hook --agent=kimi` for pre-turn context injection,
+// graph-aware tool redirects, post-turn self-correction, and subagent briefing.
 //
 // Docs: https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html
 package kimi
@@ -28,7 +29,15 @@ import (
 const Name = "kimi"
 const DocsURL = "https://www.kimi.com/code/docs/en/kimi-code-cli/customization/hooks.html"
 
-const kimiHookTimeoutSeconds = 5
+// Per-event hook timeouts (Kimi allows 1–600s). UserPromptSubmit and
+// PreToolUse sit on the turn's critical path, so they stay snappy; the Stop and
+// SubagentStart briefings fan out to several graph tools and run off the hot
+// path, so they get more headroom before Kimi's fail-open kill.
+const (
+	kimiHookTimeoutSeconds         = 5
+	kimiStopHookTimeoutSeconds     = 30
+	kimiSubagentHookTimeoutSeconds = 15
+)
 
 type Adapter struct{}
 
@@ -214,6 +223,8 @@ func kimiHooks(env agents.Env) []map[string]any {
 	return []map[string]any{
 		kimiUserPromptSubmitHook(env),
 		kimiPreToolUseHook(env),
+		kimiStopHook(env),
+		kimiSubagentStartHook(env),
 	}
 }
 
@@ -227,12 +238,35 @@ func kimiUserPromptSubmitHook(env agents.Env) map[string]any {
 
 func kimiPreToolUseHook(env agents.Env) map[string]any {
 	// Do not set matcher here: Kimi currently exposes MCP tool names as the
-	// underlying tool name without a documented server namespace. The dispatcher
-	// does the narrow Gortex read-tool filtering and silently ignores the rest.
+	// underlying tool name without a documented server namespace, and the
+	// native Read/Grep/Glob redirects want to see every tool call. The
+	// dispatcher does the filtering and silently ignores anything it doesn't
+	// enrich.
 	return map[string]any{
 		"event":   "PreToolUse",
 		"command": kimiHookCommand(env),
 		"timeout": kimiHookTimeoutSeconds,
+	}
+}
+
+// kimiStopHook runs the post-turn diagnostics (changed symbols → test targets,
+// guards, dead code, coverage, contracts) and feeds them back so the agent can
+// self-correct before handoff.
+func kimiStopHook(env agents.Env) map[string]any {
+	return map[string]any{
+		"event":   "Stop",
+		"command": kimiHookCommand(env),
+		"timeout": kimiStopHookTimeoutSeconds,
+	}
+}
+
+// kimiSubagentStartHook briefs a spawned subagent with task-scoped graph
+// context and the tool-swap table so it doesn't default to raw Read/Grep.
+func kimiSubagentStartHook(env agents.Env) map[string]any {
+	return map[string]any{
+		"event":   "SubagentStart",
+		"command": kimiHookCommand(env),
+		"timeout": kimiSubagentHookTimeoutSeconds,
 	}
 }
 
@@ -251,7 +285,7 @@ func kimiHookEntryInvokesKimi(entry any) (string, bool) {
 	}
 	event, _ := m["event"].(string)
 	switch event {
-	case "UserPromptSubmit", "PreToolUse":
+	case "UserPromptSubmit", "PreToolUse", "Stop", "SubagentStart":
 	default:
 		return "", false
 	}

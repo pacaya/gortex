@@ -41,10 +41,11 @@ var hookCmd = &cobra.Command{
 			hooks.RunCodex(hookPort)
 			return
 		case "kimi":
-			// Kimi Code CLI PR 1 supports only UserPromptSubmit. It expects
-			// prompt context via normal stdout rather than Claude's
-			// additionalContext field.
-			hooks.RunKimi()
+			// Kimi Code CLI: UserPromptSubmit / PreToolUse / Stop /
+			// SubagentStart. Soft guidance rides Kimi's plain-stdout context
+			// channel; an indexed whole-file read is blocked via the documented
+			// hookSpecificOutput.permissionDecision shape.
+			hooks.RunKimi(hookPort, hooks.ParseMode(hookMode))
 			return
 		case "", "claude":
 			// Claude Code — handled below.
@@ -61,6 +62,6 @@ func init() {
 	hookCmd.Flags().StringVar(&hookMode, "mode", "deny",
 		"hook posture: 'deny' (redirect Grep/Glob/Read of indexed source), 'enrich' (never deny; PostToolUse appends graph context), 'consult-unlock' (deny fallback reads until the graph is queried once this session), or 'nudge' (soft-deny once per burst of non-symbolic calls)")
 	hookCmd.Flags().StringVar(&hookAgent, "agent", "",
-		"hook wire protocol: empty/'claude' (Claude Code PreToolUse/UserPromptSubmit), 'codex' (Codex Bash PreToolUse/PostToolUse soft context), 'kimi' (Kimi Code CLI UserPromptSubmit plain stdout), 'hermes' (NousResearch hermes-agent pre_tool_call/pre_llm_call), 'pi' (earendil-works/pi extension bridge — normalized PiEvent envelope in, PiDecision out), or 'gemini'/'antigravity' (emits hookSpecificOutput.additionalContext). Default (empty) is the Claude Code format.")
+		"hook wire protocol: empty/'claude' (Claude Code PreToolUse/UserPromptSubmit), 'codex' (Codex Bash PreToolUse/PostToolUse soft context), 'kimi' (Kimi Code CLI UserPromptSubmit/PreToolUse/Stop/SubagentStart; plain-stdout context, permissionDecision deny for indexed reads), 'hermes' (NousResearch hermes-agent pre_tool_call/pre_llm_call), 'pi' (earendil-works/pi extension bridge — normalized PiEvent envelope in, PiDecision out), or 'gemini'/'antigravity' (emits hookSpecificOutput.additionalContext). Default (empty) is the Claude Code format.")
 	rootCmd.AddCommand(hookCmd)
 }
