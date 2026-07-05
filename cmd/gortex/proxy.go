@@ -96,10 +96,13 @@ func runProxy(ctx context.Context, surface *gortexmcp.ToolSurface) (ran bool, er
 	if wdErr != nil {
 		return false, fmt.Errorf("cwd: %w", wdErr)
 	}
+	toolSpec, toolMode := clientToolPreference()
 	h := daemon.Handshake{
 		Mode:       daemon.ModeMCP,
 		CWD:        cwd,
 		ClientName: detectClientName(),
+		Tools:      toolSpec,
+		ToolsMode:  toolMode,
 	}
 	client, recoverable, err := dialDaemonWithRetry(ctx, h)
 	if err != nil && !recoverable {

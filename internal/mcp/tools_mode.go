@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -48,22 +49,74 @@ func (s *Server) toolSurfaceFilter(ctx context.Context, tools []mcp.Tool) []mcp.
 		}
 		tools = kept
 	}
-	// Tool-surface preset (hide mode): keep only the tools in the active
-	// preset's allow-set so a headless / restricted harness sees exactly
-	// its surface and nothing else.
-	if s.toolPolicy.hideMode() {
-		kept := make([]mcp.Tool, 0, len(tools))
-		for _, t := range tools {
-			if !s.toolPolicy.allows(t.Name) {
-				continue
-			}
-			kept = append(kept, t)
-		}
-		tools = kept
-	}
+	// Per-session tool-surface preset: narrow (and, for a client asking for
+	// a wider surface than the daemon's eager set, widen) the list to the
+	// policy resolved for THIS connection (forwarded GORTEX_TOOLS / --tools,
+	// else the client-aware default, else the server's global preset).
+	tools = s.applySessionPreset(ctx, tools)
 	// Per-host adaptation: drop tools the host duplicates and apply any
 	// host-specific description overrides (see host_context.go).
 	return s.sessionHostContext(ctx).apply(tools)
+}
+
+// applySessionPreset shapes the tool list to the surface in force for this
+// session. Two regimes:
+//
+//   - No per-session override (the session's effective policy IS the
+//     server's global one): preserve the server's own behaviour — a defer
+//     preset leaves the already-lean eager set untouched (so promote-on-
+//     demand tools stay visible), a hide preset removes non-allowed tools.
+//   - A per-session override (a client forwarded GORTEX_TOOLS / --tools, or
+//     the client-aware default applied): this session chose its own
+//     surface, so narrow to exactly the tools its policy allows AND widen to
+//     any tools the daemon deferred that the policy allows — a client asking
+//     for `full`/`nav` over a `core` daemon must still see them. Widened
+//     tools stay callable because a tools/call promotes a deferred tool by
+//     name before dispatch.
+func (s *Server) applySessionPreset(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
+	p := s.effectiveSessionPolicy(ctx)
+	override := p != s.toolPolicy
+	if !override {
+		if !p.hideMode() {
+			return tools // global defer preset: leave the eager surface alone
+		}
+		return narrowToPolicy(tools, p) // global hide preset: original behaviour
+	}
+	kept := narrowToPolicy(tools, p)
+	// Widen with the deferred catalogue's finished (scrubbed + budget-
+	// annotated) schemas for the tools this policy allows but the daemon held
+	// back under its global preset.
+	if s.lazy.Enabled() {
+		present := make(map[string]bool, len(tools))
+		for _, t := range tools {
+			present[t.Name] = true
+		}
+		widened := false
+		for _, name := range s.lazy.DeferredNames() {
+			if present[name] || !p.allows(name) {
+				continue
+			}
+			if dt, ok := s.lazy.DeferredTool(name); ok {
+				kept = append(kept, dt)
+				widened = true
+			}
+		}
+		if widened {
+			sort.Slice(kept, func(i, j int) bool { return kept[i].Name < kept[j].Name })
+		}
+	}
+	return kept
+}
+
+// narrowToPolicy keeps only the tools the policy allows, preserving order.
+func narrowToPolicy(tools []mcp.Tool, p *toolPolicy) []mcp.Tool {
+	kept := make([]mcp.Tool, 0, len(tools))
+	for _, t := range tools {
+		if p.allows(t.Name) {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 // checkToolGate returns a structured error result when toolName must not
@@ -77,7 +130,7 @@ func (s *Server) checkToolGate(ctx context.Context, toolName string) *mcp.CallTo
 	if blocked := s.checkWorkflowGate(ctx, toolName); blocked != nil {
 		return blocked
 	}
-	if blocked := s.checkToolPresetGate(toolName); blocked != nil {
+	if blocked := s.checkToolPresetGate(ctx, toolName); blocked != nil {
 		return blocked
 	}
 	return nil
@@ -85,17 +138,22 @@ func (s *Server) checkToolGate(ctx context.Context, toolName string) *mcp.CallTo
 
 // checkToolPresetGate hard-blocks calls to tools outside the active
 // hide-mode preset, so a client that hard-codes a hidden tool name can't
-// bypass the restricted surface. Defer mode needs no gate — non-allowed
-// tools simply aren't registered live until tools_search promotes them.
-func (s *Server) checkToolPresetGate(toolName string) *mcp.CallToolResult {
-	if !s.toolPolicy.hideMode() || s.toolPolicy.allows(toolName) {
+// bypass the restricted surface. The preset is resolved per session
+// (forwarded GORTEX_TOOLS / --tools, else the client-aware default, else
+// the server global) so a client that scoped its own pipe to a hide-mode
+// preset is enforced on ITS calls without affecting other sessions. Defer
+// mode needs no gate — non-allowed tools simply aren't registered live
+// until a call by name (or tools_search) promotes them.
+func (s *Server) checkToolPresetGate(ctx context.Context, toolName string) *mcp.CallToolResult {
+	p := s.effectiveSessionPolicy(ctx)
+	if !p.hideMode() || p.allows(toolName) {
 		return nil
 	}
 	return NewStructuredErrorResult(StructuredError{
 		ErrorCode: ErrCodeToolBlockedByMode,
 		Message: fmt.Sprintf("%q is not part of the active tool preset %q — it has been removed from this "+
-			"server's tool surface. Call tool_profile to see the available tools.", toolName, s.toolPolicy.preset),
-		Data: map[string]any{"tool": toolName, "preset": s.toolPolicy.preset},
+			"server's tool surface. Call tool_profile to see the available tools.", toolName, p.preset),
+		Data: map[string]any{"tool": toolName, "preset": p.preset},
 	})
 }
 

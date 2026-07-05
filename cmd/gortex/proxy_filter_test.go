@@ -111,6 +111,25 @@ func TestGateToolCallFrame(t *testing.T) {
 	require.NotContains(t, string(trimmed), "analyze", "defer mode still trims tools/list")
 }
 
+func TestClientToolPreference(t *testing.T) {
+	// GORTEX_TOOLS env wins over the --tools flag; likewise for mode.
+	t.Setenv("GORTEX_TOOLS", "agent")
+	t.Setenv("GORTEX_TOOLS_MODE", "defer")
+	mcpTools, mcpToolsMode = "nav", "hide"
+	spec, mode := clientToolPreference()
+	require.Equal(t, "agent", spec, "env GORTEX_TOOLS overrides --tools")
+	require.Equal(t, "defer", mode, "env GORTEX_TOOLS_MODE overrides --tools-mode")
+
+	// Flag is forwarded when the env is unset.
+	t.Setenv("GORTEX_TOOLS", "")
+	t.Setenv("GORTEX_TOOLS_MODE", "")
+	mcpTools, mcpToolsMode = "edit,+find_files", ""
+	spec, mode = clientToolPreference()
+	require.Equal(t, "edit,+find_files", spec)
+	require.Equal(t, "", mode)
+	mcpTools, mcpToolsMode = "", ""
+}
+
 func TestToolPolicyConfigFromFlags(t *testing.T) {
 	cfg := toolPolicyConfigFromFlags("search_symbols,edit_file", "hide")
 	require.Equal(t, "", cfg.Preset)

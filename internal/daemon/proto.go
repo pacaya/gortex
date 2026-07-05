@@ -39,6 +39,17 @@ type Handshake struct {
 	CWD        string         `json:"cwd,omitempty"`
 	ClientName string         `json:"client,omitempty"` // e.g. "claude-code", "kiro", "cli"
 	PID        int            `json:"pid,omitempty"`
+	// Tools / ToolsMode carry the client-side tool-surface preference
+	// (GORTEX_TOOLS / --tools and GORTEX_TOOLS_MODE / --tools-mode of the
+	// `gortex mcp` proxy). The daemon serves a shared graph, so a per-client
+	// preset can only be honoured if the client hands its choice over at
+	// connect time — the proxy's own byte-pump filter can subtract from the
+	// daemon's list but never widen it. Forwarding the spec lets the daemon
+	// resolve the effective surface for THIS session authoritatively (env
+	// override wins), covering both narrower and wider presets. Empty means
+	// "no client preference — use the daemon default / client-name default".
+	Tools     string `json:"tools,omitempty"`
+	ToolsMode string `json:"tools_mode,omitempty"`
 }
 
 // HandshakeAck is the daemon's reply to a handshake. On failure ErrorCode

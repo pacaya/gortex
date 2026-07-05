@@ -501,6 +501,18 @@ type sessionState struct {
 	// fall back to JSON. Empty until the dispatcher sees the
 	// `initialize` frame.
 	clientName string
+	// toolSpec / toolMode are the client-forwarded tool-surface
+	// preference (GORTEX_TOOLS / --tools + mode) relayed by the daemon
+	// from the connection handshake. They drive the per-session effective
+	// tool policy: a forwarded spec wins over the client-name default,
+	// which wins over the server's global preset. Empty = no preference.
+	toolSpec string
+	toolMode string
+	// resolvedToolPolicy caches the effective per-session policy so it is
+	// derived once per session, not on every tools/list. Invalidated when
+	// toolSpec / clientName is (re)recorded.
+	resolvedToolPolicy *toolPolicy
+	toolPolicyResolved bool
 	// lastSearch captures the most recent search_symbols call so that a
 	// subsequent get_symbol_source / get_editing_context on one of its
 	// results can be attributed back to the query — this is the raw input
@@ -729,6 +741,34 @@ func (ss *sessionState) recordClientName(name string) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.clientName = name
+	// The client name feeds the client-aware preset default, so a late
+	// authoritative name (from the `initialize` frame) must re-resolve the
+	// session's effective tool policy.
+	ss.resolvedToolPolicy = nil
+	ss.toolPolicyResolved = false
+}
+
+// recordToolPolicy captures the client-forwarded tool-surface preference
+// relayed from the connection handshake. Invalidates the cached
+// effective policy so the next tools/list re-resolves. Idempotent.
+func (ss *sessionState) recordToolPolicy(spec, mode string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if ss.toolSpec == spec && ss.toolMode == mode && ss.toolPolicyResolved {
+		return
+	}
+	ss.toolSpec = spec
+	ss.toolMode = mode
+	ss.resolvedToolPolicy = nil
+	ss.toolPolicyResolved = false
+}
+
+// snapshotToolPreference returns the forwarded tool spec + mode under the
+// session lock.
+func (ss *sessionState) snapshotToolPreference() (spec, mode string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	return ss.toolSpec, ss.toolMode
 }
 
 // snapshotClientName returns the captured client name under the
@@ -770,6 +810,31 @@ func (s *Server) NoteSessionClient(sessionID, name, version string) {
 	// observations carry the client app for the per-client breakdown.
 	entry.tokenStats.setClientName(name)
 	_ = version // reserved for per-version capability gates
+}
+
+// NoteSessionToolPolicy relays the client-forwarded tool-surface
+// preference (from the daemon connection handshake) onto the per-session
+// sessionState so tools/list and the call gate honour this client's
+// preset authoritatively. Empty spec+mode is a no-op (no preference).
+// Safe to call before the session is registered — sessionFor materialises
+// the entry. Called once per session by the daemon dispatcher.
+func (s *Server) NoteSessionToolPolicy(sessionID, spec, mode string) {
+	if s == nil {
+		return
+	}
+	if strings.TrimSpace(spec) == "" && strings.TrimSpace(mode) == "" {
+		return
+	}
+	if s.sessions == nil {
+		if s.session != nil {
+			s.session.recordToolPolicy(spec, mode)
+		}
+		return
+	}
+	if sessionID == "" {
+		return
+	}
+	s.sessions.get(sessionID).session.recordToolPolicy(spec, mode)
 }
 
 // defaultFormatForClient returns the most-compressed wire format the

@@ -98,6 +98,13 @@ func (d *mcpDispatcher) Dispatch(ctx context.Context, sess *daemon.Session, fram
 	// session in workspace A can see workspace B's nodes.
 	ctx = gortexmcp.WithSessionCWD(ctx, sess.CWD)
 
+	// Relay the client-forwarded tool-surface preference (GORTEX_TOOLS /
+	// --tools of the proxy) so the MCP server resolves THIS session's
+	// effective preset authoritatively — the daemon serves a shared graph,
+	// so a per-client preset only applies if the client's choice reaches
+	// the server. No-op when the client forwarded no preference.
+	d.srv.NoteSessionToolPolicy(sess.ID, sess.ToolSpec, sess.ToolMode)
+
 	// Identify the MCP client. The handshake's ClientName is the
 	// proxy's env-var-based guess (often "unknown" when no known env
 	// var matched). The MCP `initialize` request carries the

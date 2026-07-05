@@ -38,6 +38,14 @@ type Session struct {
 	ActiveProject    string
 	StartedAt        time.Time
 
+	// ToolSpec / ToolMode are the client-forwarded tool-surface
+	// preference (GORTEX_TOOLS / --tools + mode) from the handshake. The
+	// daemon resolves the effective per-session tool surface from these
+	// so a client can scope (or widen) its own pipe while the daemon keeps
+	// serving the full graph to everyone else. Empty = no preference.
+	ToolSpec string
+	ToolMode string
+
 	// Conn is the underlying socket. Kept for close-on-shutdown and
 	// logging; handlers should not read from or write to it directly —
 	// framing is the transport's job.
@@ -167,6 +175,8 @@ func (r *SessionRegistry) Register(conn net.Conn, h Handshake) *Session {
 		ClientName:       h.ClientName,
 		ClientNameSource: "handshake",
 		ClientPID:        h.PID,
+		ToolSpec:         h.Tools,
+		ToolMode:         h.ToolsMode,
 		StartedAt:        time.Now(),
 		Conn:             conn,
 	}
@@ -194,6 +204,8 @@ func (r *SessionRegistry) RegisterDetached(id string, h Handshake) *Session {
 		ClientName:       h.ClientName,
 		ClientNameSource: "handshake",
 		ClientPID:        h.PID,
+		ToolSpec:         h.Tools,
+		ToolMode:         h.ToolsMode,
 		StartedAt:        time.Now(),
 	}
 	r.mu.Lock()

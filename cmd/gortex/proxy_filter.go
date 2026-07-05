@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	gortexmcp "github.com/zzet/gortex/internal/mcp"
@@ -38,6 +40,25 @@ func toolPolicyConfigFromFlags(flagTools, flagMode string) gortexmcp.ToolPolicyC
 // inactive surface (no flag, no env) leaves the proxy a raw byte pump.
 func proxyToolSurface() *gortexmcp.ToolSurface {
 	return gortexmcp.NewToolSurface(toolPolicyConfigFromFlags(mcpTools, mcpToolsMode), nil)
+}
+
+// clientToolPreference returns the raw tool-surface spec + mode this
+// client wants, to hand to the daemon in the handshake so it can resolve
+// the effective surface for this session authoritatively (the proxy's
+// own byte-pump filter can only subtract from the daemon's list, never
+// widen it — see proxy_filter.go and Handshake.Tools). GORTEX_TOOLS /
+// GORTEX_TOOLS_MODE env win over the --tools / --tools-mode flags,
+// mirroring the repo-wide "env overrides file/flag config" convention.
+func clientToolPreference() (spec, mode string) {
+	spec = strings.TrimSpace(os.Getenv("GORTEX_TOOLS"))
+	if spec == "" {
+		spec = strings.TrimSpace(mcpTools)
+	}
+	mode = strings.TrimSpace(os.Getenv("GORTEX_TOOLS_MODE"))
+	if mode == "" {
+		mode = strings.TrimSpace(mcpToolsMode)
+	}
+	return spec, mode
 }
 
 // gateToolCallFrame inspects one client→daemon frame. If it is a

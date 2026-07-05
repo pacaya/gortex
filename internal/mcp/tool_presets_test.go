@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -186,9 +187,9 @@ func TestToolPolicy_HideModeServer(t *testing.T) {
 	require.NotContains(t, live, "analyze")
 
 	// Calls to filtered tools are hard-blocked; allowed tools pass.
-	require.NotNil(t, srv.checkToolPresetGate("analyze"))
-	require.Nil(t, srv.checkToolPresetGate("edit_file"))
-	require.Nil(t, srv.checkToolPresetGate("tool_profile"))
+	require.NotNil(t, srv.checkToolPresetGate(context.Background(), "analyze"))
+	require.Nil(t, srv.checkToolPresetGate(context.Background(), "edit_file"))
+	require.Nil(t, srv.checkToolPresetGate(context.Background(), "tool_profile"))
 }
 
 func TestToolPolicy_DeferModeServer(t *testing.T) {
@@ -205,7 +206,7 @@ func TestToolPolicy_DeferModeServer(t *testing.T) {
 	// never call-gated in defer mode.
 	require.True(t, srv.IsToolEnabled("analyze"))
 	require.Equal(t, "deferred", srv.toolStatus("analyze"))
-	require.Nil(t, srv.checkToolPresetGate("analyze"))
+	require.Nil(t, srv.checkToolPresetGate(context.Background(), "analyze"))
 }
 
 // TestToolPolicy_CoreDefaultServer exercises the shipped default surface
@@ -233,7 +234,7 @@ func TestToolPolicy_CoreDefaultServer(t *testing.T) {
 	for _, name := range []string{"get_architecture", "get_communities", "taint_paths", "flow_between"} {
 		require.Equalf(t, "deferred", srv.toolStatus(name),
 			"non-core tool %q must be deferred under core/defer", name)
-		require.Nilf(t, srv.checkToolPresetGate(name),
+		require.Nilf(t, srv.checkToolPresetGate(context.Background(), name),
 			"defer mode must never call-gate %q", name)
 		require.Truef(t, srv.IsToolEnabled(name),
 			"deferred tool %q is still reachable via tools_search", name)

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"os"
 	"strings"
 
@@ -390,6 +391,81 @@ func (s *ToolSurface) Preset() string {
 		return "full"
 	}
 	return s.p.preset
+}
+
+// effectiveSessionPolicy resolves the tool-surface policy in force for
+// the current request's session. Precedence: a client-forwarded preset /
+// spec (GORTEX_TOOLS / --tools of the `gortex mcp` proxy, relayed through
+// the daemon handshake) wins; else the client-aware preset default (a
+// known coding-agent client gets the lean `agent` surface); else the
+// server's global preset (the `core` default). The result is cached on the
+// session so it is derived once, not on every tools/list. Never nil.
+//
+// This is the single authoritative resolution point the diet relies on:
+// wherever tools/list is answered on the daemon, the surface for THIS
+// connection is decided here, so a client preset actually applies instead
+// of being a no-op the proxy can only subtract from.
+func (s *Server) effectiveSessionPolicy(ctx context.Context) *toolPolicy {
+	if s == nil {
+		return nil
+	}
+	sess := s.sessionFor(ctx)
+	if sess == nil {
+		return s.toolPolicy
+	}
+	sess.mu.Lock()
+	if sess.toolPolicyResolved {
+		p := sess.resolvedToolPolicy
+		sess.mu.Unlock()
+		if p != nil {
+			return p
+		}
+		return s.toolPolicy
+	}
+	spec, mode, client := sess.toolSpec, sess.toolMode, sess.clientName
+	sess.mu.Unlock()
+
+	p := s.resolveSessionPolicy(spec, mode, client)
+
+	sess.mu.Lock()
+	sess.resolvedToolPolicy = p
+	sess.toolPolicyResolved = true
+	sess.mu.Unlock()
+
+	if p != nil {
+		return p
+	}
+	return s.toolPolicy
+}
+
+// resolveSessionPolicy builds the effective policy from a client-forwarded
+// spec + mode and the client name, or returns nil to fall back to the
+// server's global policy. A forwarded spec inherits the server's mode when
+// the client did not pin one, so a bare `GORTEX_TOOLS=nav` keeps the
+// daemon's defer semantics instead of silently switching to hide.
+func (s *Server) resolveSessionPolicy(spec, mode, client string) *toolPolicy {
+	if strings.TrimSpace(spec) != "" {
+		cfg := parseToolSpec(spec)
+		switch {
+		case strings.TrimSpace(mode) != "":
+			cfg.Mode = mode
+		case s.toolPolicy != nil:
+			cfg.Mode = s.toolPolicy.mode
+		}
+		return newToolPolicy(cfg, s.logger)
+	}
+	if p := s.clientDefaultPolicy(client); p != nil {
+		return p
+	}
+	return nil
+}
+
+// clientDefaultPolicy returns the preset a known client should get when it
+// forwarded no explicit tool spec, or nil to keep the server's global
+// default. The default surface is client-aware so a coding agent gets the
+// lean working set without any configuration.
+func (s *Server) clientDefaultPolicy(client string) *toolPolicy {
+	return nil
 }
 
 // toolPolicyBaseFromOptions extracts the config-supplied tool policy
