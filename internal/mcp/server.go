@@ -789,13 +789,6 @@ func (ss *sessionState) recordToolPolicy(spec, mode string) {
 	ss.toolPolicyResolved = false
 }
 
-// snapshotToolPreference returns the forwarded tool spec + mode under the
-// session lock.
-func (ss *sessionState) snapshotToolPreference() (spec, mode string) {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	return ss.toolSpec, ss.toolMode
-}
 
 // snapshotClientName returns the captured client name under the
 // session lock. Returns empty when the `initialize` frame hasn't

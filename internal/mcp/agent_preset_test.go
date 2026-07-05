@@ -18,6 +18,11 @@ func TestAgentPreset_Membership(t *testing.T) {
 	require.True(t, p.allows(LazyToolsSearchName))
 	require.False(t, p.allows("analyze"), "analyze is not in the agent floor")
 	require.False(t, p.allows("get_architecture"))
+	// The negotiable memory tail is deferred (cut from the tail, not the
+	// floor) so it stays out of the eager surface but reachable by name.
+	for _, tail := range agentTailTools {
+		require.Falsef(t, p.allows(tail), "tail tool %q must be deferred, not in the agent floor", tail)
+	}
 	// The alias resolves to the same preset.
 	require.Equal(t, "agent", newToolPolicy(ToolPolicyConfig{Preset: "coding-agent"}, nil).preset)
 }
