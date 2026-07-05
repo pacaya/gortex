@@ -45,6 +45,31 @@ func (s *Server) registerResources() {
 		s.handleResourceSchema,
 	)
 
+	// Static resource: the on-demand reference guide. The single home for
+	// content that used to be pre-paid in the installed CLAUDE.md section —
+	// the LLM-provider matrix, capabilities catalog, token-economy detail,
+	// resources list, and pointers into the analyze / search_ast catalogs.
+	s.mcpServer.AddResource(
+		mcp.NewResource(
+			"gortex://guide",
+			"Gortex Guide",
+			mcp.WithResourceDescription("On-demand reference: LLM-provider matrix, capabilities catalog, token-economy deep-dive, MCP resources, analyze/search_ast catalogs, session-start checklist. Section-addressable via gortex://guide/{topic}."),
+			mcp.WithMIMEType("text/markdown"),
+		),
+		s.handleResourceGuide,
+	)
+
+	// Template resource: a single guide section by topic keyword.
+	s.mcpServer.AddResourceTemplate(
+		mcp.NewResourceTemplate(
+			"gortex://guide/{topic}",
+			"Gortex Guide Section",
+			mcp.WithTemplateDescription("One section of the guide by topic: providers, capabilities, tokens, analyze, search_ast, resources, workflow."),
+			mcp.WithTemplateMIMEType("text/markdown"),
+		),
+		s.handleResourceGuideSection,
+	)
+
 	// Bootstrap-state resources: read-only, no args, every session
 	// hits these at startup. Same payloads as the corresponding
 	// tools; tools stay registered for back-compat.
@@ -242,6 +267,27 @@ Temporal (with temporal_kind + temporal_name):
 			URI:      req.Params.URI,
 			MIMEType: "text/plain",
 			Text:     schema,
+		},
+	}, nil
+}
+
+func (s *Server) handleResourceGuide(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      req.Params.URI,
+			MIMEType: "text/markdown",
+			Text:     GuideText(""),
+		},
+	}, nil
+}
+
+func (s *Server) handleResourceGuideSection(_ context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	topic := extractURIParam(req.Params.URI, "gortex://guide/")
+	return []mcp.ResourceContents{
+		mcp.TextResourceContents{
+			URI:      req.Params.URI,
+			MIMEType: "text/markdown",
+			Text:     GuideText(topic),
 		},
 	}, nil
 }
