@@ -1,16 +1,18 @@
 package resolver
 
 import (
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/zzet/gortex/internal/graph"
 )
 
 // bindDataflowCalleeRefs lifts the callee side of dataflow edges
-// (arg_of / value_flow) from an `unresolved::<bareName>` placeholder onto the
-// same-file function or method that name denotes.
+// (arg_of / value_flow) from an `unresolved::` placeholder onto the real node
+// the callee denotes.
 //
-// The main resolver's resolveFunctionCall already binds `calls` edges to these
+// The main resolver's resolveEdge already binds `calls` edges to these
 // callees, but it keys the candidate lookup off the edge's From node's repo —
 // and a dataflow edge's From is an `unresolved::` argument placeholder with no
 // node, so the lookup is scoped to the empty repo, matches nothing in a
@@ -18,40 +20,51 @@ import (
 // (which refines a resolved callee to its param node) then skips the edge
 // because its target is still an `unresolved::` stub. The result was ~half of
 // all arg_of edges left dangling placeholder→placeholder even when the callee
-// was defined in the very same file.
+// was defined in the same file.
 //
 // This pass closes that gap cheaply and without touching the hot per-edge
-// resolver: it builds one file→name index of function/method nodes, then does
-// an O(1) same-file lookup per dataflow edge. Same-file matching needs no repo
-// derivation — an edge's FilePath and its callee node's FilePath are compared
-// directly, so it behaves identically in bare (single-repo / test) and
-// prefixed (multi-repo) graphs. A name with more than one same-file definition
-// (a func and a method sharing a name) is left unresolved so the audit still
-// surfaces it.
+// resolver, via three call-site-local / index lookups (O(1) per edge):
+//
+//   - bare `unresolved::<name>` callee → the sole SAME-FILE function/method of
+//     that name, else the sole SAME-PACKAGE function (Go package function names
+//     are unique, so a same-dir function match is unambiguous). Matched by
+//     FilePath / dir equality, so no repo-prefix logic — identical behaviour in
+//     bare and prefixed graphs.
+//   - `unresolved::*.<method>` callee → the method the call resolver already
+//     bound for a `calls` / `references` edge at the SAME call site (file+line),
+//     reusing the receiver-type work resolveMethodCall already did there.
 //
 // Ordering (see runFileAttributionPassesLocked): after bindBareNameScopeRefs
 // (a same-scope local/param wins over a same-file function of the same name)
 // and before attributeGoBuiltins (a bare `append`/`len` argument with no
-// same-file definition falls through to builtin attribution) and before
-// materializeDataflowParams (which then refines the resolved callee to its
-// param node).
+// definition falls through to builtin attribution) and before
+// materializeDataflowParams (which then refines a resolved function/method
+// callee to its param node).
 func (r *Resolver) bindDataflowCalleeRefs() {
-	byFile := map[string]map[string][]string{}
+	idx := newCalleeIndex()
 	for _, k := range []graph.NodeKind{graph.KindFunction, graph.KindMethod} {
 		for n := range r.graph.NodesByKind(k) {
 			if n == nil || n.Name == "" || n.FilePath == "" {
 				continue
 			}
-			indexCalleeNode(byFile, n.FilePath, n.Name, n.ID)
+			indexName(idx.byFile, n.FilePath, n.Name, n.ID)
+			if k == graph.KindFunction {
+				indexName(idx.byDir, filepath.Dir(n.FilePath), n.Name, n.ID)
+			}
 		}
 	}
-	if len(byFile) == 0 {
+	for _, k := range []graph.EdgeKind{graph.EdgeCalls, graph.EdgeReferences} {
+		for e := range r.graph.EdgesByKind(k) {
+			idx.indexCallSite(e)
+		}
+	}
+	if len(idx.byFile) == 0 && len(idx.bySite) == 0 {
 		return
 	}
 	var batch []graph.EdgeReindex
 	for _, ek := range []graph.EdgeKind{graph.EdgeArgOf, graph.EdgeValueFlow} {
 		for e := range r.graph.EdgesByKind(ek) {
-			if old := bindDataflowCalleeEdge(e, byFile); old != "" {
+			if old := bindDataflowCalleeEdge(e, idx); old != "" {
 				batch = append(batch, graph.EdgeReindex{Edge: e, OldTo: old})
 			}
 		}
@@ -63,32 +76,44 @@ func (r *Resolver) bindDataflowCalleeRefs() {
 
 // bindDataflowCalleeRefsForFile is the single-file scope of
 // bindDataflowCalleeRefs, used on the incremental (fsnotify / edit_file)
-// re-index path. Because the binding is same-file only, the index is built
-// from this file's own function/method nodes and only this file's outgoing
-// arg_of / value_flow edges are considered — producing exactly the same binds
-// as the whole-graph sweep for the file (keeping
-// TestIncrementalReindex_ConvergesToFullIndex green) without scanning every
-// function in the graph.
+// re-index path. It builds the same indexes restricted to the file's own
+// nodes/edges (same-file), the package's functions via r.dirIndex (same-
+// package — buildDirIndexes runs on the incremental resolve too, so the map is
+// populated), and the file's own call sites — producing exactly the binds the
+// whole-graph sweep would for the file, keeping incremental == full-index
+// convergence, without scanning every function in the graph.
 func (r *Resolver) bindDataflowCalleeRefsForFile(filePath string) {
-	byFile := map[string]map[string][]string{}
+	idx := newCalleeIndex()
 	for _, n := range r.graph.GetFileNodes(filePath) {
-		if n == nil || (n.Kind != graph.KindFunction && n.Kind != graph.KindMethod) {
+		if n == nil || n.Name == "" || n.FilePath == "" {
 			continue
 		}
-		if n.Name == "" || n.FilePath == "" {
-			continue
+		if n.Kind == graph.KindFunction || n.Kind == graph.KindMethod {
+			indexName(idx.byFile, n.FilePath, n.Name, n.ID)
 		}
-		indexCalleeNode(byFile, n.FilePath, n.Name, n.ID)
 	}
-	if len(byFile) == 0 {
-		return
+	// Same-package functions: r.dirIndex[dir] carries one KindFile node per
+	// file in the directory, so each package file is visited exactly once.
+	dir := filepath.Dir(filePath)
+	for _, fileNode := range r.dirIndex[dir] {
+		for _, n := range r.graph.GetFileNodes(fileNode.FilePath) {
+			if n != nil && n.Kind == graph.KindFunction && n.Name != "" && n.FilePath != "" {
+				indexName(idx.byDir, dir, n.Name, n.ID)
+			}
+		}
+	}
+	fileEdges := r.fileOutEdges(filePath)
+	for _, e := range fileEdges {
+		if e != nil && (e.Kind == graph.EdgeCalls || e.Kind == graph.EdgeReferences) {
+			idx.indexCallSite(e)
+		}
 	}
 	var batch []graph.EdgeReindex
-	for _, e := range r.fileOutEdges(filePath) {
-		if e.Kind != graph.EdgeArgOf && e.Kind != graph.EdgeValueFlow {
+	for _, e := range fileEdges {
+		if e == nil || (e.Kind != graph.EdgeArgOf && e.Kind != graph.EdgeValueFlow) {
 			continue
 		}
-		if old := bindDataflowCalleeEdge(e, byFile); old != "" {
+		if old := bindDataflowCalleeEdge(e, idx); old != "" {
 			batch = append(batch, graph.EdgeReindex{Edge: e, OldTo: old})
 		}
 	}
@@ -97,38 +122,97 @@ func (r *Resolver) bindDataflowCalleeRefsForFile(filePath string) {
 	}
 }
 
-// indexCalleeNode records a function/method node under its file and name.
-func indexCalleeNode(byFile map[string]map[string][]string, filePath, name, id string) {
-	names := byFile[filePath]
+// calleeIndex holds the per-pass lookup tables bindDataflowCallee* uses.
+type calleeIndex struct {
+	byFile map[string]map[string][]string // file -> name -> func/method ids
+	byDir  map[string]map[string][]string // dir  -> name -> function ids
+	bySite map[string][]string            // "<file>\x00<line>" -> resolved callee ids
+}
+
+func newCalleeIndex() *calleeIndex {
+	return &calleeIndex{
+		byFile: map[string]map[string][]string{},
+		byDir:  map[string]map[string][]string{},
+		bySite: map[string][]string{},
+	}
+}
+
+// indexCallSite records a resolved calls/references edge under its call site so
+// a `*.method` dataflow callee at the same site can reuse its bound target.
+func (idx *calleeIndex) indexCallSite(e *graph.Edge) {
+	if e == nil || e.Line <= 0 || e.FilePath == "" || graph.IsUnresolvedTarget(e.To) {
+		return
+	}
+	k := siteKey(e.FilePath, e.Line)
+	idx.bySite[k] = append(idx.bySite[k], e.To)
+}
+
+func siteKey(file string, line int) string {
+	return file + "\x00" + strconv.Itoa(line)
+}
+
+func indexName(m map[string]map[string][]string, key, name, id string) {
+	names := m[key]
 	if names == nil {
 		names = map[string][]string{}
-		byFile[filePath] = names
+		m[key] = names
 	}
 	names[name] = append(names[name], id)
 }
 
-// bindDataflowCalleeEdge rewrites e.To from `unresolved::<bareName>` to the
-// sole same-file function/method of that name. Returns the old To value when a
-// rewrite happened (for the batched reindex) or "" when the edge was left
-// alone (not a bare unresolved target, no same-file definition, or ambiguous).
-func bindDataflowCalleeEdge(e *graph.Edge, byFile map[string]map[string][]string) string {
+// bindDataflowCalleeEdge rewrites e.To from an `unresolved::` callee placeholder
+// to the real node it denotes, using idx. Returns the old To value when a
+// rewrite happened (for the batched reindex) or "" when the edge was left alone
+// (not an unresolved target, no unambiguous match, or a shape another pass owns).
+func bindDataflowCalleeEdge(e *graph.Edge, idx *calleeIndex) string {
 	if e == nil || !graph.IsUnresolvedTarget(e.To) {
 		return ""
 	}
 	name := graph.UnresolvedName(e.To)
-	// Bare identifier only — selector (*.m), qualified (a::b), extern, and
-	// per-binding (#...) shapes are owned by other passes.
-	if name == "" || strings.ContainsAny(name, ".*:#") {
+	var chosen string
+	switch {
+	case strings.HasPrefix(name, "*."):
+		// Method-call callee: reuse the target the call resolver bound for a
+		// calls/references edge at the same call site.
+		method := name[2:]
+		if method == "" || strings.ContainsAny(method, ".*:#") {
+			return ""
+		}
+		chosen = uniqueSiteCallee(idx.bySite[siteKey(e.FilePath, e.Line)], method)
+	case name == "" || strings.ContainsAny(name, ".*:#"):
+		// Qualified (a::b), extern, or per-binding (#...) shape — owned by
+		// other passes.
 		return ""
+	default:
+		// Bare identifier: same-file first, then same-package function.
+		if ids := idx.byFile[e.FilePath][name]; len(ids) == 1 {
+			chosen = ids[0]
+		} else if len(ids) == 0 {
+			if ids := idx.byDir[filepath.Dir(e.FilePath)][name]; len(ids) == 1 {
+				chosen = ids[0]
+			}
+		}
 	}
-	ids := byFile[e.FilePath][name]
-	if len(ids) != 1 {
-		return ""
-	}
-	if ids[0] == e.To {
+	if chosen == "" || chosen == e.To {
 		return ""
 	}
 	oldTo := e.To
-	e.To = ids[0]
+	e.To = chosen
 	return oldTo
+}
+
+// uniqueSiteCallee returns the sole resolved callee at a call site whose id
+// names the given method (its id ends with ".<method>" or "::<method>"), or ""
+// when there is no match or more than one.
+func uniqueSiteCallee(callees []string, method string) string {
+	var chosen string
+	for _, id := range callees {
+		if strings.HasSuffix(id, "."+method) || strings.HasSuffix(id, "::"+method) {
+			if chosen != "" && chosen != id {
+				return ""
+			}
+			chosen = id
+		}
+	}
+	return chosen
 }
