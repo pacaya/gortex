@@ -166,6 +166,11 @@ func newLogger() *zap.Logger {
 
 func execute() {
 	assignCommandGroups()
+	// Recover the `gortex <tool>` misuse (issue #259) before cobra prints a
+	// bare "unknown command": point the user at `gortex call <tool> --arg …`.
+	if maybeToolInvocationHint(os.Stderr, os.Args[1:]) {
+		os.Exit(1)
+	}
 	if err := rootCmd.Execute(); err != nil {
 		var ec *exitCodeError
 		if errors.As(err, &ec) {
