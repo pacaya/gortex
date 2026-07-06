@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zzet/gortex/internal/daemon"
+	"github.com/zzet/gortex/internal/toolref"
 )
 
 // HookInput is the JSON structure Claude Code sends to PreToolUse hooks via stdin.
@@ -287,6 +288,7 @@ func nudgeReason(guidance string) string {
 	var b strings.Builder
 	b.WriteString("[Gortex] You've made several raw file-search calls in a row. ")
 	b.WriteString("Prefer Gortex graph tools — `search_symbols`, `find_usages`, `get_callers`, `get_symbol_source`, `smart_context` — they are faster and far more precise.\n")
+	b.WriteString(toolref.FallbackLine("search_symbols"))
 	if guidance != "" {
 		b.WriteString(guidance)
 		if !strings.HasSuffix(guidance, "\n") {
@@ -351,6 +353,7 @@ func enrichRead(toolInput map[string]any, cwd string) enrichResult {
 		reason.WriteString("  - `smart_context` — task-aware minimal context\n")
 		reason.WriteString("  - `batch_symbols` — multiple symbols in one call\n")
 		reason.WriteString(gcxTip)
+		reason.WriteString(toolref.FallbackLine("get_symbol_source"))
 
 		return enrichResult{
 			deny:   true,
@@ -366,6 +369,7 @@ func enrichRead(toolInput map[string]any, cwd string) enrichResult {
 	guidance.WriteString("  - To get a file overview: use `get_file_summary`\n")
 	guidance.WriteString("  - For task-level context: use `smart_context`\n")
 	guidance.WriteString(gcxTip)
+	guidance.WriteString(toolref.FallbackLine("get_symbol_source"))
 
 	return enrichResult{context: guidance.String()}
 }
@@ -623,6 +627,7 @@ func defaultGrepGuidance() string {
 	b.WriteString("  - For TODO / FIXME / HACK / XXX / NOTE patterns: use `analyze kind=todos` (filter by tag/assignee/ticket)\n")
 	b.WriteString("  - For HTTP route / handler patterns (e.g. `app.get`, `func.*Handler`, `@RequestMapping`): use `contracts` (action=list to enumerate, action=check to match cross-repo)\n")
 	b.WriteString(gcxTip)
+	b.WriteString(toolref.FallbackLine("search_symbols"))
 	return b.String()
 }
 
@@ -644,6 +649,7 @@ func formatGrepDeny(pattern string, hits []grepSymbolHit) string {
 	}
 	b.WriteString("\n")
 	b.WriteString(gcxTip)
+	b.WriteString(toolref.FallbackLine("search_symbols"))
 	b.WriteString("To force text search, add a regex metachar (e.g. \\b) or quote the pattern.")
 	return b.String()
 }
@@ -880,6 +886,7 @@ func enrichBash(toolInput map[string]any, cwd string) enrichResult {
 			reason.WriteString("  - `get_file_summary` — all symbols and imports\n")
 			reason.WriteString("  - `get_editing_context` — full file context before editing\n")
 			reason.WriteString(gcxTip)
+			reason.WriteString(toolref.FallbackLine("get_symbol_source"))
 			return enrichResult{deny: true, reason: reason.String()}
 		}
 		// Not indexed — soft guidance so Bash proceeds.
@@ -889,6 +896,7 @@ func enrichBash(toolInput map[string]any, cwd string) enrichResult {
 		g.WriteString("  - To get a file overview: use `get_file_summary`\n")
 		g.WriteString("  - To understand a file before editing: use `get_editing_context`\n")
 		g.WriteString(gcxTip)
+		g.WriteString(toolref.FallbackLine("get_symbol_source"))
 		return enrichResult{context: g.String()}
 	}
 
@@ -928,6 +936,7 @@ func enrichGlob(toolInput map[string]any) enrichResult {
 		b.WriteString("  - `search_symbols` — name-based lookup that returns file paths\n")
 		b.WriteString("  - `get_file_summary` — when you have a specific file in mind\n")
 		b.WriteString(gcxTip)
+		b.WriteString(toolref.FallbackLine("get_repo_outline"))
 		b.WriteString("If you genuinely need a file-system listing, run `find` or `ls` via Bash with a specific filename component — Glob deny only triggers on bare extension wildcards.")
 		return enrichResult{deny: true, reason: b.String()}
 	}
@@ -945,7 +954,8 @@ func defaultGlobGuidance() string {
 		"  - To understand file structure: use `get_file_summary`\n" +
 		"  - For task-level file discovery: use `smart_context`\n" +
 		"  - For migration / SQL globs (`db/migrations/*.sql`, `**/*.sql`): use `analyze kind=orphan_tables` and `kind=unreferenced_tables` to find queried-but-undeclared and provided-but-unused tables\n" +
-		gcxTip
+		gcxTip +
+		toolref.FallbackLine("search_symbols")
 }
 
 // isGreedySourceGlob returns true when the pattern is a bare
@@ -1023,6 +1033,7 @@ func enrichEdit(toolInput map[string]any, cwd string) enrichResult {
 	b.WriteString("  - `edit_file` — whole-file replace, no Read precondition\n")
 	b.WriteString("  - `rename_symbol` — coordinated rename across all references\n")
 	b.WriteString("  - `batch_edit` — multi-file edits in dependency order\n\n")
+	b.WriteString(toolref.FallbackLine("edit_file"))
 	b.WriteString("To bypass this redirect: unset GORTEX_HOOK_BLOCK_EDIT, or target a file outside the tracked repos.\n")
 	return enrichResult{deny: true, reason: b.String()}
 }
@@ -1050,6 +1061,7 @@ func enrichWrite(toolInput map[string]any, cwd string) enrichResult {
 	fmt.Fprintf(&b, "[Gortex] BLOCKED: Write of %s (indexed source — would overwrite existing tracked file). Use:\n", filePath)
 	b.WriteString("  - `write_file` — whole-file write through Gortex (re-indexes after)\n")
 	b.WriteString("  - `edit_file` — when you want a delta-style replace\n\n")
+	b.WriteString(toolref.FallbackLine("edit_file"))
 	b.WriteString("To bypass: unset GORTEX_HOOK_BLOCK_EDIT, or target a path outside tracked repos.\n")
 	return enrichResult{deny: true, reason: b.String()}
 }

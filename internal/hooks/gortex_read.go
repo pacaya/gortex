@@ -3,6 +3,8 @@ package hooks
 import (
 	"fmt"
 	"strings"
+
+	"github.com/zzet/gortex/internal/toolref"
 )
 
 // The Gortex MCP read tools that return whole-file source. A call to
@@ -79,6 +81,7 @@ func gortexReadAdvisory(toolName, path string) string {
 	b.WriteString("  - Locating specific call sites? `search_text` returns line-precise hits and reads no bodies.\n")
 	b.WriteString("  - Reading to edit? Re-call with compress_bodies:true (~30-40% of the tokens; signatures, types, and comments kept).\n")
 	b.WriteString("  - Need certain bodies in full? Add keep:\"Name1,Name2\" alongside compress_bodies:true.\n")
+	b.WriteString(toolref.FallbackLine("search_text"))
 	return b.String()
 }
 

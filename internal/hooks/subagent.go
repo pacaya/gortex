@@ -2,6 +2,8 @@ package hooks
 
 import (
 	"strings"
+
+	"github.com/zzet/gortex/internal/toolref"
 )
 
 // enrichTask produces a condensed graph-orientation briefing for a Task
@@ -42,6 +44,7 @@ func enrichTask(toolInput map[string]any, port int) enrichResult {
 	sb.WriteString("Subagents don't inherit CLAUDE.md, so the rules below are restated inline:\n\n")
 
 	sb.WriteString(gortexToolGuidance)
+	sb.WriteString(toolref.FallbackLine("smart_context"))
 	sb.WriteString("\n")
 
 	if summary := renderStatsSummary(stats); summary != "" {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/zzet/gortex/internal/toolref"
 )
 
 // UserPromptSubmitInput is the JSON Claude Code sends on UserPromptSubmit. We
@@ -113,6 +115,7 @@ func buildPromptInjection(hits []grepSymbolHit) string {
 		}
 	}
 	sb.WriteString("\nRead any of them with `get_symbol_source`, trace with `find_usages` / `get_callers`, " +
-		"or call `smart_context` for the full working set. These are indexed graph facts — prefer them over grep/Read.\n")
+		"or call `smart_context` for the full working set. These are indexed graph facts — prefer them over grep/Read. " +
+		"Shell only (no MCP tools)? Reach any with `gortex call <tool> --arg k=v` (e.g. `" + toolref.CLIFallback("get_symbol_source") + "`).\n")
 	return sb.String()
 }

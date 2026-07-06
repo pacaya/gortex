@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/zzet/gortex/internal/toolref"
 )
 
 // RunKimi handles the Kimi Code CLI hook wire shape across its lifecycle
@@ -186,6 +188,7 @@ func kimiSubagentFallbackBriefing() string {
 	sb.WriteString("[Gortex] Subagent briefing — this repo has a Gortex MCP server.\n")
 	sb.WriteString("Subagents don't inherit project instructions, so the rules below are restated inline:\n\n")
 	sb.WriteString(gortexToolGuidance)
+	sb.WriteString(toolref.FallbackLine("smart_context"))
 	sb.WriteString("\n_First call: `smart_context` with your task. Before editing any file: `get_editing_context`. Never Read/Grep an indexed source file._\n")
 	return sb.String()
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zzet/gortex/internal/daemon"
+	"github.com/zzet/gortex/internal/toolref"
 )
 
 // SessionStartInput is the JSON Claude Code sends on SessionStart. We
@@ -247,7 +248,8 @@ func rulePreamble() string {
 		"- `get_symbol_source` / `get_file_summary` / `get_editing_context` over `Read`\n" +
 		"- `smart_context` over multiple Read/Grep calls when starting a task\n" +
 		"- `edit_symbol` / `edit_file` / `rename_symbol` over `Edit` / `Write` for indexed source\n\n" +
-		"Pre-tool hooks will deny attempts to Read/Grep/Glob indexed source files; the deny message names the right tool.\n"
+		"Pre-tool hooks will deny attempts to Read/Grep/Glob indexed source files; the deny message names the right tool.\n" +
+		"Shell only (no MCP tools)? Reach any tool with `gortex call <tool> --arg k=v` (e.g. `" + toolref.CLIFallback("get_symbol_source") + "`) — there is no bare `gortex <tool>` verb.\n"
 }
 
 // formatDuration renders a number of seconds as "1h7m" or "45s".
