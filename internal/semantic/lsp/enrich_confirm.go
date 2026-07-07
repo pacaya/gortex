@@ -21,6 +21,46 @@ type enrichTarget struct {
 	edge *graph.Edge
 }
 
+// confirmableEdgeKind reports whether the reference-confirm pass and its
+// definition-rebind fallback can meaningfully adjudicate an edge kind.
+//
+// The pass matches an edge's SITE line against the reference list of its target
+// declaration, and on a miss asks the server what the site resolves to and
+// rebinds. That is meaningful for every edge that anchors a use / reference /
+// flow site the server can resolve:
+//
+//   - use sites: calls, references, field reads/writes, type instantiations;
+//   - type positions: typed_as / returns — when a concrete impl and the
+//     interface it satisfies share a name the resolver may pick the wrong one,
+//     and the server's definition rebinds to the declared type (measured: it
+//     binds a param / return typed as an interface to the interface, not an
+//     implementation);
+//   - dataflow through a call: arg_of / value_flow / returns_to — the server
+//     disambiguates the callee the value flows into (measured: it rebinds an
+//     arg_of from the wrong same-named method onto the one the call actually
+//     resolves to, e.g. Pool.EnqueueJob rather than Client.EnqueueJob).
+//
+// It is NOT meaningful for STRUCTURAL CONTAINMENT — a declaration's fixed
+// relationship to the structure that encloses it: a method to its type
+// (member_of), a symbol to its definer (defines) or container (contains), a
+// param to its function (param_of), a file to an imported package (imports), a
+// closure to a captured variable (captures). These are AST-deterministic and
+// carry no distinct use site, so the reference match wastes a round-trip and,
+// on a miss, can feed a correct edge into the definition-rebind fallback and
+// mutate its target (observed: a local variable's member_of edge rebound onto
+// an unrelated same-named method). member_of alone is the single largest
+// confidence<1.0 kind, so skipping this family removes a large slice of the
+// confirm round-trips while, if anything, improving correctness.
+func confirmableEdgeKind(k graph.EdgeKind) bool {
+	switch k {
+	case graph.EdgeMemberOf, graph.EdgeDefines, graph.EdgeContains,
+		graph.EdgeParamOf, graph.EdgeImports, graph.EdgeCaptures:
+		return false
+	default:
+		return true
+	}
+}
+
 // confirmGroup is the confirm pass's per-file work unit: every ambiguous
 // target whose referent declaration lives in rel. Grouping lets one didOpen of
 // rel serve all its targets' reference queries.

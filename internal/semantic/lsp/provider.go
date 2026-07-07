@@ -671,6 +671,15 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		if e.Confidence >= 1.0 {
 			continue
 		}
+		// Skip structural-containment edges (member_of, defines, contains,
+		// param_of, imports, captures): they anchor no use site a reference
+		// lookup can adjudicate, so confirming them wastes a round-trip and can
+		// feed a correct edge into the definition-rebind fallback and mutate its
+		// target. Use-site, type-position and dataflow edges stay confirmable.
+		// See confirmableEdgeKind.
+		if !confirmableEdgeKind(e.Kind) {
+			continue
+		}
 		if from, ok := langAllByID[e.From]; ok {
 			targets = append(targets, enrichTarget{node: from, edge: e})
 		}
@@ -904,6 +913,23 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 					return
 				}
 				defer release()
+				// findReferences is positioned on the TARGET declaration, not the
+				// call site, so every ambiguous edge in this group that points at
+				// the same referent asks the server for the identical reference
+				// list — measured ~9x fan-in for calls, ~8x for references, since
+				// an overloaded / hot declaration draws many candidate edges.
+				// confirmRefMatchesSite still filters that shared list per edge,
+				// so caching it by target node turns N identical round-trips into
+				// one with byte-identical confirm/refute decisions. A target's
+				// file is unique to one group, so every edge to it lands here —
+				// the per-group cache captures all of its redundancy. ok=false
+				// records a server error so repeat targets skip exactly as the
+				// un-cached path did (error → skip, no fallback).
+				type cachedRefs struct {
+					refs []Location
+					ok   bool
+				}
+				refsByTarget := make(map[string]cachedRefs, len(grp.targets))
 				for _, t := range grp.targets {
 					if targetedCtx.Err() != nil {
 						return
@@ -916,12 +942,17 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 					if !ok {
 						continue
 					}
-					col := identifierColumn(content, toNode.StartLine, toNode.Name)
-					refs, err := p.findReferences(absRoot, grp.rel, line, col)
-					if err != nil {
+					cr, seen := refsByTarget[t.edge.To]
+					if !seen {
+						col := identifierColumn(content, toNode.StartLine, toNode.Name)
+						refs, err := p.findReferences(absRoot, grp.rel, line, col)
+						cr = cachedRefs{refs: refs, ok: err == nil}
+						refsByTarget[t.edge.To] = cr
+					}
+					if !cr.ok {
 						continue
 					}
-					if p.confirmRefMatchesSite(refs, absRoot, repoPrefix, t) {
+					if p.confirmRefMatchesSite(cr.refs, absRoot, repoPrefix, t) {
 						rmu.Lock()
 						semantic.ConfirmEdge(t.edge, p.Name())
 						semantic.PersistEdge(g, t.edge)
