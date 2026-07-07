@@ -292,9 +292,14 @@ func (r *Resolver) loneMemberDefnKeep(target *graph.Node, e *graph.Edge, oldTo s
 // loneMemberLang reports whether a lone in-repo method definition is safe to
 // keep against the cross-package guard for the given language. Limited to the
 // statically-typed languages where exactly one same-named member is
-// structurally unambiguous.
+// structurally unambiguous; TS / Python / JS duck typing makes a same-name
+// coincidence likelier, so their guard revert stays.
 func loneMemberLang(lang string) bool {
-	return lang == "java" || lang == "go"
+	switch lang {
+	case "java", "go", "rust", "csharp", "kotlin", "scala":
+		return true
+	}
+	return false
 }
 
 // hasInRepoType reports whether the repo defines a type/interface named
