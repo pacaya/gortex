@@ -21,6 +21,16 @@ type Config struct {
 	// each spawned LSP provider via the router's WithEnrichSweepMode. The
 	// GORTEX_LSP_SWEEP env override wins over it at enrichment time.
 	LSPSweep string `mapstructure:"lsp_sweep" yaml:"lsp_sweep,omitempty"`
+	// EagerLSP runs the subprocess LSP servers during the synchronous
+	// enrichment pass. Default false: LSP is the slowest part of a cold index
+	// (a full gopls/tsserver/rust-analyzer/pyright sweep can run for minutes to
+	// hours) and its net-new value over the in-process tiers is narrow — a Go
+	// module is served by go-types, and every language has the tree-sitter
+	// floor. With this off, cold/warm start pays only the fast in-process
+	// providers; the LSP router stays available so a query can still lazy-spawn
+	// a server on demand. Set true (or GORTEX_LSP_EAGER=1) to restore the
+	// pre-change eager behaviour.
+	EagerLSP bool `mapstructure:"eager_lsp" yaml:"eager_lsp,omitempty"`
 }
 
 // ProviderConfig holds configuration for a single semantic provider.

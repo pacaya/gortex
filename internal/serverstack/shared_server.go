@@ -303,6 +303,7 @@ func NewSharedServer(cfg SharedServerConfig) (*SharedServer, error) {
 			RefuteUnconfirmed: conf.Semantic.RefuteUnconfirmed,
 			ExcludeGlobs:      conf.Semantic.ExcludeGlobs,
 			LSPSweep:          conf.Semantic.LSPSweep,
+			EagerLSP:          eagerLSPEnabled(conf.Semantic),
 		}
 		for _, pc := range conf.Semantic.Providers {
 			out := semantic.ProviderConfig{
@@ -692,4 +693,18 @@ func goTypesEnrichEnabled(sem config.SemanticConfig) bool {
 func goTypesIncludeTests() bool {
 	return os.Getenv("GORTEX_GO_TYPES_TESTS") == "1" ||
 		strings.EqualFold(os.Getenv("GORTEX_GO_TYPES_TESTS"), "true")
+}
+
+// eagerLSPEnabled reports whether the subprocess LSP servers run during the
+// synchronous enrichment pass. Default OFF — LSP is the slowest part of a cold
+// index and its net-new value over the in-process tiers (go-types for Go, the
+// tree-sitter floor for every language) is narrow, so it is kept off the
+// cold/warm-start path and the router lazy-spawns a server on demand instead.
+// GORTEX_LSP_EAGER=1 (or semantic.eager_lsp in config) restores the eager
+// behaviour.
+func eagerLSPEnabled(sem config.SemanticConfig) bool {
+	if v := os.Getenv("GORTEX_LSP_EAGER"); v != "" {
+		return v == "1" || strings.EqualFold(v, "true")
+	}
+	return sem.EagerLSP
 }

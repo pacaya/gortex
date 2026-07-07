@@ -10,9 +10,44 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/zzet/gortex/internal/graph"
 	"github.com/zzet/gortex/internal/semantic"
 	"github.com/zzet/gortex/internal/semantic/lsp"
 )
+
+// nodeHasSemanticType reports whether a node already carries a semantic_type
+// stamp — from eager enrichment or a prior on-demand fault-in.
+func nodeHasSemanticType(n *graph.Node) bool {
+	if n == nil || n.Meta == nil {
+		return false
+	}
+	s, _ := n.Meta["semantic_type"].(string)
+	return s != ""
+}
+
+// enrichNodeOnDemand faults in an LSP-grade semantic_type for a single symbol
+// when the synchronous LSP sweep is off (the default). It lazy-spawns the
+// language server for the node's file via the router, hovers the symbol, and
+// stamps the type into the graph so a second read is free — the per-symbol
+// counterpart to the whole-repo enrichment that no longer runs at cold-index
+// time. Best-effort and idempotent: a no-op when the node already has a type,
+// no LSP server serves its language, or the semantic manager is off. Mutates
+// the passed node in place (and persists) so the caller's response reflects the
+// fresh type.
+func (s *Server) enrichNodeOnDemand(node *graph.Node) {
+	if node == nil || s.semanticMgr == nil || s.graph == nil || nodeHasSemanticType(node) {
+		return
+	}
+	absPath, err := s.absolutePath(node.FilePath)
+	if err != nil {
+		return
+	}
+	provider, _, err := s.lspProviderForPath(absPath)
+	if err != nil || provider == nil {
+		return
+	}
+	_, _ = provider.EnrichNode(s.graph, s.workspaceRootFor(absPath), node)
+}
 
 // registerLSPTools wires the LSP-action MCP surface:
 //

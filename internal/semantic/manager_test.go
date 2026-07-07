@@ -44,7 +44,8 @@ func (m *mockProvider) EnrichFile(g graph.Store, repoRoot, filePath string) (*En
 func TestManager_EnrichAll(t *testing.T) {
 	logger := zap.NewNop()
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "test-go", Languages: []string{"go"}, Priority: 1, Enabled: true},
 		},
@@ -71,7 +72,8 @@ func TestManager_EnrichAll(t *testing.T) {
 func TestManager_PrioritySelection(t *testing.T) {
 	logger := zap.NewNop()
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "high-priority", Languages: []string{"go"}, Priority: 1, Enabled: true},
 			{Name: "low-priority", Languages: []string{"go"}, Priority: 2, Enabled: true},
@@ -114,7 +116,8 @@ func TestManager_PrioritySelection(t *testing.T) {
 func TestManager_UnavailableProvider(t *testing.T) {
 	logger := zap.NewNop()
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "unavailable", Languages: []string{"go"}, Priority: 1, Enabled: true},
 		},
@@ -272,7 +275,7 @@ func (e assertionError) Error() string { return string(e) }
 // TestManager_LSPRouter_RoundTrip — SetLSPRouter / LSPRouter accessor
 // pair returns the same instance.
 func TestManager_LSPRouter_RoundTrip(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	r := &fakeRouter{}
 	mgr.SetLSPRouter(r)
 	assert.Same(t, r, mgr.LSPRouter())
@@ -283,7 +286,9 @@ func TestManager_LSPRouter_RoundTrip(t *testing.T) {
 // against the returned provider exactly once per repo root.
 func TestManager_EnrichAll_RoutesThroughLSPRouter(t *testing.T) {
 	logger := zap.NewNop()
-	cfg := Config{Enabled: true}
+	// EagerLSP: this test exercises the synchronous router-backed LSP dispatch,
+	// which is opt-in (LSP is lazy by default).
+	cfg := Config{Enabled: true, EagerLSP: true}
 
 	mgr := NewManager(cfg, logger)
 
@@ -314,7 +319,8 @@ func TestManager_EnrichAll_RoutesThroughLSPRouter(t *testing.T) {
 func TestManager_EnrichAll_SkipsCoveredLanguages(t *testing.T) {
 	logger := zap.NewNop()
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "eager-go", Languages: []string{"go"}, Priority: 1, Enabled: true},
 		},
@@ -347,7 +353,8 @@ func TestManager_EnrichAll_SkipsCoveredLanguages(t *testing.T) {
 func TestManager_EnrichAll_GatesAbsentLanguages(t *testing.T) {
 	logger := zap.NewNop()
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "eager-go", Languages: []string{"go"}, Priority: 1, Enabled: true},
 		},
@@ -387,7 +394,7 @@ func TestManager_EnrichAll_GatesAbsentLanguages(t *testing.T) {
 // least one available spec returns true, and the check does NOT
 // trigger ProviderForSpec (which would lazy-spawn a real LSP).
 func TestManager_HasProviders_RouterOnly(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	r := &fakeRouter{
 		specs:     []string{"rust-analyzer"},
 		available: map[string]bool{"rust-analyzer": true},
@@ -405,7 +412,7 @@ func TestManager_HasProviders_RouterOnly(t *testing.T) {
 // TestManager_HasProviders_NoneAvailable — router enabled but no spec
 // available returns false (and again does not spawn).
 func TestManager_HasProviders_NoneAvailable(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	r := &fakeRouter{
 		specs:     []string{"rust-analyzer"},
 		available: map[string]bool{"rust-analyzer": false},
@@ -417,7 +424,7 @@ func TestManager_HasProviders_NoneAvailable(t *testing.T) {
 // TestManager_Close_ShutsDownRouter — Manager.Close cascades into
 // LSPRouter.Close exactly once.
 func TestManager_Close_ShutsDownRouter(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	r := &fakeRouter{}
 	mgr.SetLSPRouter(r)
 	require.NoError(t, mgr.Close())
@@ -430,7 +437,7 @@ func TestManager_Close_ShutsDownRouter(t *testing.T) {
 // it).
 func TestManager_EnrichAll_ArbitratesRouterDupes(t *testing.T) {
 	logger := zap.NewNop()
-	mgr := NewManager(Config{Enabled: true}, logger)
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, logger)
 
 	pyrightProvider := &mockProvider{name: "lsp-pyright", languages: []string{"python"}, available: true}
 	jediProvider := &mockProvider{name: "lsp-jedi", languages: []string{"python"}, available: true}
@@ -462,7 +469,7 @@ func TestManager_EnrichAll_ArbitratesRouterDupes(t *testing.T) {
 // TestManager_EnrichAll_RouterTieBreakerByName — equal priorities tie-
 // break alphabetically by spec name (deterministic).
 func TestManager_EnrichAll_RouterTieBreakerByName(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	pa := &mockProvider{name: "lsp-aaa", languages: []string{"go"}, available: true}
 	pb := &mockProvider{name: "lsp-bbb", languages: []string{"go"}, available: true}
 	r := &fakeRouter{
@@ -483,7 +490,7 @@ func TestManager_EnrichAll_RouterTieBreakerByName(t *testing.T) {
 // TestManager_EnrichAll_RouterDedupAcrossLanguages — one spec serving
 // two languages runs Enrich exactly once, not once per language.
 func TestManager_EnrichAll_RouterDedupAcrossLanguages(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	tsProvider := &mockProvider{
 		name:      "lsp-typescript-language-server",
 		languages: []string{"typescript", "javascript"},
@@ -508,7 +515,7 @@ func TestManager_EnrichAll_RouterDedupAcrossLanguages(t *testing.T) {
 // Router specs show up as "lsp-<spec>" with status driven by
 // SpecAvailable, no spawn triggered.
 func TestManager_Stats_IncludesRouterSpecs(t *testing.T) {
-	mgr := NewManager(Config{Enabled: true}, zap.NewNop())
+	mgr := NewManager(Config{Enabled: true, EagerLSP: true}, zap.NewNop())
 	mgr.RegisterProvider(&mockProvider{
 		name:      "scip-go",
 		languages: []string{"go"},
@@ -546,7 +553,8 @@ func TestManager_Stats_IncludesRouterSpecs(t *testing.T) {
 // over pyright.
 func TestManager_ConfigPriority_Override(t *testing.T) {
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "jedi-language-server", Priority: 1, Enabled: true},
 			{Name: "pyright", Priority: 5, Enabled: true},
@@ -573,7 +581,8 @@ func TestManager_ConfigPriority_Override(t *testing.T) {
 func TestManager_Stats(t *testing.T) {
 	logger := zap.NewNop()
 	cfg := Config{
-		Enabled: true,
+		Enabled:  true,
+		EagerLSP: true, // router-backed LSP dispatch is opt-in
 		Providers: []ProviderConfig{
 			{Name: "test-go", Languages: []string{"go"}, Priority: 1, Enabled: true},
 		},

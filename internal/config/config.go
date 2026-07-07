@@ -250,6 +250,11 @@ type SemanticConfig struct {
 	//     passes still run.
 	// The GORTEX_LSP_SWEEP env override wins over this setting.
 	LSPSweep string `mapstructure:"lsp_sweep" yaml:"lsp_sweep,omitempty"`
+	// EagerLSP runs the subprocess LSP servers during synchronous enrichment.
+	// Default false: LSP is the slowest part of a cold index and the in-process
+	// tiers (go-types, tree-sitter floor) cover the fast baseline, so LSP is
+	// lazy-spawned on demand instead. GORTEX_LSP_EAGER=1 restores eager LSP.
+	EagerLSP bool `mapstructure:"eager_lsp" yaml:"eager_lsp,omitempty"`
 	// SkipEmbed lists (language, kind) combinations that should be
 	// indexed for graph queries but *not* embedded into the vector
 	// search. Design tokens (CSS custom properties), terraform

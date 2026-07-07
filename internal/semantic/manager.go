@@ -275,7 +275,14 @@ func (m *Manager) EnrichAll(g graph.Store, roots map[string]string, opts EnrichO
 	// priority number; ties break by spec-name lexicographic order.
 	// Eager providers from selectProviders already won their language;
 	// router specs may only fill gaps.
-	if m.lspRouter != nil {
+	//
+	// Skipped unless EagerLSP is set: the subprocess LSP sweep is the slowest
+	// part of a cold index and its net-new value over the in-process tiers
+	// (go-types for Go, the tree-sitter floor for every language) is narrow.
+	// Leaving it out of the synchronous pass is what keeps cold/warm start
+	// fast; the router is still wired, so a query can lazy-spawn a server on
+	// demand.
+	if m.config.EagerLSP && m.lspRouter != nil {
 		// Pre-pass: pure metadata, no spawn.
 		bestSpec := make(map[string]string) // language → winning spec name
 		bestPrio := make(map[string]int)

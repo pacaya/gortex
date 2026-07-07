@@ -2562,6 +2562,49 @@ func (p *Provider) EnsureFileOpen(repoRoot, relPath string) error {
 	return p.openDocument(abs, relPath)
 }
 
+// EnrichNode lazily enriches a single symbol node with an LSP-grade
+// semantic_type (and return_type for callables), on demand. It is the
+// per-symbol counterpart to the whole-repo Enrich pass: when the synchronous
+// LSP sweep is off (the default), a query tool that needs a precise type for
+// one symbol calls this to fault in exactly that symbol's hover — one LSP
+// round-trip, not a repo sweep — and the stamp persists in the graph so a
+// second query is free.
+//
+// Returns (true, nil) when a type was stamped, (false, nil) when the server had
+// no type at the node's position (nothing is written), and (false, err) on a
+// transport failure. The file is opened on the server first (idempotent).
+func (p *Provider) EnrichNode(g graph.Store, repoRoot string, n *graph.Node) (bool, error) {
+	if n == nil {
+		return false, nil
+	}
+	line, ok := lspLine(n)
+	if !ok {
+		return false, nil
+	}
+	rel := nodeRelPath(n)
+	if err := p.EnsureFileOpen(repoRoot, rel); err != nil {
+		return false, err
+	}
+	col := 0
+	if src := p.getSource(repoRoot, rel); src != nil {
+		col = identifierColumn(src, n.StartLine, n.Name)
+	}
+	hr, err := p.hoverWith(p.client, repoRoot, rel, line, col)
+	if err != nil {
+		return false, err
+	}
+	if hr == nil {
+		return false, nil
+	}
+	typeInfo := extractTypeFromHover(hr.Contents.Value)
+	if typeInfo == "" {
+		return false, nil
+	}
+	semantic.EnrichNodeMeta(n, "semantic_type", typeInfo, p.Name())
+	g.AddBatch([]*graph.Node{n}, nil)
+	return true, nil
+}
+
 // getSource returns cached file content from the most recent
 // openDocument call. Returns nil when not cached — callers fall
 // back to col=0 then.

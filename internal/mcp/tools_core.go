@@ -1329,6 +1329,12 @@ func (s *Server) handleGetSymbol(ctx context.Context, req mcp.CallToolRequest) (
 
 	s.sessionFor(ctx).recordSymbol(id)
 
+	// On-demand LSP: when the synchronous LSP sweep is off (the default), fault
+	// in this symbol's precise type now — one hover on the lazy-spawned server,
+	// cached in the graph. No-op when it already has a type or no server serves
+	// the language.
+	s.enrichNodeOnDemand(node)
+
 	detail := req.GetString("detail", "brief")
 	if detail == "brief" {
 		return s.respondScopedJSONOrTOON(ctx, req, s.withAbsPath(node).Brief(), resolved)
