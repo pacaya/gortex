@@ -671,6 +671,15 @@ func (p *Provider) EnrichRepoContext(ctx context.Context, g graph.Store, repoPre
 		if e.Confidence >= 1.0 {
 			continue
 		}
+		// Skip structural-containment edges (member_of, defines, contains,
+		// param_of, imports, captures): they anchor no use site a reference
+		// lookup can adjudicate, so confirming them wastes a round-trip and can
+		// feed a correct edge into the definition-rebind fallback and mutate its
+		// target. Use-site, type-position and dataflow edges stay confirmable.
+		// See confirmableEdgeKind.
+		if !confirmableEdgeKind(e.Kind) {
+			continue
+		}
 		if from, ok := langAllByID[e.From]; ok {
 			targets = append(targets, enrichTarget{node: from, edge: e})
 		}
