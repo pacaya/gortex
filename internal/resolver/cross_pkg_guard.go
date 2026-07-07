@@ -102,13 +102,14 @@ func (r *Resolver) guardCrossPackageCallEdges(jobs []reindexJob, closure map[str
 		if r.targetImportReachable(callerFile, callerNode, target, closure) {
 			continue
 		}
-		// A Java member call whose only in-repo definition of the name is
-		// this target is not a cross-package mis-guess — there is nowhere
-		// else the call could bind. Java's same-package callers import
-		// nothing and inherited-method calls (owner.getId() → BaseEntity.getId
-		// two packages up) never name the declaring package, so the import
-		// closure structurally misses them. Keep the resolution.
-		if r.javaLoneMemberDefnKeep(target, j.edge, j.oldTo) {
+		// A member call whose only in-repo definition of the name is this
+		// target is not a cross-package mis-guess — there is nowhere else the
+		// call could bind. A method call carries its receiver, so it needs no
+		// import of the method's package, and inherited / indirectly-typed
+		// receivers (owner.foo() → BaseType.foo two packages up) never name the
+		// declaring package, so the import closure structurally misses them.
+		// Keep the resolution.
+		if r.loneMemberDefnKeep(target, j.edge, j.oldTo) {
 			continue
 		}
 		// Not reachable — revert to the unresolved placeholder and
@@ -237,19 +238,34 @@ func sameScopePackage(a, b *graph.Node) bool {
 	return pa == scopePkgOf(b) && a.Language == b.Language
 }
 
-// javaLoneMemberDefnKeep reports whether a to-be-reverted Java member-call
-// edge should survive the cross-package guard because its target is the sole
-// in-repo definition of the method name. A name with exactly one candidate
-// cannot be a cross-package mis-guess. Scoped to Java — the guard's revert is
-// load-bearing for Go / TS / Python precision — and gated on the receiver, when
+// loneMemberDefnKeep reports whether a to-be-reverted member-call edge should
+// survive the cross-package guard because its target is the sole in-repo
+// definition of the method name. A name with exactly one candidate cannot be a
+// cross-package mis-guess: a method call carries its receiver, so it needs no
+// import of the method's package, and the import closure structurally misses
+// inherited / indirectly-typed receivers (owner.foo() where owner came from a
+// return value the caller's file never imports the type of). Restricted to the
+// statically-typed languages (java, go) where a lone method name is unambiguous
+// — TS / Python duck typing makes a same-name coincidence likelier, so the
+// guard's revert stays load-bearing there — and gated on the receiver, when
 // known, naming an in-repo type so an external-typed receiver (a logging
 // facade's `logger.info`) still reverts rather than latching onto an unrelated
 // same-named local method.
-func (r *Resolver) javaLoneMemberDefnKeep(target *graph.Node, e *graph.Edge, oldTo string) bool {
-	if target == nil || target.Language != "java" {
+func (r *Resolver) loneMemberDefnKeep(target *graph.Node, e *graph.Edge, oldTo string) bool {
+	if target == nil || !loneMemberLang(target.Language) {
 		return false
 	}
-	name := strings.TrimPrefix(graph.UnresolvedName(oldTo), "*.")
+	bareName := graph.UnresolvedName(oldTo)
+	memberCall := strings.HasPrefix(bareName, "*.")
+	// Go has free functions that DO need their package imported, so only a
+	// member call (`x.foo()` — the receiver carries the type, no import of the
+	// method's package needed) is kept; a bare free-function call to an
+	// un-imported package must still revert. Java has no free functions, so its
+	// bare calls are static-member dispatch and keep too.
+	if target.Language != "java" && !memberCall {
+		return false
+	}
+	name := strings.TrimPrefix(bareName, "*.")
 	if name == "" {
 		return false
 	}
@@ -259,16 +275,31 @@ func (r *Resolver) javaLoneMemberDefnKeep(target *graph.Node, e *graph.Edge, old
 	}
 	n := 0
 	for _, c := range r.cachedFindNodesByNameInRepo(name, repo) {
-		if c.Language != "java" {
+		if c.Language != target.Language {
 			continue
 		}
-		if c.Kind == graph.KindMethod || c.Kind == graph.KindFunction {
+		// A member call can only bind to a method; count functions too only
+		// for Java's static-member model (its bare calls).
+		if c.Kind == graph.KindMethod || (target.Language == "java" && c.Kind == graph.KindFunction) {
 			if n++; n > 1 {
 				return false
 			}
 		}
 	}
 	return n == 1
+}
+
+// loneMemberLang reports whether a lone in-repo method definition is safe to
+// keep against the cross-package guard for the given language. Limited to the
+// statically-typed languages where exactly one same-named member is
+// structurally unambiguous; TS / Python / JS duck typing makes a same-name
+// coincidence likelier, so their guard revert stays.
+func loneMemberLang(lang string) bool {
+	switch lang {
+	case "java", "go", "rust", "csharp", "kotlin", "scala":
+		return true
+	}
+	return false
 }
 
 // hasInRepoType reports whether the repo defines a type/interface named

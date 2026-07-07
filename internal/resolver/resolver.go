@@ -1,9 +1,12 @@
 package resolver
 
 import (
+	"fmt"
 	"iter"
+	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +19,10 @@ import (
 )
 
 const unresolvedPrefix = "unresolved::"
+
+// resolveProfileStarted guards the one-shot GORTEX_RESOLVE_CPUPROFILE capture
+// so only the first full resolve pass is profiled.
+var resolveProfileStarted atomic.Bool
 
 // ResolveStats holds counts from a resolution pass.
 type ResolveStats struct {
@@ -389,7 +396,19 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	r.logger.Info("resolver: pass start",
 		zap.Int("pending", len(pending)),
 		zap.Int("terminal_skipped", terminalSkipped),
-		zap.Bool("backend_bulk", backendResolverEnabled()))
+		zap.Bool("backend_bulk", backendResolverEnabled()),
+		zap.String("shapes", pendingShapeSummary(pending)))
+	// Diagnostic: capture a CPU profile of the first full (unscoped) resolve
+	// pass when GORTEX_RESOLVE_CPUPROFILE names a path. Env-gated and one-shot
+	// so it never touches steady-state resolution.
+	if p := os.Getenv("GORTEX_RESOLVE_CPUPROFILE"); p != "" && len(r.scope) == 0 &&
+		resolveProfileStarted.CompareAndSwap(false, true) {
+		if f, err := os.Create(p); err == nil {
+			if pprof.StartCPUProfile(f) == nil {
+				defer pprof.StopCPUProfile()
+			}
+		}
+	}
 	var processed atomic.Int64
 	progressDone := make(chan struct{})
 	go func() {
@@ -417,8 +436,10 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	// queries to ~10 chunked SELECT IN statements. Cleared on return
 	// via defer so callers outside ResolveAll see the empty caches and
 	// fall through to the underlying store on every lookup.
+	warmStart := time.Now()
 	r.warmLookupCache(pending)
 	defer r.clearLookupCache()
+	warmElapsed := time.Since(warmStart)
 
 	// Chunked compute + apply: process pending in super-chunks and release the
 	// resolve mutex between chunks so an interactive single-file edit can
@@ -580,6 +601,7 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 		}
 	}
 	close(progressDone)
+	loopElapsed := time.Since(passStart) - warmElapsed
 
 	// Deferred LSP batch: bind the still-unresolved LSP-eligible edges the
 	// parallel workers collected, now that the compute barrier is behind us.
@@ -588,9 +610,11 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 	// (non-bulk) path would.
 	lspDeferred := len(deferredLSP)
 	lspBatchResolved := 0
+	lspStart := time.Now()
 	if lspDeferred > 0 {
 		lspBatchResolved = r.resolveDeferredLSP(deferredLSP)
 	}
+	lspElapsed := time.Since(lspStart)
 	// Bulk mode covers only the parallel compute + the deferred LSP batch; the
 	// guard and tail attribution passes below run identically to the single-
 	// file path. (The deferred defer() is the panic-safety net.)
@@ -603,7 +627,12 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 		zap.Int("super_chunk", superChunk),
 		zap.Int("lsp_deferred", lspDeferred),
 		zap.Int("lsp_batch_resolved", lspBatchResolved),
+		zap.Duration("warm_lookup", warmElapsed),
+		zap.Duration("compute_loop", loopElapsed),
+		zap.Duration("deferred_lsp", lspElapsed),
 		zap.Duration("elapsed", computeElapsed))
+
+	tailStart := time.Now()
 
 	// Cross-package name-match guard. The heuristic fallbacks above can
 	// resolve a call by name alone to a candidate in a package the
@@ -625,6 +654,7 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 			guarded += r.guardCrossPackageCallEdges(allJobs[i], closure)
 		}
 	}
+	tAfterGuard := time.Now()
 
 	// Post-resolution Go attribution passes: method-receiver rebind, bare-name
 	// and generic-param binding, builtin + external-call materialisation. Each
@@ -649,6 +679,7 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 			r.runFileAttributionPassesForFileLocked(fp)
 		}
 	}
+	tAfterAttrib := time.Now()
 
 	// Relative-import resolution for Python and Dart files. Runs
 	// before module attribution so internal-target stems never get
@@ -697,6 +728,20 @@ func (r *Resolver) ResolveAll() *ResolveStats {
 				zap.Int("unstamped", unstamped))
 		}
 	}
+
+	// Diagnostic sub-phase breakdown of the whole ResolveAll pass. The
+	// compute loop is parallel; the tail passes (guard, Go/lang attribution,
+	// dispatch, terminal reconcile) run serially under the resolve lock and
+	// are otherwise unlogged — this is the split used to target cold-index
+	// resolve optimisation.
+	r.logger.Info("resolver: pass complete",
+		zap.Duration("total", time.Since(passStart)),
+		zap.Duration("warm_lookup", warmElapsed),
+		zap.Duration("compute_loop", loopElapsed),
+		zap.Duration("deferred_lsp", lspElapsed),
+		zap.Duration("guard", tAfterGuard.Sub(tailStart)),
+		zap.Duration("go_attribution", tAfterAttrib.Sub(tAfterGuard)),
+		zap.Duration("lang_dispatch_reconcile", time.Since(tAfterAttrib)))
 
 	total := &ResolveStats{}
 	for i := range allStats {
@@ -1521,6 +1566,7 @@ func (r *Resolver) resolveFileEdgesLocked(filePath string, stats *ResolveStats) 
 func (r *Resolver) runFileAttributionPassesLocked() {
 	r.rebindGoMethodReceivers()
 	r.bindBareNameScopeRefs()
+	r.bindDataflowCalleeRefs()
 	r.bindGenericParamRefs()
 	r.attributeGoBuiltins()
 	r.attributeGoExternalCalls()
@@ -1539,6 +1585,7 @@ func (r *Resolver) runFileAttributionPassesLocked() {
 func (r *Resolver) runFileAttributionPassesForFileLocked(filePath string) {
 	r.rebindGoMethodReceiversForFile(filePath)
 	r.bindBareNameScopeRefsForFile(filePath)
+	r.bindDataflowCalleeRefsForFile(filePath)
 	r.bindGenericParamRefsForFile(filePath)
 	r.attributeGoBuiltinsForFile(filePath)
 	r.attributeGoExternalCallsForFile(filePath)
@@ -1989,6 +2036,46 @@ func isStdlibLike(importPath string) bool {
 		first = importPath[:i]
 	}
 	return first != "" && !strings.Contains(first, ".")
+}
+
+// pendingShapeSummary buckets a pending edge set by unresolved-target shape so
+// the resolver's per-pass log shows where the work concentrates (extern stdlib
+// vs external module, receiver-unknown method calls, bare names, imports).
+// Diagnostic only — never influences resolution. Note extern_stdlib here uses
+// the same isStdlibLike heuristic the resolver applies as a post-scan fallback,
+// so it over-counts dot-less local modules; it is a coarse population estimate,
+// not a resolution decision.
+func pendingShapeSummary(pending []*graph.Edge) string {
+	var externStdlib, externDep, starMethod, importStub, qualified, bareName, other int
+	for _, e := range pending {
+		if e == nil {
+			continue
+		}
+		if !graph.IsUnresolvedTarget(e.To) {
+			other++
+			continue
+		}
+		name := graph.UnresolvedName(e.To)
+		switch {
+		case strings.HasPrefix(name, "extern::"):
+			rest := name[len("extern::"):]
+			if sep := strings.LastIndex(rest, "::"); sep >= 0 && isStdlibLike(rest[:sep]) {
+				externStdlib++
+			} else {
+				externDep++
+			}
+		case strings.HasPrefix(name, "*."):
+			starMethod++
+		case strings.HasPrefix(name, "import::"):
+			importStub++
+		case strings.Contains(name, "::"):
+			qualified++
+		default:
+			bareName++
+		}
+	}
+	return fmt.Sprintf("extern_stdlib=%d extern_dep=%d star_method=%d import=%d qualified=%d bare_name=%d other=%d",
+		externStdlib, externDep, starMethod, importStub, qualified, bareName, other)
 }
 
 func (r *Resolver) resolveImport(e *graph.Edge, importPath string, stats *ResolveStats) {
@@ -2774,12 +2861,13 @@ func (r *Resolver) resolveMethodCall(e *graph.Edge, methodName string, stats *Re
 		e.Origin = graph.OriginASTInferred
 	}
 
-	// A Java member call with exactly one method candidate for the name is a
+	// A member call with exactly one method candidate for the name is a
 	// grounded inference, not a text-grade guess: there is nowhere else it
 	// could bind. Lift it to the ast_inferred tier so min_tier filtering and
-	// the cross-package guard treat it as the resolved target it is (the
-	// guard's Java lone-definition exception keeps it from being reverted).
-	if methodCount == 1 && anyMethod != nil && anyMethod.Language == "java" && e.Origin == "" {
+	// the cross-package guard treat it as the resolved target it is (the guard's
+	// lone-definition exception keeps it from being reverted). Statically-typed
+	// languages only (java, go) — see loneMemberLang.
+	if methodCount == 1 && anyMethod != nil && loneMemberLang(anyMethod.Language) && e.Origin == "" {
 		e.Origin = graph.OriginASTInferred
 		if e.Confidence == 0 {
 			e.Confidence = 0.7

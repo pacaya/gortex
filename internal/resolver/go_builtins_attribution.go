@@ -130,8 +130,14 @@ func (r *Resolver) tryAttributeGoBuiltin(e *graph.Edge, materialised map[string]
 	}
 	// Only attribute when the source is Go. Without this guard a
 	// Python reference to a local named `len` would get re-targeted
-	// at Go's builtin `len`, which would be obviously wrong.
-	if !r.fromIsGo(e.From) {
+	// at Go's builtin `len`, which would be obviously wrong. Dataflow
+	// edges (arg_of / value_flow) carry an `unresolved::` From placeholder
+	// that fromIsGo cannot classify, so fall back to the call-site file
+	// extension: a `.go` file's `append` / `make` / `len` argument is the Go
+	// builtin regardless of whether the argument side ever bound to a node.
+	// (langFromFilePath only classifies js/ts/py, so a `.go` suffix test is
+	// the right check here.)
+	if !r.fromIsGo(e.From) && !strings.HasSuffix(e.FilePath, ".go") {
 		return ""
 	}
 	newID, kind, builtinKind := goBuiltinTarget(r.callerRepoPrefix(e), name)

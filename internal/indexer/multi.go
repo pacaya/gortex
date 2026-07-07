@@ -834,26 +834,34 @@ func (mi *MultiIndexer) RunGlobalGraphPasses(ctx context.Context) {
 	}
 	reporter := progress.FromContext(ctx)
 	r := resolver.New(mi.graph)
-	if added := r.InferImplements(); added > 0 {
-		mi.logger.Info("inferred implements (global)", zap.Int("added", added))
-	}
-	if added := r.InferOverrides(); added > 0 {
-		mi.logger.Info("inferred overrides (global)", zap.Int("added", added))
-	}
+	// Unconditional per-sub-pass timing. These global passes run serially and
+	// were previously logged only when a pass emitted edges, so a slow but
+	// low-yield pass left no breadcrumb — the source of the multi-minute
+	// "silent" span after resolve on a cold index.
+	globalStart := time.Now()
+	implStart := time.Now()
+	implAdded := r.InferImplements()
+	mi.logger.Info("global pass: infer implements",
+		zap.Int("added", implAdded),
+		zap.Duration("elapsed", time.Since(implStart)))
+	overStart := time.Now()
+	overAdded := r.InferOverrides()
+	mi.logger.Info("global pass: infer overrides",
+		zap.Int("added", overAdded),
+		zap.Duration("elapsed", time.Since(overStart)))
+	testStart := time.Now()
 	marked, emitted := markTestSymbolsAndEmitEdges(mi.graph)
-	if marked > 0 || emitted > 0 {
-		mi.logger.Info("test edges emitted (global)",
-			zap.Int("test_symbols", marked),
-			zap.Int("edges", emitted),
-		)
-	}
-	if re, ep, fa := synthesizeCapabilityEdges(mi.graph); re > 0 || ep > 0 || fa > 0 {
-		mi.logger.Info("capability edges emitted (global)",
-			zap.Int("reads_env", re),
-			zap.Int("executes_process", ep),
-			zap.Int("accesses_field", fa),
-		)
-	}
+	mi.logger.Info("global pass: test edges",
+		zap.Int("test_symbols", marked),
+		zap.Int("edges", emitted),
+		zap.Duration("elapsed", time.Since(testStart)))
+	capStart := time.Now()
+	capRe, capEp, capFa := synthesizeCapabilityEdges(mi.graph)
+	mi.logger.Info("global pass: capability edges",
+		zap.Int("reads_env", capRe),
+		zap.Int("executes_process", capEp),
+		zap.Int("accesses_field", capFa),
+		zap.Duration("elapsed", time.Since(capStart)))
 	// Clone detection is PER-REPOSITORY: each tracked repo gets its own
 	// finalise + detect over its own nodes (scoped by RepoPrefix), so no
 	// cross-repo candidate pair is ever formed and each repo's boilerplate
@@ -940,30 +948,32 @@ func (mi *MultiIndexer) RunGlobalGraphPasses(ctx context.Context) {
 	// a cross-repo synthesized call gets its parallel cross_repo_calls
 	// edge.
 	reporter.Report("framework dispatch synthesis (global)", 0, 0)
-	if rep := resolver.RunFrameworkSynthesizers(mi.graph); rep.Total > 0 {
-		mi.logger.Info("framework dispatch calls synthesized (global)",
-			zap.Int("edges", rep.Total),
-			zap.Any("per_synthesizer", rep.Per),
-		)
-	}
+	fwStart := time.Now()
+	fwRep := resolver.RunFrameworkSynthesizers(mi.graph)
+	mi.logger.Info("global pass: framework dispatch synthesis",
+		zap.Int("edges", fwRep.Total),
+		zap.Any("per_synthesizer", fwRep.Per),
+		zap.Duration("elapsed", time.Since(fwStart)))
 	// External-call placeholder synthesis (opt-in). Runs after the
 	// stub passes so only genuinely un-indexed external targets are
 	// left to materialise into call-chain terminals.
 	reporter.Report("external-call synthesis (global)", 0, 0)
-	if extCalls := resolver.SynthesizeExternalCalls(mi.graph, mi.externalCallSynthesisEnabled()); extCalls > 0 {
-		mi.logger.Info("external-call placeholders synthesized (global)",
-			zap.Int("edges", extCalls),
-		)
-	}
+	extStart := time.Now()
+	extCalls := resolver.SynthesizeExternalCalls(mi.graph, mi.externalCallSynthesisEnabled())
+	mi.logger.Info("global pass: external-call synthesis",
+		zap.Int("edges", extCalls),
+		zap.Duration("elapsed", time.Since(extStart)))
 	// Cross-repo edge layer. Runs after InferImplements / InferOverrides
 	// so the implements / extends edges they materialise across repo
 	// boundaries pick up their parallel cross_repo_* edges.
 	reporter.Report("cross-repo edges (global)", 0, 0)
-	if crossRepoEdges := resolver.DetectCrossRepoEdges(mi.graph); crossRepoEdges > 0 {
-		mi.logger.Info("cross-repo edges emitted (global)",
-			zap.Int("edges", crossRepoEdges),
-		)
-	}
+	crStart := time.Now()
+	crossRepoEdges := resolver.DetectCrossRepoEdges(mi.graph)
+	mi.logger.Info("global pass: cross-repo edges",
+		zap.Int("edges", crossRepoEdges),
+		zap.Duration("elapsed", time.Since(crStart)))
+	mi.logger.Info("global passes complete",
+		zap.Duration("total", time.Since(globalStart)))
 }
 
 // externalCallSynthesisEnabled resolves whether external-call placeholder
@@ -1384,17 +1394,23 @@ func (mi *MultiIndexer) IndexRepo(repoPrefix string) (*IndexResult, error) {
 		return nil, fmt.Errorf("repository not found: %s", repoPrefix)
 	}
 
-	// Evict existing data for this repo.
-	if mi.IsMultiRepo() {
-		mi.graph.EvictRepo(repoPrefix)
-	}
+	// Evict existing data for this repo before re-indexing. Always — a lone
+	// repo is now stored prefixed (see SetRepoPrefix below), so the eviction
+	// must clear the prefixed slice regardless of repo count.
+	mi.graph.EvictRepo(repoPrefix)
 
 	mi.configMgr.LoadWorkspaceConfig(repoPrefix, meta.RootPath)
 	cfg := mi.configMgr.GetRepoConfig(repoPrefix)
 	idx := mi.newPerRepoIndexer(cfg.Index)
-	if mi.IsMultiRepo() {
-		idx.SetRepoPrefix(repoPrefix)
-	}
+	// Always stamp the repo prefix, even when this is the only tracked repo.
+	// The multi-repo cold path (indexMultiRepo) already prefixes
+	// unconditionally; gating the single-repo re-index on repo count left the
+	// two paths producing different id / path shapes for the same repo, so
+	// adding a second repo turned the first from bare into prefixed — a lossy
+	// whole-graph rewrite. Uniform prefixing removes the single/multi data-shape
+	// split: a repo is prefixed from its first index, and adding another is
+	// purely additive.
+	idx.SetRepoPrefix(repoPrefix)
 	entry := mi.configMgr.Global().FindRepoByPrefix(repoPrefix)
 	idx.SetWorkspaceID(resolveWorkspaceID(entry, cfg, repoPrefix))
 	idx.SetProjectID(resolveProjectID(entry, cfg, repoPrefix))

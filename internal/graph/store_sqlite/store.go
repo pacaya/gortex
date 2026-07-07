@@ -144,6 +144,7 @@ type Store struct {
 	stmtUpdateEdgeAttrs  *sql.Stmt
 	stmtSelectEdgeOrigin *sql.Stmt
 	stmtDeleteEdgeByKey  *sql.Stmt
+	stmtEdgeExists       *sql.Stmt
 
 	stmtSelectFileNodeIDs *sql.Stmt
 	stmtSelectRepoNodeIDs *sql.Stmt
@@ -439,6 +440,7 @@ func (s *Store) Close() error {
 		s.stmtRepoEdges,
 		s.stmtAllEdges, s.stmtEdgeCount, s.stmtRemoveEdge,
 		s.stmtUpdateEdgeOrigin, s.stmtUpdateEdgeAttrs, s.stmtSelectEdgeOrigin, s.stmtDeleteEdgeByKey,
+		s.stmtEdgeExists,
 		s.stmtSelectFileNodeIDs, s.stmtSelectRepoNodeIDs,
 		s.stmtDeleteNodeByFile, s.stmtDeleteNodeByRepo,
 	}
@@ -550,6 +552,8 @@ func (s *Store) prepare() error {
 		`UPDATE edges SET confidence = ?, confidence_label = ?, origin = ?, tier = ?, meta = ? WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ?`)
 	prep(&s.stmtDeleteEdgeByKey,
 		`DELETE FROM edges WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ?`)
+	prep(&s.stmtEdgeExists,
+		`SELECT 1 FROM edges WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ? LIMIT 1`)
 
 	prep(&s.stmtSelectFileNodeIDs,
 		`SELECT id FROM nodes WHERE file_path = ?`)
@@ -1337,6 +1341,26 @@ func (s *Store) scanNodeQuery(query string, args ...any) []*graph.Node {
 
 func (s *Store) GetOutEdges(nodeID string) []*graph.Edge {
 	return s.queryEdges(s.stmtOutEdges, nodeID)
+}
+
+// EdgeExists reports whether an edge with exactly this identity is present --
+// (from, to, kind, file_path, line) is the edges UNIQUE key, so this is a
+// single indexed point lookup: no row decode, no Meta gob, no per-edge
+// allocation, unlike GetOutEdges. The resolver's liveness guard
+// (edgeStillLive) calls this once per applied edge on the cold/full pass; the
+// difference from scanning + gob-decoding all of `from`'s out-edges is a
+// dominant share of resolve cost on a large graph.
+func (s *Store) EdgeExists(from, to string, kind graph.EdgeKind, filePath string, line int) bool {
+	var one int
+	err := s.stmtEdgeExists.QueryRow(from, to, string(kind), filePath, line).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false
+	}
+	if err != nil {
+		panicOnFatal(err)
+		return false
+	}
+	return true
 }
 
 // GetOutEdgesLight returns a node's out-edges without decoding the

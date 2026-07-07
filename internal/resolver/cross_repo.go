@@ -999,6 +999,18 @@ func edgeStillLive(g graph.Store, e *graph.Edge) bool {
 	if e == nil {
 		return false
 	}
+	// Fast path: the value fallback below only ever compares the fields that
+	// pin a unique edge row (From/To/Kind/Line/FilePath) -- the pointer test
+	// never fires on a sqlite-backed daemon (GetOutEdges returns freshly
+	// decoded pointers). A backend that can answer edge existence as a single
+	// indexed point lookup (no row decode, no Meta gob, no per-edge slice
+	// allocation) does exactly that comparison far more cheaply. On the
+	// cold/full pass this guard runs once per applied edge -- hundreds of
+	// thousands of times -- so the scan-all-out-edges form is a dominant share
+	// of resolve cost and GC churn.
+	if ex, ok := g.(edgeExister); ok {
+		return ex.EdgeExists(e.From, e.To, e.Kind, e.FilePath, e.Line)
+	}
 	for _, oe := range g.GetOutEdges(e.From) {
 		if oe == e {
 			return true
@@ -1009,6 +1021,15 @@ func edgeStillLive(g graph.Store, e *graph.Edge) bool {
 		}
 	}
 	return false
+}
+
+// edgeExister is the optional fast path for edgeStillLive: a store backend that
+// can answer "does this exact edge row exist" as an indexed point lookup rather
+// than materialising all of From's out-edges. The sqlite store implements it;
+// the in-memory graph falls through to the GetOutEdges scan (already cheap, no
+// disk, no gob).
+type edgeExister interface {
+	EdgeExists(from, to string, kind graph.EdgeKind, filePath string, line int) bool
 }
 
 // isSyntheticResolveTarget reports whether a resolved target is an intentional
