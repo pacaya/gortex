@@ -28,6 +28,63 @@ var lookupNodeColsLight = strings.TrimSuffix(lookupNodeCols, ", meta")
 
 const lookupEdgeCols = `from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta, resolve_terminal, resolve_terminal_reason`
 
+// Compile-time assertion: *Store satisfies graph.NodeNameClassCounter.
+var _ graph.NodeNameClassCounter = (*Store)(nil)
+
+// CountNodesByNameClass implements graph.NodeNameClassCounter: for each
+// distinct name, it tallies how many nodes.name matches are Real (is_stub =
+// 0 and kind IN definitionKinds) vs Stub (is_stub = 1), server-side via
+// nodes_by_name — one aggregate query per chunk instead of one
+// FindNodesByName round trip per name. A name absent from the returned map
+// has no matching node at all (Real == Stub == 0 either way).
+func (s *Store) CountNodesByNameClass(names []string, definitionKinds []graph.NodeKind) map[string]graph.NodeNameClassCount {
+	_, kindArgs := aggDedupeNodeKinds(definitionKinds)
+	if len(kindArgs) == 0 {
+		return nil
+	}
+	uniq := dedupeNonEmpty(names)
+	if len(uniq) == 0 {
+		return nil
+	}
+	out := make(map[string]graph.NodeNameClassCount, len(uniq))
+	kindPlaceholders := inPlaceholders(len(kindArgs))
+	for i := 0; i < len(uniq); i += lookupChunkSize {
+		end := minInt(i+lookupChunkSize, len(uniq))
+		chunk := uniq[i:end]
+		q := `SELECT name,
+		             SUM(CASE WHEN is_stub = 0 AND kind IN (` + kindPlaceholders + `) THEN 1 ELSE 0 END),
+		             SUM(CASE WHEN is_stub = 1 THEN 1 ELSE 0 END)
+		        FROM nodes
+		       WHERE name IN (` + inPlaceholders(len(chunk)) + `)
+		       GROUP BY name`
+		args := make([]any, 0, len(kindArgs)+len(chunk))
+		args = append(args, kindArgs...)
+		args = append(args, toAnyArgs(chunk)...)
+		rows, err := s.db.Query(q, args...)
+		if err != nil {
+			panicOnFatal(err)
+			return out
+		}
+		for rows.Next() {
+			var name string
+			var c graph.NodeNameClassCount
+			if err := rows.Scan(&name, &c.Real, &c.Stub); err != nil {
+				_ = rows.Close()
+				panicOnFatal(err)
+				return out
+			}
+			out[name] = c
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			panicOnFatal(err)
+			return out
+		}
+		_ = rows.Close()
+	}
+	return out
+}
+
 // FindNodesByNameContaining returns nodes whose Name contains substr,
 // case-insensitively (SQLite's LIKE is ASCII case-insensitive). An empty
 // substring matches nothing (parity with the in-memory store); a limit > 0

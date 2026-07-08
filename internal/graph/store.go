@@ -1095,6 +1095,31 @@ type EdgeMetaBatchPersister interface {
 	PersistEdgeAttributesBatch(edges []*Edge)
 }
 
+// NodeNameClassCount is one candidate name's classification tally from
+// NodeNameClassCounter: how many same-named nodes are Real (non-stub,
+// definition-kind) candidates vs Stub placeholders. A name with neither
+// (Real == 0 && Stub == 0) has no matching node at all.
+type NodeNameClassCount struct {
+	Real int
+	Stub int
+}
+
+// NodeNameClassCounter is an optional Store capability for classifying a
+// batch of candidate identifier names in one round trip instead of one
+// FindNodesByName call per name. The resolver's terminal classification
+// (reconcileTerminalStamps / classifyTerminal in resolver/terminal.go) asks,
+// for each still-unresolved edge's target identifier, whether ANY real
+// definition or stub placeholder shares that name anywhere in the graph —
+// language family turns out not to affect that decision, so a same-language
+// and a cross-language real match both simply count as Real. definitionKinds
+// is the set of NodeKind values that count as a "real" candidate (mirrors
+// nodeIsDefinitionKind); a node whose kind isn't in that set and isn't a
+// stub counts as neither. Backends without this capability fall back to the
+// existing per-edge cachedFindNodesByName + IsStub loop.
+type NodeNameClassCounter interface {
+	CountNodesByNameClass(names []string, definitionKinds []NodeKind) map[string]NodeNameClassCount
+}
+
 // CloneShingleWriter is an optional capability backends MAY implement
 // to persist each function/method node's MinHash shingle set (a
 // []uint64) keyed by node id. Lifting this state into the same backend

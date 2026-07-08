@@ -158,6 +158,14 @@ func nodeIsDefinitionKind(k graph.NodeKind) bool {
 	return false
 }
 
+// definitionKinds is nodeIsDefinitionKind's predicate reified as a list, for
+// callers (the bulk terminal classifier) that need to hand it to a Store
+// capability instead of calling the predicate per node.
+var definitionKinds = []graph.NodeKind{
+	graph.KindFunction, graph.KindMethod, graph.KindType,
+	graph.KindInterface, graph.KindVariable, graph.KindConstant, graph.KindField,
+}
+
 // filterTerminalSkip drops the terminally-unresolved edges a scoped pass need
 // not reconsider, composing with (running AFTER) filterPendingByScope. A
 // terminal edge is kept only when it is specifically anchored to a changed
@@ -211,6 +219,13 @@ func terminalEdgeAnchoredToScope(e *graph.Edge, scope map[string]struct{}) bool 
 // passes. Persisted via the batched EdgePersister capability; the in-memory
 // backend's in-place Meta mutation is already durable, so its missing
 // capability is a no-op. Returns the counts stamped / un-stamped.
+//
+// Classification itself takes the bulk path (reconcileTerminalStampsBulk)
+// when the backend implements graph.NodeNameClassCounter, falling back to
+// the original per-edge classifyTerminal loop otherwise (e.g. the in-memory
+// backend). The two paths make IDENTICAL decisions — see
+// reconcileTerminalStampsBulk's doc for why the bulk path can skip fromLang /
+// language-family entirely without changing the outcome.
 func (r *Resolver) reconcileTerminalStamps() (stamped, unstamped int) {
 	var stillPending []*graph.Edge
 	for e := range r.graph.EdgesWithUnresolvedTarget() {
@@ -218,9 +233,96 @@ func (r *Resolver) reconcileTerminalStamps() (stamped, unstamped int) {
 			stillPending = append(stillPending, e)
 		}
 	}
+
 	var changed []*graph.Edge
-	for _, e := range stillPending {
-		reason, terminal := r.classifyTerminal(e)
+	if counter, ok := r.graph.(graph.NodeNameClassCounter); ok {
+		changed, stamped, unstamped = r.reconcileTerminalStampsBulk(stillPending, counter)
+	} else {
+		for _, e := range stillPending {
+			reason, terminal := r.classifyTerminal(e)
+			marked := edgeTerminalFlag(e)
+			switch {
+			case terminal && !marked:
+				setEdgeTerminal(e, reason)
+				changed = append(changed, e)
+				stamped++
+			case !terminal && marked:
+				clearEdgeTerminal(e)
+				changed = append(changed, e)
+				unstamped++
+			}
+		}
+	}
+
+	if len(changed) > 0 {
+		if p, ok := r.graph.(graph.EdgeMetaBatchPersister); ok {
+			p.PersistEdgeAttributesBatch(changed)
+		}
+	}
+	return stamped, unstamped
+}
+
+// classifyTerminalBulk replicates classifyTerminal's decision for every edge
+// in pending EXCEPT EdgeImports edges, which route through the unchanged
+// per-edge classifyTerminal: its C/C++ stdlib-header special case reads
+// e.Meta["include_kind"] plus a 200+-entry lookup table (IsCppStdlibHeader),
+// and porting that to SQL would risk the two drifting out of sync for a
+// small, rarely-hit case. Every other unresolved-target edge is classified
+// from one batched name lookup instead of N cachedFindNodesByName + IsStub
+// calls. Pure — no mutation, no persistence — so it can be compared
+// element-wise against classifyTerminal's own per-edge output.
+//
+// classifyTerminal computes realSameLang / realOtherLang separately but its
+// own terminal/non-terminal decision only ever checks
+// "realSameLang >= 1 || realOtherLang >= 1" — both branches mean exactly the
+// same thing to the switch below them. So this bulk path never needs
+// e.From's language or the target's language: a real (non-stub,
+// definition-kind) node matching the target name by ANY language counts
+// identically. Only stubs-vs-real-vs-neither matters here.
+func (r *Resolver) classifyTerminalBulk(pending []*graph.Edge, counter graph.NodeNameClassCounter) (reasons []string, terminals []bool) {
+	names := make(map[string]struct{})
+	for _, e := range pending {
+		if e.Kind == graph.EdgeImports {
+			continue
+		}
+		if name := identifierFromTarget(graph.UnresolvedName(e.To)); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	nameList := make([]string, 0, len(names))
+	for name := range names {
+		nameList = append(nameList, name)
+	}
+	counts := counter.CountNodesByNameClass(nameList, definitionKinds)
+
+	reasons = make([]string, len(pending))
+	terminals = make([]bool, len(pending))
+	for i, e := range pending {
+		switch {
+		case e.Kind == graph.EdgeImports:
+			reasons[i], terminals[i] = r.classifyTerminal(e)
+		default:
+			name := identifierFromTarget(graph.UnresolvedName(e.To))
+			switch c := counts[name]; {
+			case name == "" || c.Real >= 1:
+				reasons[i], terminals[i] = "", false
+			case c.Stub >= 1:
+				reasons[i], terminals[i] = terminalReasonStubOnly, true
+			default:
+				reasons[i], terminals[i] = terminalReasonNoDefinition, true
+			}
+		}
+	}
+	return reasons, terminals
+}
+
+// reconcileTerminalStampsBulk is reconcileTerminalStamps' SQL-accelerated
+// path: classify every pending edge via classifyTerminalBulk, then apply the
+// same stamp/unstamp diff logic as the per-edge fallback.
+func (r *Resolver) reconcileTerminalStampsBulk(pending []*graph.Edge, counter graph.NodeNameClassCounter) (changed []*graph.Edge, stamped, unstamped int) {
+	reasons, terminals := r.classifyTerminalBulk(pending, counter)
+	for i, e := range pending {
+		reason, terminal := reasons[i], terminals[i]
 		marked := edgeTerminalFlag(e)
 		switch {
 		case terminal && !marked:
@@ -233,10 +335,5 @@ func (r *Resolver) reconcileTerminalStamps() (stamped, unstamped int) {
 			unstamped++
 		}
 	}
-	if len(changed) > 0 {
-		if p, ok := r.graph.(graph.EdgeMetaBatchPersister); ok {
-			p.PersistEdgeAttributesBatch(changed)
-		}
-	}
-	return stamped, unstamped
+	return changed, stamped, unstamped
 }
