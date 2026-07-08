@@ -49,6 +49,39 @@ func (s *Server) enrichNodeOnDemand(node *graph.Node) {
 	_, _ = provider.EnrichNode(s.graph, s.workspaceRootFor(absPath), node)
 }
 
+// confirmSymbolRefsOnDemand faults in a callable symbol's INCOMING references
+// on a usages-shaped query (find_usages / get_callers) when the synchronous
+// LSP sweep is off. It lazy-spawns the language server, confirms this one
+// symbol's callers via call hierarchy, and lands the lsp_resolved edges into
+// the graph so the query answer — and every repeat — reflects compiler-grade
+// usages accuracy. Idempotent per session via the refsConfirmed ledger; a
+// no-op for non-callable nodes, when no call-hierarchy server serves the
+// language, or when already confirmed.
+func (s *Server) confirmSymbolRefsOnDemand(node *graph.Node) {
+	if node == nil || s.semanticMgr == nil || s.graph == nil {
+		return
+	}
+	if node.Kind != graph.KindFunction && node.Kind != graph.KindMethod {
+		return
+	}
+	if _, done := s.refsConfirmed.Load(node.ID); done {
+		return
+	}
+	absPath, err := s.absolutePath(node.FilePath)
+	if err != nil {
+		return
+	}
+	provider, _, err := s.lspProviderForPath(absPath)
+	if err != nil || provider == nil {
+		return
+	}
+	_, _ = provider.ConfirmSymbolRefs(s.graph, s.workspaceRootFor(absPath), node)
+	// Record after the attempt (even on 0/err) so a query doesn't re-spawn the
+	// server every call; a file re-index clears staleness through the normal
+	// restub path. Durable-ledger + retry semantics are the fuller version.
+	s.refsConfirmed.Store(node.ID, struct{}{})
+}
+
 // registerLSPTools wires the LSP-action MCP surface:
 //
 //	get_diagnostics   — most recent publishDiagnostics for a file

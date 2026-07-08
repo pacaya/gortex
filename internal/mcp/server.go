@@ -235,6 +235,12 @@ type Server struct {
 	equivalence      *search.EquivalenceTable
 	contractRegistry *contracts.Registry
 	semanticMgr      *semantic.Manager
+	// refsConfirmed is the lazy-enrichment ledger: symbol IDs whose incoming
+	// references have been confirmed on demand (via ConfirmSymbolRefs) this
+	// daemon session, so a repeat usages query serves from the confirmed graph
+	// instead of re-spawning the language server. An entry is recorded after
+	// the first attempt (success or empty) to bound per-query LSP work.
+	refsConfirmed sync.Map // symbolID → struct{}
 	feedback         *feedbackManager
 	notes            *notesManager
 	memories         *memoryManager

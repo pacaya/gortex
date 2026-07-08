@@ -2278,6 +2278,10 @@ func (s *Server) handleGetCallers(ctx context.Context, req mcp.CallToolRequest) 
 		RepoAllow:    resolved.RepoAllow,
 		ExcludeTests: req.GetBool("exclude_tests", false),
 	}
+	// Lazy enrichment: confirm this symbol's callers on demand before
+	// answering, so a graph indexed without the eager LSP sweep still returns
+	// compiler-grade callers. No-op when already confirmed or eager ran.
+	s.confirmSymbolRefsOnDemand(eng.GetSymbol(id))
 	s.hydrateProxyTargets(ctx, id)
 	sg := eng.GetCallers(id, opts)
 	sg = filterSubGraphByResolvedScope(sg, resolved)
@@ -2505,6 +2509,11 @@ func (s *Server) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) 
 	if node != nil && !resolvedScopeAllowsNode(resolved, node) {
 		return symbolNotFoundGuidance(id), nil
 	}
+	// Lazy enrichment: confirm this symbol's incoming references on demand
+	// before answering, so a graph indexed without the eager LSP sweep still
+	// converges to compiler-grade usages. No-op when already confirmed or eager
+	// ran.
+	s.confirmSymbolRefsOnDemand(node)
 	opts := query.QueryOptions{
 		WorkspaceID:  resolved.WorkspaceID,
 		ProjectID:    resolved.ProjectID,

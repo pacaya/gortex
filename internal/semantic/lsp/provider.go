@@ -2573,6 +2573,75 @@ func (p *Provider) EnsureFileOpen(repoRoot, relPath string) error {
 // Returns (true, nil) when a type was stamped, (false, nil) when the server had
 // no type at the node's position (nothing is written), and (false, err) on a
 // transport failure. The file is opened on the server first (idempotent).
+// ConfirmSymbolRefs confirms the incoming references to ONE symbol on demand.
+// It prepares a call hierarchy at the symbol's definition and, for every
+// server-verified incoming call, mints or promotes an lsp_resolved edge —
+// the per-symbol unit of the whole-repo confirm + call-hierarchy sweep. A
+// find_usages / get_callers answer for symbol S needs S's callers confirmed,
+// not the whole repo's, so this lets lazy enrichment restore compiler-grade
+// usages accuracy at query time without paying a cold-path sweep. It reuses
+// recordHierarchyCall, so every hard-won correctness rule (callable-kind
+// matching, per-site promotion, declaration-identity) applies unchanged.
+//
+// Scoped to callable nodes (the call-hierarchy unit); returns (0, nil) for
+// other kinds or a server without call-hierarchy. LSP round-trips run
+// unlocked; the graph mutations are batched under the resolve mutex.
+func (p *Provider) ConfirmSymbolRefs(g graph.Store, repoRoot string, n *graph.Node) (int, error) {
+	if n == nil || (n.Kind != graph.KindFunction && n.Kind != graph.KindMethod) {
+		return 0, nil
+	}
+	if !p.Supports("textDocument/prepareCallHierarchy") {
+		return 0, nil
+	}
+	line, ok := lspLine(n)
+	if !ok {
+		return 0, nil
+	}
+	rel := nodeRelPath(n)
+	if err := p.EnsureFileOpen(repoRoot, rel); err != nil {
+		return 0, err
+	}
+	absRoot, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return 0, err
+	}
+	col := 0
+	if src := p.getSource(repoRoot, rel); src != nil {
+		col = identifierColumn(src, n.StartLine, n.Name)
+	}
+	items, err := p.prepareCallHierarchy(repoRoot, rel, line, col)
+	if err != nil {
+		return 0, err
+	}
+	// LSP round-trips first, unlocked.
+	type hop struct {
+		other  CallHierarchyItem
+		ranges []Range
+	}
+	var hops []hop
+	for _, item := range items {
+		ins, ierr := p.incomingCalls(item)
+		if ierr != nil {
+			continue
+		}
+		for _, ic := range ins {
+			hops = append(hops, hop{other: ic.From, ranges: ic.FromRanges})
+		}
+	}
+	if len(hops) == 0 {
+		return 0, nil
+	}
+	// Graph mutations under the resolve lock, batched.
+	result := &semantic.EnrichResult{Provider: p.Name()}
+	rmu := g.ResolveMutex()
+	rmu.Lock()
+	for _, h := range hops {
+		p.recordHierarchyCall(g, n.RepoPrefix, absRoot, n, h.other, false, h.ranges, result)
+	}
+	rmu.Unlock()
+	return result.EdgesConfirmed + result.EdgesAdded, nil
+}
+
 func (p *Provider) EnrichNode(g graph.Store, repoRoot string, n *graph.Node) (bool, error) {
 	if n == nil {
 		return false, nil
