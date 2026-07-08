@@ -235,6 +235,91 @@ func TestFullPassUnStampsRegainedCandidate(t *testing.T) {
 	assert.False(t, edgeTerminalFlag(e), "an edge that regained a candidate must be un-stamped")
 }
 
+// TestReconcileTerminalStampsBulk proves the sqlite-backend bulk
+// classification path (reconcileTerminalStampsBulk, taken because
+// *store_sqlite.Store implements graph.NodeNameClassCounter) makes the
+// IDENTICAL decisions as the in-memory per-edge classifyTerminal path for
+// the same four shapes TestClassifyTerminal covers, plus the "stays
+// pending" quoted-include case — the stage-4 diff-validation for the SQL
+// port: same fixtures, same expected (reason, terminal) pairs, different
+// backend and classification path. Calls reconcileTerminalStamps directly
+// (not the full ResolveAll pipeline) so an earlier compute-loop pass can
+// never resolve a fixture edge out from under the case it's meant to test.
+func TestReconcileTerminalStampsBulk(t *testing.T) {
+	s, err := store_sqlite.Open(filepath.Join(t.TempDir(), "bulk_term.sqlite"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	s.AddNode(&graph.Node{ID: "pkg/a.go", Kind: graph.KindFile, FilePath: "pkg/a.go", Language: "go"})
+	s.AddNode(&graph.Node{ID: "src/a.cpp", Kind: graph.KindFile, FilePath: "src/a.cpp", Language: "cpp"})
+	s.AddNode(&graph.Node{ID: "pkg/a.go::Caller", Kind: graph.KindFunction, Name: "Caller", FilePath: "pkg/a.go", Language: "go"})
+	s.AddNode(&graph.Node{ID: "src/a.cpp::use", Kind: graph.KindFunction, Name: "use", FilePath: "src/a.cpp", Language: "cpp"})
+	s.AddNode(&graph.Node{ID: "pkg/a.go::Bar", Kind: graph.KindFunction, Name: "Bar", FilePath: "pkg/a.go", Language: "go"})
+	s.AddNode(&graph.Node{ID: "external_call::database/sql::QueryRow", Kind: graph.KindFunction, Name: "QueryRow", FilePath: ""})
+
+	stubOnly := &graph.Edge{From: "pkg/a.go::Caller", To: "unresolved::*.QueryRow",
+		Kind: graph.EdgeCalls, FilePath: "pkg/a.go", Line: 4,
+		Meta: map[string]any{"receiver_type": "*sql.DB"}}
+	stdlibHeader := &graph.Edge{From: "src/a.cpp::use", To: "unresolved::import::vector",
+		Kind: graph.EdgeImports, FilePath: "src/a.cpp", Line: 1,
+		Meta: map[string]any{"include_kind": "system"}}
+	noDefinition := &graph.Edge{From: "pkg/a.go::Caller", To: "unresolved::Ghost",
+		Kind: graph.EdgeCalls, FilePath: "pkg/a.go", Line: 6}
+	genuinelyPending := &graph.Edge{From: "pkg/a.go::Caller", To: "unresolved::Bar",
+		Kind: graph.EdgeCalls, FilePath: "pkg/a.go", Line: 7}
+	quotedInclude := &graph.Edge{From: "src/a.cpp::use", To: "unresolved::import::vector",
+		Kind: graph.EdgeImports, FilePath: "src/a.cpp", Line: 2,
+		Meta: map[string]any{"include_kind": "quoted"}}
+
+	for _, e := range []*graph.Edge{stubOnly, stdlibHeader, noDefinition, genuinelyPending, quotedInclude} {
+		s.AddEdge(e)
+	}
+
+	r := New(s)
+	r.SetStampTerminal(true)
+	stamped, unstamped := r.reconcileTerminalStamps()
+
+	assert.Equal(t, 3, stamped, "stubOnly, stdlibHeader, noDefinition are the only terminal shapes")
+	assert.Equal(t, 0, unstamped)
+
+	// The sqlite backend returns detached row copies (unlike the in-memory
+	// backend's live *Edge pointers), so the stamps just applied above live
+	// on fresh objects reconcileTerminalStamps fetched internally — re-fetch
+	// each edge from the store to observe them, exactly like
+	// TestTerminalStampSQLitePersistence does.
+	findEdge := func(from, to string, line int) *graph.Edge {
+		for _, e := range s.GetOutEdges(from) {
+			if e.To == to && e.Line == line {
+				return e
+			}
+		}
+		return nil
+	}
+
+	cases := []struct {
+		name         string
+		from, to     string
+		line         int
+		wantReason   string
+		wantTerminal bool
+	}{
+		{"external receiver method matching only a stub", stubOnly.From, stubOnly.To, stubOnly.Line, terminalReasonStubOnly, true},
+		{"cpp stdlib angle-include", stdlibHeader.From, stdlibHeader.To, stdlibHeader.Line, terminalReasonStdlibHeader, true},
+		{"bare name no repo defines", noDefinition.From, noDefinition.To, noDefinition.Line, terminalReasonNoDefinition, true},
+		{"genuinely pending — real candidate exists", genuinelyPending.From, genuinelyPending.To, genuinelyPending.Line, "", false},
+		{"quoted (non-system) cpp include stays pending", quotedInclude.From, quotedInclude.To, quotedInclude.Line, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := findEdge(tc.from, tc.to, tc.line)
+			require.NotNil(t, e, "edge must still be present in the store")
+			assert.Equal(t, tc.wantTerminal, edgeTerminalFlag(e))
+			reason, _ := e.Meta[metaResolveTerminalReason].(string)
+			assert.Equal(t, tc.wantReason, reason)
+		})
+	}
+}
+
 // TestTerminalStampSQLitePersistence proves the durable flag survives a store
 // reopen on the sqlite backend (the known meta-write-back bug class): stamp,
 // close, reopen, flag still present.

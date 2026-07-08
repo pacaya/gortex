@@ -34,18 +34,53 @@ const isUnresolvedColumnDDL = `is_unresolved INTEGER GENERATED ALWAYS AS (
     CASE WHEN (to_id >= 'unresolved::' AND to_id < 'unresolved:;') OR to_id LIKE '%::unresolved::%' THEN 1 ELSE 0 END
 ) VIRTUAL`
 
-// ensureEdgeColumns adds the is_unresolved generated column (and its index)
-// to an edges table created before it existed — which, since the column is
-// deliberately not in schemaSQL's CREATE TABLE (see isUnresolvedColumnDDL),
-// includes a freshly created table too. Mirrors ensureNodeColumns' PRAGMA +
-// conditional ALTER pattern, but queries table_xinfo rather than table_info:
-// table_info silently OMITS generated columns from its result set (verified
-// against the pinned modernc.org/sqlite driver — a reopened store's
-// is_unresolved column is invisible to table_info, so the existence check
-// always came back false and every reopen re-ran the ALTER, failing with
-// "duplicate column name"). table_xinfo lists every column, generated ones
-// included, with an extra hidden column (3 == generated) table_info doesn't
-// have.
+// edgeGeneratedColumns is the set of edges.* generated columns ensureEdgeColumns
+// adds to a table created before they existed — which, since none of them are
+// in schemaSQL's CREATE TABLE, includes a freshly created table too.
+var edgeGeneratedColumns = []struct {
+	name string
+	ddl  string
+}{
+	{"is_unresolved", isUnresolvedColumnDDL},
+}
+
+// edgePromotedColumns lifts the resolver's resolve_terminal /
+// resolve_terminal_reason Meta keys (see resolver/terminal.go) out of the
+// meta blob into their own nullable columns — the edge-side sibling of
+// promotedMetaColumns on nodes (see meta_json.go's "promoted edge columns"
+// section for extractPromotedEdgeMeta/restorePromotedEdgeMeta and why a
+// json_extract-derived generated column was tried first and abandoned:
+// encodeMeta's common case is a custom flat binary codec, not JSON, so
+// json_extract/json_valid against a real store's meta blobs evaluates to
+// NULL for effectively every row). Plain (non-generated) columns, so they
+// share ensureEdgeColumns' table_xinfo scan but are ordinary ALTER TABLE ADD
+// COLUMN statements, not GENERATED ALWAYS AS expressions.
+//
+// Exists to let a future bulk classification query (replacing per-edge
+// Go-side classifyTerminal calls in reconcileTerminalStamps) read the
+// CURRENT terminal state as a plain indexed column instead of decoding
+// Meta, and compare it against a freshly computed value to find only the
+// edges whose state actually changed — reconcileTerminalStamps measured
+// only ~1% of examined edges (9,599 of 833,828) ever change state.
+var edgePromotedColumns = []struct {
+	name string
+	ddl  string
+}{
+	{"resolve_terminal", "resolve_terminal INTEGER"},
+	{"resolve_terminal_reason", "resolve_terminal_reason TEXT"},
+}
+
+// ensureEdgeColumns adds edgeGeneratedColumns + edgePromotedColumns to an
+// edges table created before they existed. Mirrors ensureNodeColumns'
+// PRAGMA + conditional ALTER pattern, but queries table_xinfo rather than
+// table_info: table_info silently OMITS generated columns from its result
+// set (verified against the pinned modernc.org/sqlite driver — a reopened
+// store's is_unresolved column is invisible to table_info, so the existence
+// check always came back false and every reopen re-ran the ALTER, failing
+// with "duplicate column name"). table_xinfo lists every column, generated
+// ones included, with an extra hidden column (3 == generated) table_info
+// doesn't have — and works identically for the plain promoted columns too,
+// so one scan serves both lists.
 func ensureEdgeColumns(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_xinfo(edges)`)
 	if err != nil {
@@ -69,11 +104,94 @@ func ensureEdgeColumns(db *sql.DB) error {
 		return err
 	}
 	_ = rows.Close()
-	if existing["is_unresolved"] {
-		return nil
+	for _, c := range edgeGeneratedColumns {
+		if existing[c.name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE edges ADD COLUMN ` + c.ddl); err != nil {
+			return err
+		}
 	}
-	if _, err := db.Exec(`ALTER TABLE edges ADD COLUMN ` + isUnresolvedColumnDDL); err != nil {
+	for _, c := range edgePromotedColumns {
+		if existing[c.name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE edges ADD COLUMN ` + c.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// isStubColumnDDL is nodes.is_stub: a VIRTUAL generated column mirroring
+// graph.IsStub/StubKind's id-prefix logic (stdlib:: / builtin:: /
+// external_call:: / module::, bare or repo-prefixed as <repo>::<kind>::...).
+// Same rationale as isUnresolvedColumnDDL: computed from the existing id
+// column, no Go call site has to keep it in sync. Exists so a future
+// SQL-side terminal classification (see resolveTerminalColumnDDL) can check
+// "is this candidate a stub" via a plain column instead of a per-row Go
+// IsStub(n.ID) call.
+const isStubColumnDDL = `is_stub INTEGER GENERATED ALWAYS AS (
+    CASE WHEN
+        id LIKE 'stdlib::%' OR id LIKE 'builtin::%' OR id LIKE 'external_call::%' OR id LIKE 'module::%'
+        OR (
+            instr(id, '::') > 0 AND (
+                substr(id, instr(id, '::') + 2) LIKE 'stdlib::%'
+                OR substr(id, instr(id, '::') + 2) LIKE 'builtin::%'
+                OR substr(id, instr(id, '::') + 2) LIKE 'external_call::%'
+                OR substr(id, instr(id, '::') + 2) LIKE 'module::%'
+            )
+        )
+    THEN 1 ELSE 0 END
+) VIRTUAL`
+
+// nodeGeneratedColumns is the nodes-table sibling of edgeGeneratedColumns.
+// Kept as its own list (and ensureNodeGeneratedColumns as its own function,
+// rather than folded into ensureNodeColumns) because ensureNodeColumns
+// checks existence via PRAGMA table_info, which — like the edges case
+// documented on ensureEdgeColumns — silently omits generated columns.
+// Reusing that function's table_info scan for is_stub would hit the exact
+// same "always looks missing, ALTER re-runs, duplicate column name" bug.
+var nodeGeneratedColumns = []struct {
+	name string
+	ddl  string
+}{
+	{"is_stub", isStubColumnDDL},
+}
+
+// ensureNodeGeneratedColumns adds nodeGeneratedColumns to a nodes table
+// created before they existed. See ensureEdgeColumns for the table_xinfo
+// vs table_info rationale this mirrors.
+func ensureNodeGeneratedColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_xinfo(nodes)`)
+	if err != nil {
 		return err
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid, notnull, pk, hidden int
+			name, ctype              string
+			dflt                     sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk, &hidden); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	for _, c := range nodeGeneratedColumns {
+		if existing[c.name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE nodes ADD COLUMN ` + c.ddl); err != nil {
+			return err
+		}
 	}
 	return nil
 }

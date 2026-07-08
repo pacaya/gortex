@@ -300,6 +300,12 @@ func openWith(path string, current int, migrations []schemaMigration, allowRebui
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite node columns: %w", err)
 	}
+	// nodes.is_stub generated column — see ensureNodeGeneratedColumns for why
+	// this is a separate function from ensureNodeColumns above.
+	if err := ensureNodeGeneratedColumns(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite node generated columns: %w", err)
+	}
 	// Same treatment for the edges table's is_unresolved generated column —
 	// must run before the droppable-index loop below, which creates an index
 	// over it.
@@ -526,10 +532,10 @@ func (s *Store) prepare() error {
 	prep(&s.stmtStatsByLanguage,
 		`SELECT language, COUNT(*) FROM nodes GROUP BY language`)
 
-	const edgeCols = `from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta`
+	const edgeCols = `from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta, resolve_terminal, resolve_terminal_reason`
 
 	prep(&s.stmtInsertEdge,
-		`INSERT OR IGNORE INTO edges (`+edgeCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+		`INSERT OR IGNORE INTO edges (`+edgeCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	prep(&s.stmtOutEdges,
 		`SELECT `+edgeCols+` FROM edges WHERE from_id = ?`)
 	const edgeColsLight = `from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo`
@@ -540,7 +546,7 @@ func (s *Store) prepare() error {
 	prep(&s.stmtRepoEdges,
 		`SELECT e.from_id, e.to_id, e.kind, e.file_path, e.line,
 		        e.confidence, e.confidence_label, e.origin, e.tier,
-		        e.cross_repo, e.meta
+		        e.cross_repo, e.meta, e.resolve_terminal, e.resolve_terminal_reason
 		   FROM edges e
 		   JOIN nodes n ON n.id = e.from_id
 		  WHERE n.repo_prefix = ?`)
@@ -556,7 +562,7 @@ func (s *Store) prepare() error {
 	prep(&s.stmtUpdateEdgeOrigin,
 		`UPDATE edges SET origin = ?, tier = ? WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ?`)
 	prep(&s.stmtUpdateEdgeAttrs,
-		`UPDATE edges SET confidence = ?, confidence_label = ?, origin = ?, tier = ?, meta = ? WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ?`)
+		`UPDATE edges SET confidence = ?, confidence_label = ?, origin = ?, tier = ?, meta = ?, resolve_terminal = ?, resolve_terminal_reason = ? WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ?`)
 	prep(&s.stmtDeleteEdgeByKey,
 		`DELETE FROM edges WHERE from_id = ? AND to_id = ? AND kind = ? AND file_path = ? AND line = ?`)
 	prep(&s.stmtEdgeExists,
@@ -648,11 +654,12 @@ func scanEdge(scanner interface {
 		e         graph.Edge
 		metaBlob  []byte
 		crossRepo int64
+		p         promotedEdgeMeta
 	)
 	err := scanner.Scan(
 		&e.From, &e.To, &e.Kind, &e.FilePath, &e.Line,
 		&e.Confidence, &e.ConfidenceLabel, &e.Origin, &e.Tier,
-		&crossRepo, &metaBlob,
+		&crossRepo, &metaBlob, &p.resolveTerminal, &p.resolveTerminalReason,
 	)
 	if err != nil {
 		return nil, err
@@ -665,6 +672,10 @@ func scanEdge(scanner interface {
 		}
 		e.Meta = m
 	}
+	// Restore the promoted columns into Meta. They are authoritative for
+	// rows written after the promotion; a NULL column (pre-promotion rows)
+	// is left alone so any blob-carried value survives.
+	restorePromotedEdgeMeta(&e, p)
 	return &e, nil
 }
 
@@ -763,7 +774,8 @@ func (s *Store) AddEdge(e *graph.Edge) {
 }
 
 func (s *Store) insertEdgeLocked(stmt *sql.Stmt, e *graph.Edge) error {
-	metaBlob, err := encodeMeta(e.Meta)
+	p, blobMeta := extractPromotedEdgeMeta(e.Meta)
+	metaBlob, err := encodeMeta(blobMeta)
 	if err != nil {
 		return err
 	}
@@ -774,7 +786,7 @@ func (s *Store) insertEdgeLocked(stmt *sql.Stmt, e *graph.Edge) error {
 	_, err = stmt.Exec(
 		e.From, e.To, string(e.Kind), e.FilePath, e.Line,
 		e.Confidence, e.ConfidenceLabel, e.Origin, e.Tier,
-		crossRepo, metaBlob,
+		crossRepo, metaBlob, p.resolveTerminal, p.resolveTerminalReason,
 	)
 	return err
 }
@@ -896,7 +908,8 @@ func (s *Store) PersistEdgeAttributes(e *graph.Edge) {
 	if e == nil {
 		return
 	}
-	metaBlob, err := encodeMeta(e.Meta)
+	p, blobMeta := extractPromotedEdgeMeta(e.Meta)
+	metaBlob, err := encodeMeta(blobMeta)
 	if err != nil {
 		panicOnFatal(err)
 		return
@@ -905,6 +918,7 @@ func (s *Store) PersistEdgeAttributes(e *graph.Edge) {
 	defer s.writeMu.Unlock()
 	if _, err := s.stmtUpdateEdgeAttrs.Exec(
 		e.Confidence, e.ConfidenceLabel, e.Origin, e.Tier, metaBlob,
+		p.resolveTerminal, p.resolveTerminalReason,
 		e.From, e.To, string(e.Kind), e.FilePath, e.Line,
 	); err != nil {
 		panicOnFatal(err)
@@ -940,7 +954,8 @@ func (s *Store) PersistEdgeAttributesBatch(edges []*graph.Edge) {
 			if e == nil {
 				continue
 			}
-			metaBlob, err := encodeMeta(e.Meta)
+			p, blobMeta := extractPromotedEdgeMeta(e.Meta)
+			metaBlob, err := encodeMeta(blobMeta)
 			if err != nil {
 				_ = tx.Rollback()
 				panicOnFatal(err)
@@ -948,6 +963,7 @@ func (s *Store) PersistEdgeAttributesBatch(edges []*graph.Edge) {
 			}
 			if _, err := updStmt.Exec(
 				e.Confidence, e.ConfidenceLabel, e.Origin, e.Tier, metaBlob,
+				p.resolveTerminal, p.resolveTerminalReason,
 				e.From, e.To, string(e.Kind), e.FilePath, e.Line,
 			); err != nil {
 				_ = tx.Rollback()
@@ -1791,7 +1807,7 @@ func isStoreClosedErr(err error) bool {
 func (s *Store) EdgesByKind(kind graph.EdgeKind) iter.Seq[*graph.Edge] {
 	return func(yield func(*graph.Edge) bool) {
 		out := s.queryEdgesSQL(`
-SELECT from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta
+SELECT from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta, resolve_terminal, resolve_terminal_reason
 FROM edges WHERE kind = ?`, string(kind))
 		for _, e := range out {
 			if !yield(e) {
@@ -1823,7 +1839,7 @@ func (s *Store) NodesByKind(kind graph.NodeKind) iter.Seq[*graph.Node] {
 func (s *Store) EdgesWithUnresolvedTarget() iter.Seq[*graph.Edge] {
 	return func(yield func(*graph.Edge) bool) {
 		out := s.queryEdgesSQL(`
-SELECT from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta
+SELECT from_id, to_id, kind, file_path, line, confidence, confidence_label, origin, tier, cross_repo, meta, resolve_terminal, resolve_terminal_reason
 FROM edges WHERE is_unresolved = 1`)
 		for _, e := range out {
 			if !yield(e) {

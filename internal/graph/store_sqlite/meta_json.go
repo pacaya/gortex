@@ -992,3 +992,80 @@ func restorePromotedMeta(n *graph.Node, p promotedNodeMeta) {
 		n.Meta["updated_at"] = p.updatedAt.Int64
 	}
 }
+
+// -- promoted edge columns -------------------------------------------------
+//
+// resolve_terminal / resolve_terminal_reason (see resolver/terminal.go) are
+// the edge-side sibling of promotedMetaColumns above. A generated column
+// deriving them from the meta blob via json_extract was tried first and
+// abandoned: encodeMeta's common case is a custom flat binary codec (see
+// "flat binary meta codec" below in this file), not JSON — JSON is only a
+// fallback for value shapes the flat codec can't model, and a bool/string
+// pair like these two always fits the flat codec. json_extract/json_valid
+// against a real store's meta blobs therefore either throws ("malformed
+// JSON") or, once gated by json_valid, silently evaluates to NULL for
+// effectively every row. Promoting the keys out of the blob into typed
+// columns (exactly the node-side pattern) sidesteps the encoding entirely:
+// extractPromotedEdgeMeta/restorePromotedEdgeMeta operate on the already-
+// decoded map[string]any, not the raw bytes, so they work identically
+// regardless of which codec wrote the blob.
+
+// promotedEdgeMeta holds the typed column values lifted out of an edge's
+// Meta blob. A NULL (invalid) field means the key was absent (or had an
+// unexpected type and stayed in the blob).
+type promotedEdgeMeta struct {
+	resolveTerminal       sql.NullBool
+	resolveTerminalReason sql.NullString
+}
+
+// extractPromotedEdgeMeta splits resolve_terminal / resolve_terminal_reason
+// out of m into typed column values and returns the remaining map destined
+// for the meta blob. m is not mutated; a copy is made only when one of the
+// promoted keys is present with the expected type.
+func extractPromotedEdgeMeta(m map[string]any) (p promotedEdgeMeta, rest map[string]any) {
+	rest = m
+	if len(m) == 0 {
+		return
+	}
+	_, hasTerminal := m["resolve_terminal"]
+	_, hasReason := m["resolve_terminal_reason"]
+	if !hasTerminal && !hasReason {
+		return
+	}
+	rest = make(map[string]any, len(m))
+	for k, v := range m {
+		var promoted bool
+		switch k {
+		case "resolve_terminal":
+			if b, ok := v.(bool); ok {
+				p.resolveTerminal, promoted = sql.NullBool{Bool: b, Valid: true}, true
+			}
+		case "resolve_terminal_reason":
+			if s, ok := v.(string); ok {
+				p.resolveTerminalReason, promoted = sql.NullString{String: s, Valid: true}, true
+			}
+		}
+		if !promoted {
+			rest[k] = v
+		}
+	}
+	return
+}
+
+// restorePromotedEdgeMeta writes the non-NULL promoted columns back into
+// the edge's Meta. A NULL column is left alone so a pre-promotion row's
+// blob-carried value (if any) survives.
+func restorePromotedEdgeMeta(e *graph.Edge, p promotedEdgeMeta) {
+	if !p.resolveTerminal.Valid && !p.resolveTerminalReason.Valid {
+		return
+	}
+	if e.Meta == nil {
+		e.Meta = make(map[string]any, 2)
+	}
+	if p.resolveTerminal.Valid {
+		e.Meta["resolve_terminal"] = p.resolveTerminal.Bool
+	}
+	if p.resolveTerminalReason.Valid {
+		e.Meta["resolve_terminal_reason"] = p.resolveTerminalReason.String
+	}
+}
