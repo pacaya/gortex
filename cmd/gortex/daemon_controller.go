@@ -673,14 +673,61 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		// its nodes carry repo_prefix="" and AllRepoMemoryEstimates'
 		// GROUP BY excludes that key by design (handled separately
 		// below) — so that expected gap must not trip this warning.
+		// A workspace with a single tracked repo owns the entire store:
+		// every node and edge belongs to it, whether or not those nodes
+		// carry a repo prefix. g.NodeCount()/g.EdgeCount() is therefore the
+		// exact per-repo count, and reporting it keeps `daemon status` in
+		// agreement with `gortex query stats` (which reports the same
+		// whole-store totals — the inconsistency users report in #261/#270).
+		//
+		// This covers both ways a lone repo's nodes land under
+		// repo_prefix="", neither of which produces a usable per-prefix
+		// bucket (the in-memory shard counters skip empty-prefix nodes —
+		// shard.repoNodeAdd is a deliberate no-op — and the SQLite GROUP BY
+		// excludes repo_prefix="" rows via `WHERE repo_prefix <> ''`):
+		//   1. Indexed unprefixed (RepoMetadata.Unprefixed) while it was the
+		//      workspace's sole tracked repo — the willBeMultiRepo gate in
+		//      TrackRepoCtx/ReconcileRepoCtx.
+		//   2. Desynced to a prefixed metadata: a second config entry (e.g. a
+		//      macOS path-case duplicate) flips willBeMultiRepo true at the
+		//      next warm restart, so the metadata is stamped prefixed
+		//      (Unprefixed=false) but the existing repo_prefix="" nodes are
+		//      never restamped (migrateLoneUnprefixedRepoCtx's guard needs
+		//      len(repos)==1, which fails mid-warmup-loop) — leaving an empty
+		//      per-prefix bucket.
+		// Both used to fall back to the frozen RepoMetadata.NodeCount (stale,
+		// often ~1) and render the near-empty row of #261/#270. Byte
+		// estimates stay at their zero value here — advisory display detail,
+		// not the reported bug.
+		allMeta := c.multiIndexer.AllMetadata()
+		soleRepo := len(allMeta) == 1
+		var wholeStoreNodes, wholeStoreEdges int
+		if g != nil {
+			wholeStoreNodes = g.NodeCount()
+			wholeStoreEdges = g.EdgeCount()
+		}
+
+		// Diagnostic: when AllMetadata has tracked repos but
+		// AllRepoMemoryEstimates returns nothing (or a much smaller
+		// set), some path has cleared the per-repo counters without
+		// clearing the underlying nodes. The meta fallback below keeps
+		// the table usable in the meantime.
 		if c.logger != nil {
-			tracked := len(c.multiIndexer.AllMetadata())
+			tracked := len(allMeta)
 			counted := len(memEstimates)
+			// A sole tracked repo (or one indexed unprefixed) legitimately
+			// contributes no per-prefix bucket — its nodes carry
+			// repo_prefix="" — so the expected shortfall must not trip this
+			// warning; the whole-store attribution below covers it.
 			expectedGap := 0
-			for _, meta := range c.multiIndexer.AllMetadata() {
-				if meta != nil && meta.Unprefixed {
-					expectedGap = 1
-					break
+			if soleRepo {
+				expectedGap = 1
+			} else {
+				for _, meta := range allMeta {
+					if meta != nil && meta.Unprefixed {
+						expectedGap = 1
+						break
+					}
 				}
 			}
 			if tracked > 0 && counted < tracked-expectedGap {
@@ -691,38 +738,6 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 			}
 		}
 
-		// A repo indexed while it was the workspace's sole tracked repo
-		// stamps its nodes with repo_prefix="" (RepoMetadata.Unprefixed) —
-		// see TrackRepoCtx/ReconcileRepoCtx's willBeMultiRepo gate. Neither
-		// backend's per-repo estimate is usable for that empty key: the
-		// in-memory shard counters intentionally skip nodes with no
-		// RepoPrefix (shard.repoNodeAdd is a deliberate no-op for them),
-		// and the SQLite GROUP BY excludes repo_prefix="" rows outright
-		// (stmtAllRepoCountsNodes: `WHERE repo_prefix <> ''`). So such a
-		// repo never gets a memEstimates[prefix] hit and would otherwise
-		// fall back to whatever RepoMetadata.NodeCount happened to be
-		// frozen at by the last reindex — stale as soon as a scoped,
-		// file-watcher-triggered incremental pass restamps it. A repo is
-		// only ever Unprefixed while it's the workspace's sole tracked
-		// repo (migrateLoneUnprefixedRepoCtx re-mints it with a real
-		// prefix the moment a second repo joins), so the whole store's
-		// live totals ARE this repo's totals — the same fallback
-		// Indexer.repoNodeEdgeCount uses internally to stamp
-		// IndexResult.NodeCount/EdgeCount in unprefixed mode. Byte
-		// estimates stay at their zero value here, same as the pre-fix
-		// miss case — they're advisory display detail, not the reported
-		// bug.
-		var unprefixed graph.RepoMemoryEstimate
-		if g != nil {
-			for _, meta := range c.multiIndexer.AllMetadata() {
-				if meta != nil && meta.Unprefixed {
-					unprefixed.NodeCount = g.NodeCount()
-					unprefixed.EdgeCount = g.EdgeCount()
-					break
-				}
-			}
-		}
-
 		// Search and vector backends are process-wide (one shared index
 		// across all repos), so we compute the global size once and
 		// split it proportionally to each repo's node share. Not exact,
@@ -730,33 +745,41 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		// per-repo which would double storage for the sake of a status
 		// breakdown.
 		backendStats := resolveSearchBackend(c.multiIndexer.Search())
-		for _, est := range memEstimates {
-			totalNodes += est.NodeCount
-		}
-		totalNodes += unprefixed.NodeCount
-		// totalNodes drives the SearchBytes share split below. When
-		// the per-repo counters are empty for every prefix (the
-		// post-warmup-wipe case described above), fall back to summing
-		// per-repo meta so the share denominator stays nonzero and the
-		// search budget gets attributed instead of falling on the floor.
-		if totalNodes == 0 {
-			for _, meta := range c.multiIndexer.AllMetadata() {
-				if meta != nil {
-					totalNodes += meta.NodeCount
+		// totalNodes drives the SearchBytes share split below. A sole repo
+		// owns the whole store; otherwise sum the per-prefix buckets and, if
+		// every counter is empty (the post-warmup-wipe case described above),
+		// fall back to per-repo meta so the share denominator stays nonzero
+		// and the search budget gets attributed instead of falling on the floor.
+		if soleRepo {
+			totalNodes = wholeStoreNodes
+		} else {
+			for _, est := range memEstimates {
+				totalNodes += est.NodeCount
+			}
+			if totalNodes == 0 {
+				for _, meta := range allMeta {
+					if meta != nil {
+						totalNodes += meta.NodeCount
+					}
 				}
 			}
 		}
 
-		for prefix, meta := range c.multiIndexer.AllMetadata() {
+		for prefix, meta := range allMeta {
 			nodes := meta.NodeCount
 			edges := meta.EdgeCount
 			var mem daemon.MemoryBreakdown
 			switch {
-			case meta.Unprefixed:
-				nodes = unprefixed.NodeCount
-				edges = unprefixed.EdgeCount
-				mem.NodesBytes = unprefixed.NodeBytes
-				mem.EdgesBytes = unprefixed.EdgeBytes
+			case soleRepo || meta.Unprefixed:
+				// The whole store is this repo's graph — see the note
+				// above. This keeps `daemon status` in agreement with
+				// `gortex query stats` for a single-repo workspace, and
+				// corrects the near-empty row when a lone repo's nodes
+				// carry repo_prefix="" (indexed unprefixed, or desynced to
+				// a prefixed metadata whose per-prefix bucket is empty).
+				// Byte estimates stay zero — advisory detail, not the bug.
+				nodes = wholeStoreNodes
+				edges = wholeStoreEdges
 			default:
 				if est, ok := memEstimates[prefix]; ok {
 					nodes = est.NodeCount

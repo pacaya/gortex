@@ -88,3 +88,86 @@ func TestStatus_UnprefixedSoloRepo_ReportsLiveNodeCount(t *testing.T) {
 		"a solo (unprefixed) tracked repo's status row must reflect the live graph count, not the frozen RepoMetadata snapshot")
 	assert.Equal(t, prefix, resp.TrackedRepos[0].Prefix)
 }
+
+// TestStatus_SoleRepoDesyncedToPrefixed_ReportsWholeStore reproduces the
+// remaining #261/#270 case f8436fab did not cover: a lone repo indexed
+// unprefixed (nodes carry repo_prefix="") whose metadata later flips to
+// prefixed (Unprefixed=false) WITHOUT its nodes being restamped, leaving an
+// empty per-prefix bucket. This is what a macOS path-case duplicate does — a
+// second config entry makes willBeMultiRepo true at the next warm restart, but
+// migrateLoneUnprefixedRepoCtx's guard (len(repos)==1) is false mid-warmup-loop
+// so the "" nodes never migrate. `query stats` still reports the full store,
+// while `daemon status` used to fall back to the frozen ~0 RepoMetadata.NodeCount
+// and render the reported near-empty (nodes=1) row.
+func TestStatus_SoleRepoDesyncedToPrefixed_ReportsWholeStore(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lib.go"),
+		[]byte("package lib\n\nfunc A() {}\nfunc B() { A() }\n"), 0o644))
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	gc := &config.GlobalConfig{Repos: []config.RepoEntry{{Path: dir}}}
+	gc.SetConfigPath(cfgPath)
+	require.NoError(t, gc.Save())
+	cm, err := config.NewConfigManager(cfgPath)
+	require.NoError(t, err)
+
+	reg := parser.NewRegistry()
+	languages.RegisterAll(reg)
+
+	// First index: sole configured repo → indexed unprefixed.
+	g := graph.New()
+	mi1 := indexer.NewMultiIndexer(g, reg, search.NewBM25(), cm, zap.NewNop())
+	_, err = mi1.IndexAll()
+	require.NoError(t, err)
+
+	var priorMtimes map[string]int64
+	for _, m := range mi1.AllMetadata() {
+		require.True(t, m.Unprefixed, "a lone tracked repo must index unprefixed")
+		priorMtimes = m.FileMtimes
+	}
+	require.NotEmpty(t, priorMtimes, "the first index must have recorded file mtimes to reconcile against")
+	fullNodes := g.NodeCount()
+	fullEdges := g.EdgeCount()
+	require.Greater(t, fullNodes, 1, "sanity: the repo must have produced a real graph")
+
+	// A second config entry (the macOS path-case duplicate) makes the next
+	// warm restart see a multi-repo config and flip the lone repo to prefixed
+	// metadata mode.
+	require.NoError(t, cm.Global().AddRepo(config.RepoEntry{Path: t.TempDir()}))
+	require.GreaterOrEqual(t, len(cm.Global().Repos), 2)
+
+	// Warm restart: a fresh MultiIndexer over the SAME graph store reconciles
+	// the repo from the persisted mtimes. mi2.repos is empty, so
+	// migrateLoneUnprefixedRepoCtx is a no-op (guard needs len(repos)==1);
+	// willBeMultiRepo is true, so the metadata is stamped prefixed — but with
+	// nothing stale to reindex, the existing repo_prefix="" nodes are never
+	// restamped, leaving an empty per-prefix bucket.
+	mi2 := indexer.NewMultiIndexer(g, reg, search.NewBM25(), cm, zap.NewNop())
+	_, err = mi2.ReconcileRepoCtx(context.Background(), config.RepoEntry{Path: dir}, priorMtimes)
+	require.NoError(t, err)
+
+	metas := mi2.AllMetadata()
+	require.Len(t, metas, 1, "the path-case duplicate collapses to one tracked repo identity")
+	var prefix string
+	for p, m := range metas {
+		prefix = p
+		require.False(t, m.Unprefixed, "the reconcile under a 2-entry config flips the repo to prefixed mode")
+	}
+	require.NotEmpty(t, prefix, "the desynced repo must carry a real (non-empty) prefix")
+
+	// The desync: the store still holds every node under repo_prefix="", so
+	// the prefixed bucket is empty — the exact condition that made the old
+	// per-prefix lookup miss and fall back to the near-empty frozen count.
+	require.Less(t, g.RepoMemoryEstimate(prefix).NodeCount, fullNodes,
+		"sanity: the prefixed bucket must be short of the store total — nodes still carry repo_prefix=''")
+
+	c := &realController{graph: g, multiIndexer: mi2, configManager: cm, logger: zap.NewNop()}
+	resp, err := c.Status(context.Background())
+	require.NoError(t, err)
+	require.Len(t, resp.TrackedRepos, 1)
+
+	assert.Equal(t, fullNodes, resp.TrackedRepos[0].Nodes,
+		"a sole tracked repo's status row must reflect the whole store even when its nodes are unprefixed but its metadata says prefixed")
+	assert.Equal(t, fullEdges, resp.TrackedRepos[0].Edges,
+		"edges must likewise reflect the whole store, matching `gortex query stats`")
+}
