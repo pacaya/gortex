@@ -1486,6 +1486,15 @@ func (mi *MultiIndexer) IncrementalReindexRepo(repoPrefix string, paths []string
 		EdgeCount:     result.EdgeCount,
 		ParseErrors:   result.Errors,
 		FileMtimes:    idx.FileMtimes(),
+		// Carried over from the prior metadata: this pass doesn't
+		// change either property, and dropping them here (both zero
+		// value on a fresh struct literal) used to silently flip a
+		// worktree or an Unprefixed solo repo back to their false
+		// defaults on the very first watcher-triggered incremental
+		// update, defeating callers that key behaviour off them (see
+		// the Unprefixed branch in cmd/gortex daemon status).
+		IsWorktree: meta.IsWorktree,
+		Unprefixed: meta.Unprefixed,
 	}
 	mi.mu.Unlock()
 

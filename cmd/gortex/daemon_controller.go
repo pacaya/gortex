@@ -668,15 +668,58 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		// AllRepoMemoryEstimates returns nothing (or a much smaller
 		// set), some path has cleared the per-repo counters without
 		// clearing the underlying nodes. The meta fallback below keeps
-		// the table usable in the meantime.
+		// the table usable in the meantime. A workspace with exactly
+		// one Unprefixed repo legitimately runs one bucket short —
+		// its nodes carry repo_prefix="" and AllRepoMemoryEstimates'
+		// GROUP BY excludes that key by design (handled separately
+		// below) — so that expected gap must not trip this warning.
 		if c.logger != nil {
 			tracked := len(c.multiIndexer.AllMetadata())
 			counted := len(memEstimates)
-			if tracked > 0 && counted < tracked {
+			expectedGap := 0
+			for _, meta := range c.multiIndexer.AllMetadata() {
+				if meta != nil && meta.Unprefixed {
+					expectedGap = 1
+					break
+				}
+			}
+			if tracked > 0 && counted < tracked-expectedGap {
 				c.logger.Warn("daemon: per-repo counters below tracked-repo count — graph mutation cleared per-repo index?",
 					zap.Int("tracked_repos", tracked),
 					zap.Int("counter_buckets", counted),
 					zap.Int("graph_total_nodes", c.graph.NodeCount()))
+			}
+		}
+
+		// A repo indexed while it was the workspace's sole tracked repo
+		// stamps its nodes with repo_prefix="" (RepoMetadata.Unprefixed) —
+		// see TrackRepoCtx/ReconcileRepoCtx's willBeMultiRepo gate. Neither
+		// backend's per-repo estimate is usable for that empty key: the
+		// in-memory shard counters intentionally skip nodes with no
+		// RepoPrefix (shard.repoNodeAdd is a deliberate no-op for them),
+		// and the SQLite GROUP BY excludes repo_prefix="" rows outright
+		// (stmtAllRepoCountsNodes: `WHERE repo_prefix <> ''`). So such a
+		// repo never gets a memEstimates[prefix] hit and would otherwise
+		// fall back to whatever RepoMetadata.NodeCount happened to be
+		// frozen at by the last reindex — stale as soon as a scoped,
+		// file-watcher-triggered incremental pass restamps it. A repo is
+		// only ever Unprefixed while it's the workspace's sole tracked
+		// repo (migrateLoneUnprefixedRepoCtx re-mints it with a real
+		// prefix the moment a second repo joins), so the whole store's
+		// live totals ARE this repo's totals — the same fallback
+		// Indexer.repoNodeEdgeCount uses internally to stamp
+		// IndexResult.NodeCount/EdgeCount in unprefixed mode. Byte
+		// estimates stay at their zero value here, same as the pre-fix
+		// miss case — they're advisory display detail, not the reported
+		// bug.
+		var unprefixed graph.RepoMemoryEstimate
+		if g != nil {
+			for _, meta := range c.multiIndexer.AllMetadata() {
+				if meta != nil && meta.Unprefixed {
+					unprefixed.NodeCount = g.NodeCount()
+					unprefixed.EdgeCount = g.EdgeCount()
+					break
+				}
 			}
 		}
 
@@ -690,6 +733,7 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 		for _, est := range memEstimates {
 			totalNodes += est.NodeCount
 		}
+		totalNodes += unprefixed.NodeCount
 		// totalNodes drives the SearchBytes share split below. When
 		// the per-repo counters are empty for every prefix (the
 		// post-warmup-wipe case described above), fall back to summing
@@ -707,11 +751,19 @@ func (c *realController) Status(_ context.Context) (daemon.StatusResponse, error
 			nodes := meta.NodeCount
 			edges := meta.EdgeCount
 			var mem daemon.MemoryBreakdown
-			if est, ok := memEstimates[prefix]; ok {
-				nodes = est.NodeCount
-				edges = est.EdgeCount
-				mem.NodesBytes = est.NodeBytes
-				mem.EdgesBytes = est.EdgeBytes
+			switch {
+			case meta.Unprefixed:
+				nodes = unprefixed.NodeCount
+				edges = unprefixed.EdgeCount
+				mem.NodesBytes = unprefixed.NodeBytes
+				mem.EdgesBytes = unprefixed.EdgeBytes
+			default:
+				if est, ok := memEstimates[prefix]; ok {
+					nodes = est.NodeCount
+					edges = est.EdgeCount
+					mem.NodesBytes = est.NodeBytes
+					mem.EdgesBytes = est.EdgeBytes
+				}
 			}
 			if totalNodes > 0 && nodes > 0 {
 				share := float64(nodes) / float64(totalNodes)
